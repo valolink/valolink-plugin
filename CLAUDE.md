@@ -1,113 +1,62 @@
-# CLAUDE.md - Many-in-One Performance WP Plugin
+# CLAUDE.md — Valolink Plugin
 
 ## 1. Project Context
 
-- **Goal:** Develop a custom, highly performant "many-in-one" WordPress plugin that provides utility, security, and management features for client sites while keeping the WordPress and WooCommerce footprints strictly lean.
-- **Architecture Design:** A strictly modular system. The core framework handles only module registration, settings management, and conditional loading. All features are isolated into independent modules.
-- **Licensing & Distribution:** The plugin is intended to be open-source. Because the source code will be publicly visible, all security boundaries must rely on robust cryptographic architectures rather than obscurity.
+Internal WordPress plugin for the Valolink agency's own client sites. **Not** a product for public distribution. The plugin is a "many-in-one" toolkit: many modules, each toggleable, with strict zero-impact-when-off discipline so the bundle is cheaper to operate than maintaining many mini-plugins per site.
 
-## 2. Core Principles & Constraints
+One downstream consumer matters: a Nuxt app (the agency's business backend) that receives site inventory data from each WP install. Module C is what feeds it.
 
-- **Zero-Impact Deactivation:** If a module is toggled off, it must have absolutely zero footprint. No background processing, no asset loading, and no hidden hooks.
-- **Context-Aware Loading:** The logic determining when a module loads must be highly comprehensive and strictly defined. Modules must only load if they are highly relevant to the specific context of the current request (e.g., skipping irrelevant code during specific AJAX calls).
-- **Graceful Failure:** The plugin must fail without causing critical errors. Extensive checks must be in place before operations run to avoid bringing down the site.
-- **Environment Compatibility:** The plugin must verify environment compatibility (e.g., PHP and WP versions) before executing. If incompatible, it must display a safe notification rather than breaking the site.
-- **Strict Security:** Aggressive sanitization of inputs, late escaping of outputs, and strict permission validations are required across all features and endpoints.
-- **Database Hygiene & Clean Uninstall:** Avoid unnecessary database bloat and autoloaded data. The plugin must leave absolutely no residual data, tables, or settings behind when uninstalled.
-- **Asset Loading Discipline:** Any frontend assets (CSS/JS) must strictly load only on the exact pages or contexts where the active module requires them.
-- **Caching Compatibility:** The plugin must use caching for heavy operations and remain entirely compatible with standard WordPress page caching and object caching mechanisms.
-- **Conflict Prevention:** All code must be strictly encapsulated to prevent naming collisions with other themes or plugins.
-- **Native Update Integration:** The plugin must integrate seamlessly with the native WordPress Core update system, allowing administrators to see update notifications and trigger updates directly from the standard WordPress Plugins list.
+See `ROADMAP.md` for modules outside the current phase.
 
-## 3. Module Requirements
+## 2. Core Principles
 
-### Module A: Security
+- **Zero-Impact Deactivation.** Toggled-off modules must have no footprint: no hooks, no asset loading, no scheduled work, no autoloaded options.
+- **Context-Aware Loading.** Modules expose a cheap `should_load()` check; the loader calls it before any module-side code runs. AJAX/REST/cron/admin/frontend contexts are first-class — modules irrelevant to the current request do not load.
+- **Graceful Failure.** Guard before acting. The plugin must never WSOD a client site. Incompatible environment → admin notice, not a fatal.
+- **Environment Compatibility.** Check PHP and WP version at bootstrap. If unmet, refuse to load modules and show a notice.
+- **Strict Security.** Sanitize inputs at the boundary, escape outputs late, capability-check every privileged action, nonce every state-changing request.
+- **Database Hygiene & Clean Uninstall.** No autoloaded bloat. `uninstall.php` removes every option, table, CPT entry, and cron event the plugin ever created. Each module owns its own `uninstall()` so the core uninstaller just iterates.
+- **Asset Discipline.** CSS/JS enqueue only on the exact screens the active module needs.
+- **Caching Compatibility.** Work correctly behind WP Rocket, page cache, object cache. Never write to options or transients on uncached frontend requests if it can be avoided.
+- **Conflict Prevention.** Everything namespaced/prefixed (see §3).
+- **Native Update Integration.** Plugin updates surface in the standard WP Plugins list and Updates screen via a self-hosted manifest + custom updater.
 
-- **Objective:** Harden site security without performance bloat.
-- **Requirements:**
-  - Implement robust login protection.
-  - File monitoring and malware scanning must be scheduled and performant, never running on or impacting user-facing requests.
-  - IP blocking and logging mechanisms must be highly optimized to prevent database locking during high-traffic events.
-  - **Vulnerability Alerts:** Implement a lightweight system to detect and alert administrators to known security vulnerabilities in active plugins, themes, or WordPress core without adding runtime performance overhead.
+## 3. Architecture Decisions
 
-### Module B: Staging Detection & Helpers
+- **PHP namespace:** `Valolink\Plugin\…`. One top-level namespace, sub-namespaced per module (`Valolink\Plugin\Modules\Branding`).
+- **Public prefix:** `valolink_` for hook names, option keys, CPT slugs, REST namespaces, transient keys, cron hook names. (Short, unambiguous, easy to grep.)
+- **Settings storage:** Single non-autoloaded option `valolink_settings`, a nested array keyed by module id. Per-module accessor helpers; no module reads another module's settings directly.
+- **Custom tables:** Avoid unless a module truly needs one. Module D (Logging) will need one; nothing else in Phase 1 does.
+- **Module contract:** Each module is a class implementing:
+  - `id(): string` — stable identifier, used as settings key.
+  - `should_load(Context $ctx): bool` — cheap, no side effects. Receives a Context describing the current request (is_admin, is_ajax, ajax_action, is_rest, rest_route, is_cron, is_frontend, etc.).
+  - `register(): void` — wire hooks. Only called if `should_load()` returned true.
+  - `uninstall(): void` — remove this module's persistent footprint.
+- **Module loader:** Reads `valolink_settings`, instantiates only enabled modules, calls `should_load(ctx)`, then `register()`. The loader itself has no per-module knowledge; modules self-describe via a registry.
+- **Logging during Phase 1:** Modules log to `error_log()` until Module D ships. No direct DB writes for diagnostics.
+- **Module C transport:** WP → Nuxt, one-way, HMAC-signed POSTs. Per-site secret generated at activation, shown once in admin for pasting into Nuxt. Signed payload includes `{site_url, timestamp, body_hash}`; Nuxt rejects timestamps outside a ±5 min window. No inbound endpoints in v1.
+- **Update channel:** Self-hosted update manifest (likely served from the Nuxt app, since it already knows which sites exist). Hooked via `pre_set_site_transient_update_plugins` and `plugins_api`. Signature verification on the downloaded zip.
 
-- **Objective:** Prevent staging/local environments from interfering with live production.
-- **Requirements:**
-  - Accurately and reliably detect staging or local environments.
-  - Upon detection, automatically implement safeguards: block search engine indexing, prevent outgoing client emails, and safely disable live payment gateways.
+## 4. Phase 1 Scope
 
-### Module C: Remote Dashboard Connection (Open-Source Security Compliant)
+Only these ship in v1. Everything else in `ROADMAP.md`.
 
-- **Objective:** Centralized management from the main agency dashboard via secure remote execution.
-- **Requirements:**
-  - Expose authenticated remote endpoints that integrate seamlessly with the native WordPress update and management mechanisms.
-  - Allow the remote dashboard to toggle modules on/off, fetch site health/status, and safely trigger plugin updates.
-  - API responses must be cached where appropriate and highly performant.
-  - **Public Code Security Boundary:** Because the source code is public, the endpoint authentication mechanism must strictly prevent replay attacks, unauthorized access, and credential harvesting. It must rely entirely on robust server-to-server secret handshakes or cryptographic signing so that knowing _how_ the endpoint works grants zero advantage to attackers.
+### Core Framework
+- Module registry, loader, context detection, settings storage, uninstall coordinator, admin settings page (one screen, module toggles), self-updater, env compatibility gate.
 
-### Module D: Logging
+### Module B — Staging Detection & Helpers
+Detect staging/local environments reliably (multiple heuristics: hostname patterns, `WP_ENVIRONMENT_TYPE`, known host markers, IP ranges). On detection: block search indexing, intercept outgoing mail, disable live payment gateways (WooCommerce). Admin notice that staging mode is active.
 
-- **Objective:** Comprehensive event tracking without degrading the database.
-- **Requirements:**
-  - Implement a logging storage system that does not bloat the primary WordPress tables.
-  - Include automated log rotation and cleanup.
-  - The admin interface for viewing logs must load asynchronously to prevent backend slowdowns.
+### Module C v1 — Inventory Push to Nuxt
+Read-only WP → Nuxt push. Reports: WP core version, active theme + version, all installed plugins with version + active state, PHP version, multisite flag. Triggered on a daily cron + on plugin/theme/core update events + on demand from admin. HMAC-signed as described in §3.
 
-### Module E: Agency Branding & Support
+### Module E — Agency Branding
+Replace WP login logo with agency logo, inject agency support contact info beneath the login form. Must coexist with 2FA/security plugins on the login screen.
 
-- **Objective:** White-label the WordPress login experience and provide direct client support access.
-- **Requirements:**
-  - Replace the default WordPress logo on the login screen with the agency logo.
-  - Inject agency customer service contact information clearly beneath the login form.
-  - Ensure branding modifications do not interfere with third-party login security measures.
+## 5. Working Notes for Claude
 
-### Module F: Advanced Performance Optimizations
-
-- **Objective:** Provide surgical performance enhancements that complement standard caching tools (e.g., WP Rocket).
-- **Requirements:**
-  - Implement logic to selectively disable heavy or unnecessary plugins during specific AJAX requests to reduce server response times.
-  - Include other low-level optimization toggles for bottlenecks not covered by traditional caching solutions.
-  - Ensure these optimizations do not break core WordPress or WooCommerce frontend functionality.
-
-### Module G: Site Health & Best Practice Auditor
-
-- **Objective:** Ensure the site and its core utilities do not rely on default, insecure, or sub-optimal configurations.
-- **Requirements:**
-  - Audit standard WordPress core settings and identify elements still utilizing risky defaults (e.g., default permalinks, exposed user registration options, or default administrator usernames).
-  - Extend audits to third-party companion plugins (e.g., verifying if WP Rocket settings align with agency performance benchmarks).
-  - Report sub-optimal configurations to site administrators via a lean backend summary interface without running continuous database or runtime checks.
-
-### Module H: Agency Curated Plugin Installer
-
-- **Objective:** Streamline new site deployment by providing rapid access to the agency's verified plugin ecosystem.
-- **Requirements:**
-  - Maintain a centrally managed list of recommended/trusted plugins directly within the administration interface.
-  - Allow administrators to easily trigger the installation and activation of these trusted tools directly from the plugin UI.
-  - Ensure this module's data footprint is lightweight, loading remote asset descriptions or lists only on-demand when the administrator views the installer interface.
-
-### Module I: Experimental Plugin Dependency Analyzer
-
-- **Objective:** Explore code analysis to intelligently recommend conditional plugin disabling.
-- **Requirements:**
-  - Implement a static analysis utility (e.g., basic AST or regex parsing) that scans a chosen third-party plugin's codebase for specific WordPress hook registrations, AJAX handlers, and enqueued assets.
-  - Generate an "Impact Map" or "Confidence Score" to inform the site administrator how deeply integrated the plugin is, helping them decide if it is safe to conditionally disable it on specific frontend or AJAX requests.
-  - Emphasize safety: The tool must serve as an advisory mechanism, leaving the final toggle decision to the administrator to prevent automated site breakage.
-
-### Module J: JavaScript Interaction Loader
-
-- **Objective:** Improve initial page load times and Core Web Vitals by delaying non-essential JavaScript until user interaction.
-- **Requirements:**
-  - Implement a mechanism to safely defer or delay the execution of targeted JavaScript snippets/files until a user interacts with the page (e.g., scroll, click, or mouse movement).
-  - Provide a clear UI for administrators to define which scripts should be delayed and establish a strict exclusion list for critical scripts.
-  - Include a fallback timeout to load delayed scripts automatically if no user interaction occurs after a set duration.
-  - Ensure compatibility with vital dynamic flows, such as WooCommerce cart updates and checkout processing, so core functionalities are never broken.
-
-### Module K: Isolated Shortcode Lazy Loader
-
-- **Objective:** Act as a last-resort optimization for exceptionally heavy plugins by quarantining their output into an asynchronous, lazy-loaded iframe.
-- **Requirements:**
-  - Register a hidden Custom Post Type (CPT) designated strictly for hosting isolated shortcodes or heavy plugin outputs.
-  - Force a completely stripped-down, minimal page template for this CPT that bypasses the active theme's header/footer and only loads the bare minimum WordPress core necessary to execute the target plugin.
-  - Provide a lightweight wrapper shortcode to embed this CPT on standard pages via a `loading="lazy"` iframe.
-  - Implement parent-child JavaScript communication (e.g., via `window.postMessage`) to automatically adjust the iframe height to match its internal dynamic content, ensuring a seamless visual experience without internal scrollbars.
+- This file is loaded every turn — keep it short. Detailed per-module specs live in `ROADMAP.md`.
+- When in doubt about scope, ask before adding. Do not pre-build infrastructure for roadmap modules.
+- Don't introduce a dependency injection container, event bus, or other framework abstraction unless a Phase 1 module concretely needs it.
+- Tests: PHPUnit + WP test suite for the core loader and any non-trivial module logic. Manual smoke test on a real WP install before declaring a module done.
+- Repo currently contains only `CLAUDE.md`, `ROADMAP.md`, and `.git`. Scaffolding the plugin file structure is the next concrete step.
