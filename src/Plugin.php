@@ -6,6 +6,7 @@ namespace Valolink\Plugin;
 
 use Valolink\Plugin\Admin\SettingsPage;
 use Valolink\Plugin\Modules\Branding\BrandingModule;
+use Valolink\Plugin\Modules\Staging\StagingModule;
 
 final class Plugin
 {
@@ -49,6 +50,14 @@ final class Plugin
             label: __('Agency Branding', 'valolink-plugin'),
             description: __('Replace the WordPress login logo and add agency support contact info beneath the login form.', 'valolink-plugin'),
             class: BrandingModule::class,
+        ));
+
+        $registry->register(new ModuleManifest(
+            id: StagingModule::MODULE_ID,
+            label: __('Staging Detection', 'valolink-plugin'),
+            description: __('Detects staging and local environments. Blocks search indexing, redirects outgoing mail to the site admin, and disables live WooCommerce payment gateways.', 'valolink-plugin'),
+            class: StagingModule::class,
+            default_enabled: false,
         ));
     }
 }
