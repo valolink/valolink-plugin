@@ -4,3 +4,5 @@
 *.log
 vendor/
 node_modules/
+.direnv/
+.env

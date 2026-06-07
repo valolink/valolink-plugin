@@ -55,6 +55,7 @@ Replace WP login logo with agency logo, inject agency support contact info benea
 
 ## 5. Working Notes for Claude
 
+- **Do not run any git commands.** The user handles all git operations themselves.
 - This file is loaded every turn — keep it short. Detailed per-module specs live in `ROADMAP.md`.
 - When in doubt about scope, ask before adding. Do not pre-build infrastructure for roadmap modules.
 - Don't introduce a dependency injection container, event bus, or other framework abstraction unless a Phase 1 module concretely needs it.
