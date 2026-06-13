@@ -60,6 +60,19 @@ final class Settings
         $this->persist($all);
     }
 
+    /** Top-level (non-module) setting. */
+    public function get(string $key, mixed $default = null): mixed
+    {
+        return $this->all()[$key] ?? $default;
+    }
+
+    public function set(string $key, mixed $value): void
+    {
+        $all        = $this->all();
+        $all[$key]  = $value;
+        $this->persist($all);
+    }
+
     private function persist(array $all): void
     {
         $this->cache = $all;

@@ -12,5 +12,6 @@ final class ModuleManifest
         public readonly string $description,
         public readonly string $class,
         public readonly bool $default_enabled = false,
+        public readonly array $constructor_args = [],
     ) {}
 }

@@ -16,8 +16,7 @@ final class BrandingModule implements Module
     public const NONCE_ACTION = 'valolink_save_branding';
     public const SAVE_ACTION = 'valolink_save_branding';
 
-    private const DEFAULT_LOGO_WIDTH = 320;
-    private const DEFAULT_LOGO_HEIGHT = 80;
+    private const LOGO_RELATIVE_PATH = 'src/Modules/Branding/valolink-logo.png';
 
     private Settings $settings;
 
@@ -130,11 +129,12 @@ final class BrandingModule implements Module
                                     <?php echo esc_html__('Height', 'valolink-plugin'); ?>
                                     <input type="number" name="logo_height" min="0" max="1000" step="1" value="<?php echo esc_attr((string) $logo_height); ?>" style="width:6em;">
                                 </label>
+                                <?php $defaults = $this->defaults(); ?>
                                 <p class="description"><?php printf(
                                     /* translators: 1: default width, 2: default height */
-                                    esc_html__('Leave at 0 for defaults (%1$d × %2$d).', 'valolink-plugin'),
-                                    self::DEFAULT_LOGO_WIDTH,
-                                    self::DEFAULT_LOGO_HEIGHT,
+                                    esc_html__('Bundled logo is %1$d × %2$d px. Override if you use a different image.', 'valolink-plugin'),
+                                    (int) $defaults['logo_width'],
+                                    (int) $defaults['logo_height'],
                                 ); ?></p>
                             </td>
                         </tr>
@@ -205,14 +205,8 @@ final class BrandingModule implements Module
             return;
         }
 
-        $width = (int) $this->setting('logo_width', 0);
-        if ($width <= 0) {
-            $width = self::DEFAULT_LOGO_WIDTH;
-        }
+        $width  = (int) $this->setting('logo_width', 0);
         $height = (int) $this->setting('logo_height', 0);
-        if ($height <= 0) {
-            $height = self::DEFAULT_LOGO_HEIGHT;
-        }
 
         ?>
         <style id="valolink-branding-login">
@@ -255,6 +249,45 @@ final class BrandingModule implements Module
 
     private function setting(string $key, mixed $default = null): mixed
     {
-        return $this->settings->get_module_setting(self::MODULE_ID, $key, $default);
+        $stored = $this->settings->get_module_setting(self::MODULE_ID, $key, null);
+        if ($stored === null || $stored === '' || $stored === 0 || $stored === '0') {
+            $defaults = $this->defaults();
+            return $defaults[$key] ?? $default;
+        }
+        return $stored;
+    }
+
+    /**
+     * Canonical defaults for the Branding module. Used both to render the
+     * form (pre-filled values) and at runtime when a stored value is empty.
+     */
+    private function defaults(): array
+    {
+        return [
+            'logo_url'      => defined('VALOLINK_PLUGIN_URL') ? VALOLINK_PLUGIN_URL . self::LOGO_RELATIVE_PATH : '',
+            'logo_link_url' => 'https://valolink.fi',
+            'logo_alt_text' => 'Valolink Oy',
+            'logo_width'    => 203,
+            'logo_height'   => 50,
+            'support_html'  => self::default_support_html(),
+        ];
+    }
+
+    private static function default_support_html(): string
+    {
+        return <<<'HTML'
+<div style="text-align: center;padding: 15px;background: #f6f7f7;margin-top: 20px;border: 1px solid #c3c4c7">
+    <h3 style="margin: 0 0 8px 0;font-size: 15px;color: #1d2327">Valolinkin asiakaspalvelu</h3>
+    <p style="font-size: 13px;color: #3c434a;margin: 0 0 12px 0;line-height: 1.5">
+        Laita meille viestiä asiakaspalveluun, jos kaipaat apua sivuston muutoksissa tai sivustolla on jotain vialla.
+    </p>
+    <p style="margin: 4px 0;font-size: 13px">
+        <a href="mailto:asiakaspalvelu@valolink.fi" style="color: #2271b1;text-decoration: none;font-weight: 600">asiakaspalvelu@valolink.fi</a>
+    </p>
+    <p style="margin: 4px 0;font-size: 13px">
+        <a href="tel:+358443264445" style="color: #2271b1;text-decoration: none;font-weight: 600">+358 (0)44 326 4445</a> <span style="color: #8c8f94">(kiireelliset)</span>
+    </p>
+</div>
+HTML;
     }
 }

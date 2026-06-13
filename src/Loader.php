@@ -24,7 +24,7 @@ final class Loader
             }
 
             /** @var Module $module */
-            $module = new ($manifest->class)();
+            $module = new ($manifest->class)(...$manifest->constructor_args);
 
             if (!$module->should_load($this->context)) {
                 continue;

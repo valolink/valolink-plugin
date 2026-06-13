@@ -10,14 +10,14 @@ final class Uninstaller
     {
         $settings = new Settings();
         $registry = new Registry();
-        Plugin::register_modules($registry);
+        Plugin::register_modules($registry, $settings);
 
         foreach ($registry->all() as $manifest) {
             if (!class_exists($manifest->class)) {
                 continue;
             }
             /** @var Module $module */
-            $module = new ($manifest->class)();
+            $module = new ($manifest->class)(...$manifest->constructor_args);
             $module->uninstall();
         }
 
