@@ -1,0 +1,28 @@
+name: Release
+
+# Push a version tag (e.g. v0.2.0) and this builds the plugin zip and publishes a
+# GitHub Release with the zip attached as an asset — which the in-plugin updater picks up.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build plugin zip
+        run: |
+          chmod +x build.sh
+          ./build.sh "${GITHUB_REF_NAME#v}"   # tag drives the version, e.g. v0.1.1 -> 0.1.1
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true

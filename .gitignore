@@ -6,3 +6,4 @@ vendor/
 node_modules/
 .direnv/
 .env
+dist/

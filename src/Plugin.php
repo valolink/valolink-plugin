@@ -21,7 +21,9 @@ final class Plugin
         $registry = new Registry();
         self::register_modules($registry, $settings);
 
-        (new Updater($settings))->register();
+        if (defined('VALOLINK_PLUGIN_GITHUB_REPO') && VALOLINK_PLUGIN_GITHUB_REPO !== 'OWNER/REPO') {
+            (new Updater(VALOLINK_PLUGIN_FILE, VALOLINK_PLUGIN_GITHUB_REPO, VALOLINK_PLUGIN_VERSION))->register();
+        }
 
         if (is_admin()) {
             (new SettingsPage($settings, $registry))->register();
@@ -72,9 +74,10 @@ final class Plugin
 
         $registry->register(new ModuleManifest(
             id: EngineLinkModule::MODULE_ID,
-            label: __('EngineLink Companion', 'valolink-plugin'),
+            label: __('EngineLink', 'valolink-plugin'),
             description: __('Exposes REST endpoints for EngineLink to pull site inventory (WP version, PHP, plugins, health). Requires an API key set below.', 'valolink-plugin'),
             class: EngineLinkModule::class,
+            default_enabled: false,
             constructor_args: [$settings],
         ));
 

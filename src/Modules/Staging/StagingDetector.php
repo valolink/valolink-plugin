@@ -122,7 +122,28 @@ final class StagingDetector
         return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
     }
 
-    private static function current_hostname(): string
+    /**
+     * Returns true when $host has a non-www subdomain prefix.
+     * E.g. "pohja.demolink.fi" → true, "www.demolink.fi" → false, "demolink.fi" → false.
+     * $host should already be lower-cased and port-stripped.
+     */
+    public static function has_non_www_subdomain(string $host): bool
+    {
+        if ($host === '') {
+            return false;
+        }
+
+        $parts = explode('.', $host);
+
+        // Need at least 3 labels (subdomain + domain + tld).
+        if (count($parts) < 3) {
+            return false;
+        }
+
+        return $parts[0] !== 'www';
+    }
+
+    public static function current_hostname(): string
     {
         if (isset($_SERVER['HTTP_HOST']) && is_string($_SERVER['HTTP_HOST'])) {
             return strtolower(trim($_SERVER['HTTP_HOST']));

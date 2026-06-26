@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\Staging;
 
+use Valolink\Plugin\Admin\Field\PluginMultiCheckbox;
 use Valolink\Plugin\Admin\SettingsPage;
 use Valolink\Plugin\Context;
 use Valolink\Plugin\Module;
@@ -11,34 +12,64 @@ use Valolink\Plugin\Settings;
 
 final class StagingModule implements Module
 {
-    public const MODULE_ID    = 'staging';
-    public const SUBPAGE_SLUG = 'valolink-staging';
-    public const NONCE_ACTION = 'valolink_save_staging';
-    public const SAVE_ACTION  = 'valolink_save_staging';
+    public const MODULE_ID          = 'staging';
+    public const SUBPAGE_SLUG       = 'valolink-staging';
+    public const NONCE_ACTION       = 'valolink_save_staging';
+    public const SAVE_ACTION        = 'valolink_save_staging';
+    public const REGEN_TOKEN_ACTION = 'valolink_regen_staging_token';
+    public const REGEN_TOKEN_NONCE  = 'valolink_regen_staging_token';
+    public const BYPASS_COOKIE_NAME = 'valolink_staging_preview';
+    public const BYPASS_PARAM       = 'valolink_preview';
+    public const BYPASS_COOKIE_TTL  = 86400;
 
-    /** WooCommerce gateway IDs that are safe to keep active on staging (no real money). */
+    /** WooCommerce gateway IDs that are safe to keep active on staging. */
     private const SAFE_GATEWAYS = ['bacs', 'cheque', 'cod'];
+
+    /**
+     * Plugins pre-checked the first time the "disable plugins" list is rendered.
+     * Only those actually installed appear — the list is intersected at render time.
+     */
+    private const SUGGESTED_DISABLED_PLUGINS = [
+        // Live payment gateways
+        'woocommerce-gateway-stripe/woocommerce-gateway-stripe.php',
+        'woocommerce-paypal-payments/woocommerce-paypal-payments.php',
+        'klarna-checkout-for-woocommerce/klarna-checkout-for-woocommerce.php',
+        // Email / CRM marketing
+        'klaviyo/klaviyo.php',
+        'mailchimp-for-woocommerce/mailchimp-for-woocommerce.php',
+        'hubspot/hubspot.php',
+        // Live chat
+        'tidio-live-chat/tidio-live-chat.php',
+        'crisp/crisp.php',
+        // Push notifications
+        'onesignal-free-web-push-notifications/onesignal.php',
+        // Social commerce / ad pixels
+        'facebook-for-woocommerce/facebook-for-woocommerce.php',
+        'google-listings-and-ads/google-listings-and-ads.php',
+    ];
 
     public function __construct(private readonly Settings $settings) {}
 
     public function should_load(Context $context): bool
     {
-        // Always load — the settings page must be reachable even when staging is off,
-        // and per-feature toggles below check for active staging before doing anything.
+        // Settings page must be reachable even when staging isn't active.
         return true;
     }
 
     public function register(): void
     {
-        // Settings page is always available.
         add_action('admin_menu', [$this, 'add_settings_page']);
         add_action('admin_post_' . self::SAVE_ACTION, [$this, 'handle_save']);
+        add_action('admin_post_' . self::REGEN_TOKEN_ACTION, [$this, 'handle_regen_token']);
 
-        if (!$this->is_staging_active()) {
+        if (!$this->is_effectively_staging()) {
             return;
         }
 
-        // From here down: features only register when staging is effectively active.
+        // Bypass param runs before redirects so visitors can set the cookie first.
+        add_action('init', [$this, 'process_bypass_param'], 1);
+        add_action('admin_notices', [$this, 'render_admin_notice']);
+
         if ($this->is_enabled('block_indexing')) {
             add_filter('wp_robots',    [$this, 'filter_robots'], 1);
             add_action('send_headers', [$this, 'add_robots_header'], 1);
@@ -63,8 +94,6 @@ final class StagingModule implements Module
             add_filter('auto_update_core_major',  '__return_false');
             add_filter('auto_update_translation', '__return_false');
         }
-
-        add_action('admin_notices', [$this, 'render_admin_notice']);
     }
 
     public function uninstall(): void
@@ -95,45 +124,53 @@ final class StagingModule implements Module
             return;
         }
 
-        $detected = StagingDetector::is_staging();
-        $forced   = (bool) $this->setting('force_staging');
-        $active   = $detected || $forced;
-        $updated  = isset($_GET['updated']) && $_GET['updated'] === '1';
+        $detected   = StagingDetector::is_staging();
+        $forced     = (bool) $this->setting('force_staging');
+        $subdomain  = $this->is_enabled('subdomain_staging') && $this->check_subdomain_staging();
+        $active     = $detected || $forced || $subdomain;
+        $updated    = isset($_GET['updated']) && $_GET['updated'] === '1';
+        $token      = $this->ensure_bypass_token();
+        $bypass_url = add_query_arg(self::BYPASS_PARAM, $token, home_url('/'));
+        $exceptions = implode("\n", (array) $this->setting('subdomain_exceptions', []));
 
-        if (!function_exists('get_plugins')) {
-            require_once ABSPATH . 'wp-admin/includes/plugin.php';
-        }
-        $all_plugins      = get_plugins();
-        $disabled_plugins = (array) $this->setting('disabled_plugins');
+        $saved_disabled = $this->setting('disabled_plugins', null);
+        $checked_plugins = $saved_disabled !== null
+            ? (array) $saved_disabled
+            : $this->default_disabled_plugins();
 
         $pages = get_pages(['post_status' => 'publish', 'sort_column' => 'post_title']);
         $coming_soon_page_id = (int) $this->setting('coming_soon_page_id');
         ?>
         <div class="wrap">
-            <h1><?php echo esc_html__('Staging', 'valolink-plugin'); ?></h1>
+            <h1><?php esc_html_e('Staging', 'valolink-plugin'); ?></h1>
 
             <?php if ($updated) : ?>
                 <div class="notice notice-success is-dismissible"><p>
-                    <?php echo esc_html__('Staging settings saved.', 'valolink-plugin'); ?>
+                    <?php esc_html_e('Staging settings saved.', 'valolink-plugin'); ?>
                 </p></div>
             <?php endif; ?>
 
-            <!-- Status panel -->
-            <div class="card" style="padding: 12px 18px;max-width:none;display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
+            <div class="card" style="padding:12px 18px;max-width:none;display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
                 <div>
-                    <strong><?php echo esc_html__('Detected', 'valolink-plugin'); ?>:</strong>
+                    <strong><?php esc_html_e('Detected', 'valolink-plugin'); ?>:</strong>
                     <?php echo $detected
                         ? '<span style="color:#118a4c;">' . esc_html__('yes', 'valolink-plugin') . '</span>'
                         : '<span style="color:#646970;">' . esc_html__('no', 'valolink-plugin') . '</span>'; ?>
                 </div>
                 <div>
-                    <strong><?php echo esc_html__('Forced', 'valolink-plugin'); ?>:</strong>
+                    <strong><?php esc_html_e('Forced', 'valolink-plugin'); ?>:</strong>
                     <?php echo $forced
                         ? '<span style="color:#b32d2e;">' . esc_html__('yes', 'valolink-plugin') . '</span>'
                         : '<span style="color:#646970;">' . esc_html__('no', 'valolink-plugin') . '</span>'; ?>
                 </div>
                 <div>
-                    <strong><?php echo esc_html__('Active', 'valolink-plugin'); ?>:</strong>
+                    <strong><?php esc_html_e('Subdomain', 'valolink-plugin'); ?>:</strong>
+                    <?php echo $subdomain
+                        ? '<span style="color:#b32d2e;">' . esc_html__('yes', 'valolink-plugin') . '</span>'
+                        : '<span style="color:#646970;">' . esc_html__('no', 'valolink-plugin') . '</span>'; ?>
+                </div>
+                <div>
+                    <strong><?php esc_html_e('Active', 'valolink-plugin'); ?>:</strong>
                     <?php echo $active
                         ? '<span style="color:#b32d2e;font-weight:600;">' . esc_html__('STAGING', 'valolink-plugin') . '</span>'
                         : '<span style="color:#118a4c;font-weight:600;">' . esc_html__('PRODUCTION', 'valolink-plugin') . '</span>'; ?>
@@ -144,43 +181,43 @@ final class StagingModule implements Module
                 <input type="hidden" name="action" value="<?php echo esc_attr(self::SAVE_ACTION); ?>">
                 <?php wp_nonce_field(self::NONCE_ACTION); ?>
 
-                <h2><?php echo esc_html__('Mode', 'valolink-plugin'); ?></h2>
+                <h2><?php esc_html_e('Mode', 'valolink-plugin'); ?></h2>
                 <table class="form-table" role="presentation"><tbody>
                     <tr>
-                        <th scope="row"><?php echo esc_html__('Force staging mode', 'valolink-plugin'); ?></th>
+                        <th scope="row"><?php esc_html_e('Force staging mode', 'valolink-plugin'); ?></th>
                         <td>
                             <label>
                                 <input type="checkbox" name="force_staging" value="1" <?php checked($forced); ?>>
-                                <?php echo esc_html__('Treat this site as staging even if auto-detection says otherwise.', 'valolink-plugin'); ?>
+                                <?php esc_html_e('Treat this site as staging even if auto-detection says otherwise.', 'valolink-plugin'); ?>
                             </label>
                             <p class="description">
-                                <?php echo esc_html__('Useful for hiding a live site temporarily, or for sites we host on production domains.', 'valolink-plugin'); ?>
+                                <?php esc_html_e('Useful for hiding a live site temporarily, or for sites we host on production domains.', 'valolink-plugin'); ?>
                             </p>
                         </td>
                     </tr>
                 </tbody></table>
 
-                <h2><?php echo esc_html__('Visibility', 'valolink-plugin'); ?></h2>
+                <h2><?php esc_html_e('Visibility', 'valolink-plugin'); ?></h2>
                 <table class="form-table" role="presentation"><tbody>
                     <?php $this->checkbox_row('block_indexing',
                         __('Block search indexing', 'valolink-plugin'),
                         __('Adds noindex/nofollow robots meta and X-Robots-Tag header.', 'valolink-plugin')); ?>
                     <?php $this->checkbox_row('require_login',
                         __('Require login for frontend', 'valolink-plugin'),
-                        __('Non-logged-in visitors are redirected to wp-login.php. Also blocks unauthenticated REST API calls.', 'valolink-plugin')); ?>
+                        __('Non-logged-in visitors are redirected to wp-login.php. Also blocks unauthenticated REST API calls. Guests with a bypass cookie can still preview.', 'valolink-plugin')); ?>
                     <tr>
-                        <th scope="row"><?php echo esc_html__('"Coming soon" redirect', 'valolink-plugin'); ?></th>
+                        <th scope="row"><?php esc_html_e('"Coming soon" redirect', 'valolink-plugin'); ?></th>
                         <td>
                             <label>
                                 <input type="checkbox" name="coming_soon_enabled" value="1"
-                                       <?php checked($this->setting('coming_soon_enabled')); ?>>
-                                <?php echo esc_html__('Redirect frontend visitors to the page below (admin and login bypassed; logged-in admins can preview).', 'valolink-plugin'); ?>
+                                       <?php checked($this->is_enabled('coming_soon_enabled')); ?>>
+                                <?php esc_html_e('Redirect frontend visitors to the page below (admin and login bypassed; logged-in admins can preview).', 'valolink-plugin'); ?>
                             </label>
                             <br><br>
                             <label>
-                                <?php echo esc_html__('Page', 'valolink-plugin'); ?>:
+                                <?php esc_html_e('Page', 'valolink-plugin'); ?>:
                                 <select name="coming_soon_page_id">
-                                    <option value="0">— <?php echo esc_html__('Select a page', 'valolink-plugin'); ?> —</option>
+                                    <option value="0">— <?php esc_html_e('Select a page', 'valolink-plugin'); ?> —</option>
                                     <?php foreach ($pages as $page) : ?>
                                         <option value="<?php echo esc_attr((string) $page->ID); ?>"
                                                 <?php selected($coming_soon_page_id, $page->ID); ?>>
@@ -190,82 +227,114 @@ final class StagingModule implements Module
                                 </select>
                             </label>
                             <p class="description">
-                                <?php echo esc_html__('Build a normal WordPress page and select it here. If "Require login" is also on, login takes precedence.', 'valolink-plugin'); ?>
+                                <?php esc_html_e('If "Require login" is also on, login takes precedence.', 'valolink-plugin'); ?>
                             </p>
                         </td>
                     </tr>
                 </tbody></table>
 
-                <h2><?php echo esc_html__('Mail & payments', 'valolink-plugin'); ?></h2>
+                <h2><?php esc_html_e('Mail & payments', 'valolink-plugin'); ?></h2>
                 <table class="form-table" role="presentation"><tbody>
                     <?php $this->checkbox_row('intercept_mail',
                         __('Intercept outgoing mail', 'valolink-plugin'),
-                        __('All outgoing wp_mail() is redirected to the site admin with a [STAGING] prefix.', 'valolink-plugin')); ?>
+                        __('All outgoing wp_mail() is redirected to the site admin with a [STAGING] prefix; CC/BCC headers stripped.', 'valolink-plugin')); ?>
                     <?php $this->checkbox_row('disable_live_gateways',
                         __('Disable live WooCommerce payment gateways', 'valolink-plugin'),
                         __('Only safe offline gateways (BACS, Cheque, COD) remain active when WooCommerce is installed.', 'valolink-plugin')); ?>
                 </tbody></table>
 
-                <h2><?php echo esc_html__('Updates', 'valolink-plugin'); ?></h2>
+                <h2><?php esc_html_e('Detection', 'valolink-plugin'); ?></h2>
+                <table class="form-table" role="presentation"><tbody>
+                    <?php $this->checkbox_row('subdomain_staging',
+                        __('Treat own subdomains as staging', 'valolink-plugin'),
+                        __('Any non-www subdomain of the home URL is automatically treated as staging.', 'valolink-plugin')); ?>
+                    <tr>
+                        <th scope="row">
+                            <label for="valolink-subdomain-exceptions"><?php esc_html_e('Subdomain exceptions', 'valolink-plugin'); ?></label>
+                        </th>
+                        <td>
+                            <textarea
+                                id="valolink-subdomain-exceptions"
+                                name="subdomain_exceptions"
+                                rows="4"
+                                class="large-text code"
+                                style="max-width:400px;"
+                            ><?php echo esc_textarea($exceptions); ?></textarea>
+                            <p class="description"><?php esc_html_e('One hostname per line. These will not be treated as staging (e.g. shop.example.com).', 'valolink-plugin'); ?></p>
+                        </td>
+                    </tr>
+                </tbody></table>
+
+                <h2><?php esc_html_e('Updates', 'valolink-plugin'); ?></h2>
                 <table class="form-table" role="presentation"><tbody>
                     <?php $this->checkbox_row('block_auto_updates',
                         __('Block automatic updates', 'valolink-plugin'),
                         __('Prevents WordPress from auto-updating core, plugins, themes, and translations while staging is active.', 'valolink-plugin')); ?>
                 </tbody></table>
 
-                <h2><?php echo esc_html__('Plugins to disable', 'valolink-plugin'); ?></h2>
+                <h2><?php esc_html_e('Plugins to disable', 'valolink-plugin'); ?></h2>
                 <p class="description">
-                    <?php echo esc_html__('Selected plugins will not load while staging is active. Requires the mu-plugin loader (auto-installed).', 'valolink-plugin'); ?>
+                    <?php esc_html_e('Selected plugins will not load while staging is active. Implemented via mu-plugin so plugin activation state is preserved.', 'valolink-plugin'); ?>
                     <?php if (MuPluginInstaller::is_installed()) : ?>
-                        <span style="color:#118a4c;">✓ <?php echo esc_html__('mu-loader installed.', 'valolink-plugin'); ?></span>
+                        <span style="color:#118a4c;">✓ <?php esc_html_e('mu-loader installed.', 'valolink-plugin'); ?></span>
                     <?php else : ?>
-                        <span style="color:#b32d2e;">⚠ <?php echo esc_html__('mu-loader NOT installed. Plugin disabling will not take effect.', 'valolink-plugin'); ?></span>
+                        <span style="color:#b32d2e;">⚠ <?php esc_html_e('mu-loader NOT installed. Plugin disabling will not take effect.', 'valolink-plugin'); ?></span>
                     <?php endif; ?>
                 </p>
                 <table class="form-table" role="presentation"><tbody>
                     <tr>
-                        <th scope="row"><?php echo esc_html__('Enable plugin disabling', 'valolink-plugin'); ?></th>
+                        <th scope="row"><?php esc_html_e('Enable plugin disabling', 'valolink-plugin'); ?></th>
                         <td>
                             <label>
                                 <input type="checkbox" name="disable_plugins_enabled" value="1"
-                                       <?php checked($this->setting('disable_plugins_enabled')); ?>>
-                                <?php echo esc_html__('Disable the selected plugins when staging is active.', 'valolink-plugin'); ?>
+                                       <?php checked($this->is_enabled('disable_plugins_enabled')); ?>>
+                                <?php esc_html_e('Disable the selected plugins when staging is active.', 'valolink-plugin'); ?>
                             </label>
                         </td>
                     </tr>
                 </tbody></table>
 
-                <?php if (!empty($all_plugins)) : ?>
-                    <table class="widefat striped" style="max-width: 900px;">
-                        <thead>
-                            <tr>
-                                <th style="width:80px;"><?php echo esc_html__('Disable', 'valolink-plugin'); ?></th>
-                                <th><?php echo esc_html__('Plugin', 'valolink-plugin'); ?></th>
-                                <th style="width:120px;"><?php echo esc_html__('Version', 'valolink-plugin'); ?></th>
-                                <th><?php echo esc_html__('Path', 'valolink-plugin'); ?></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($all_plugins as $plugin_file => $plugin_data) :
-                                if (str_starts_with($plugin_file, 'valolink-plugin/')) continue; // never disable self
-                                ?>
-                                <tr>
-                                    <td>
-                                        <input type="checkbox"
-                                               name="disabled_plugins[]"
-                                               value="<?php echo esc_attr($plugin_file); ?>"
-                                               <?php checked(in_array($plugin_file, $disabled_plugins, true)); ?>>
-                                    </td>
-                                    <td><strong><?php echo esc_html($plugin_data['Name']); ?></strong></td>
-                                    <td><?php echo esc_html($plugin_data['Version'] ?? ''); ?></td>
-                                    <td><code><?php echo esc_html($plugin_file); ?></code></td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                <?php endif; ?>
+                <?php
+                PluginMultiCheckbox::render(
+                    'disabled_plugins[]',
+                    $checked_plugins,
+                    __('Suggested defaults are pre-checked based on what is installed. Only active plugins appear.', 'valolink-plugin'),
+                );
+                ?>
 
                 <?php submit_button(__('Save Staging Settings', 'valolink-plugin')); ?>
+            </form>
+
+            <h2><?php esc_html_e('Guest bypass link', 'valolink-plugin'); ?></h2>
+            <p class="description"><?php esc_html_e('Share this URL to let guests browse the staging site without logging in. The link sets a 24-hour cookie on first visit. Regenerating creates a new token and invalidates the old one.', 'valolink-plugin'); ?></p>
+
+            <div style="display:flex;gap:8px;align-items:center;margin-top:8px;max-width:640px;">
+                <input
+                    id="valolink-bypass-url"
+                    type="text"
+                    class="regular-text"
+                    value="<?php echo esc_attr($bypass_url); ?>"
+                    readonly
+                    style="flex:1;"
+                >
+                <button
+                    type="button"
+                    class="button"
+                    onclick="(function(btn){
+                        var input = document.getElementById('valolink-bypass-url');
+                        navigator.clipboard.writeText(input.value).then(function(){
+                            var orig = btn.textContent;
+                            btn.textContent = '<?php echo esc_js(__('Copied!', 'valolink-plugin')); ?>';
+                            setTimeout(function(){ btn.textContent = orig; }, 2000);
+                        });
+                    })(this)"
+                ><?php esc_html_e('Copy', 'valolink-plugin'); ?></button>
+            </div>
+
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:12px;">
+                <input type="hidden" name="action" value="<?php echo esc_attr(self::REGEN_TOKEN_ACTION); ?>">
+                <?php wp_nonce_field(self::REGEN_TOKEN_NONCE); ?>
+                <?php submit_button(__('Regenerate bypass token', 'valolink-plugin'), 'secondary', 'submit', false); ?>
             </form>
         </div>
         <?php
@@ -279,7 +348,7 @@ final class StagingModule implements Module
             <td>
                 <label>
                     <input type="checkbox" name="<?php echo esc_attr($key); ?>" value="1"
-                           <?php checked($this->setting($key)); ?>>
+                           <?php checked($this->is_enabled($key)); ?>>
                     <?php echo esc_html($description); ?>
                 </label>
             </td>
@@ -296,12 +365,11 @@ final class StagingModule implements Module
 
         $bool = static fn(string $name): bool => !empty($_POST[$name]);
 
-        $disabled = isset($_POST['disabled_plugins']) && is_array($_POST['disabled_plugins'])
-            ? array_values(array_filter(
-                array_map(static fn($v) => sanitize_text_field((string) $v), wp_unslash($_POST['disabled_plugins'])),
-                static fn(string $v) => $v !== '' && !str_starts_with($v, 'valolink-plugin/'),
-            ))
-            : [];
+        $raw_exceptions = sanitize_textarea_field(wp_unslash($_POST['subdomain_exceptions'] ?? ''));
+        $exceptions = array_values(array_filter(
+            array_map('trim', explode("\n", $raw_exceptions)),
+            static fn(string $s): bool => $s !== '',
+        ));
 
         $this->settings->set_module_settings(self::MODULE_ID, [
             'force_staging'           => $bool('force_staging'),
@@ -311,8 +379,10 @@ final class StagingModule implements Module
             'require_login'           => $bool('require_login'),
             'coming_soon_enabled'     => $bool('coming_soon_enabled'),
             'coming_soon_page_id'     => max(0, (int) ($_POST['coming_soon_page_id'] ?? 0)),
+            'subdomain_staging'       => $bool('subdomain_staging'),
+            'subdomain_exceptions'    => $exceptions,
             'disable_plugins_enabled' => $bool('disable_plugins_enabled'),
-            'disabled_plugins'        => $disabled,
+            'disabled_plugins'        => PluginMultiCheckbox::sanitize($_POST['disabled_plugins'] ?? null),
             'block_auto_updates'      => $bool('block_auto_updates'),
         ]);
 
@@ -320,6 +390,58 @@ final class StagingModule implements Module
             ['page' => self::SUBPAGE_SLUG, 'updated' => '1'],
             admin_url('admin.php'),
         ));
+        exit;
+    }
+
+    public function handle_regen_token(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(esc_html__('Insufficient permissions.', 'valolink-plugin'), '', ['response' => 403]);
+        }
+        check_admin_referer(self::REGEN_TOKEN_NONCE);
+
+        $this->settings->set_module_settings(self::MODULE_ID, ['bypass_token' => bin2hex(random_bytes(6))]);
+
+        wp_safe_redirect(add_query_arg(
+            ['page' => self::SUBPAGE_SLUG, 'updated' => '1'],
+            admin_url('admin.php'),
+        ));
+        exit;
+    }
+
+    // -------------------------------------------------------------------------
+    // Bypass cookie / param
+    // -------------------------------------------------------------------------
+
+    public function process_bypass_param(): void
+    {
+        if (!isset($_GET[self::BYPASS_PARAM])) {
+            return;
+        }
+
+        $token = (string) $this->setting('bypass_token', '');
+        if ($token === '') {
+            return;
+        }
+
+        $provided = sanitize_text_field(wp_unslash($_GET[self::BYPASS_PARAM]));
+        if (!hash_equals($token, $provided)) {
+            return;
+        }
+
+        setcookie(
+            self::BYPASS_COOKIE_NAME,
+            $token,
+            [
+                'expires'  => time() + self::BYPASS_COOKIE_TTL,
+                'path'     => '/',
+                'secure'   => is_ssl(),
+                'httponly' => true,
+                'samesite' => 'Lax',
+            ],
+        );
+
+        wp_safe_redirect(remove_query_arg(self::BYPASS_PARAM));
         exit;
     }
 
@@ -390,7 +512,7 @@ final class StagingModule implements Module
 
     public function enforce_require_login(): void
     {
-        if (is_user_logged_in() || self::is_bypassable_request()) {
+        if (is_user_logged_in() || self::is_bypassable_request() || $this->has_valid_bypass_cookie()) {
             return;
         }
 
@@ -416,20 +538,17 @@ final class StagingModule implements Module
 
     public function enforce_coming_soon(): void
     {
-        // Admins can preview the real site.
+        // Logged-in admins can preview the real site.
         if (is_user_logged_in() && current_user_can('manage_options')) {
             return;
         }
-        if (self::is_bypassable_request()) {
+        if (self::is_bypassable_request() || $this->has_valid_bypass_cookie()) {
             return;
         }
 
         $page_id = (int) $this->setting('coming_soon_page_id');
-        if ($page_id <= 0) {
+        if ($page_id <= 0 || is_page($page_id)) {
             return;
-        }
-        if (is_page($page_id)) {
-            return; // already on the coming-soon page
         }
 
         $page_url = get_permalink($page_id);
@@ -455,7 +574,7 @@ final class StagingModule implements Module
         if ($this->is_enabled('coming_soon_enabled'))   $active[] = __('coming-soon redirect', 'valolink-plugin');
         if ($this->is_enabled('block_auto_updates'))    $active[] = __('auto-updates blocked', 'valolink-plugin');
         if ($this->is_enabled('disable_plugins_enabled')) {
-            $count = count((array) $this->setting('disabled_plugins'));
+            $count = count((array) $this->setting('disabled_plugins', []));
             if ($count > 0) {
                 $active[] = sprintf(_n('%d plugin disabled', '%d plugins disabled', $count, 'valolink-plugin'), $count);
             }
@@ -480,7 +599,41 @@ final class StagingModule implements Module
     // Helpers
     // -------------------------------------------------------------------------
 
-    /** Used by both require_login and coming_soon redirects. */
+    private function is_effectively_staging(): bool
+    {
+        static $result = null;
+        if ($result !== null) {
+            return $result;
+        }
+
+        if ((bool) $this->setting('force_staging')) {
+            return $result = true;
+        }
+        if (StagingDetector::is_staging()) {
+            return $result = true;
+        }
+        if ($this->is_enabled('subdomain_staging') && $this->check_subdomain_staging()) {
+            return $result = true;
+        }
+
+        return $result = false;
+    }
+
+    private function check_subdomain_staging(): bool
+    {
+        $home      = (string) get_option('home', '');
+        $home_host = strtolower((string) (parse_url($home, PHP_URL_HOST) ?? ''));
+        $home_host = preg_replace('/:\d+$/', '', $home_host) ?? $home_host;
+
+        if (!StagingDetector::has_non_www_subdomain($home_host)) {
+            return false;
+        }
+
+        $exceptions = array_map('strtolower', (array) $this->setting('subdomain_exceptions', []));
+        return !in_array($home_host, $exceptions, true);
+    }
+
+    /** Admin / cron / CLI / REST / login screen always bypass redirect-based features. */
     private static function is_bypassable_request(): bool
     {
         if (is_admin()) return true;
@@ -498,12 +651,32 @@ final class StagingModule implements Module
         return false;
     }
 
-    private function is_staging_active(): bool
+    private function has_valid_bypass_cookie(): bool
     {
-        if ((bool) $this->setting('force_staging')) {
-            return true;
+        $token = (string) $this->setting('bypass_token', '');
+        if ($token === '') {
+            return false;
         }
-        return StagingDetector::is_staging();
+        $cookie = $_COOKIE[self::BYPASS_COOKIE_NAME] ?? '';
+        return is_string($cookie) && hash_equals($token, $cookie);
+    }
+
+    private function ensure_bypass_token(): string
+    {
+        $token = (string) $this->setting('bypass_token', '');
+        if ($token !== '') {
+            return $token;
+        }
+        $token = bin2hex(random_bytes(6));
+        $this->settings->set_module_settings(self::MODULE_ID, ['bypass_token' => $token]);
+        return $token;
+    }
+
+    /** Intersect the curated default list with actually-installed plugins. */
+    private function default_disabled_plugins(): array
+    {
+        $active = (array) get_option('active_plugins', []);
+        return array_values(array_intersect($active, self::SUGGESTED_DISABLED_PLUGINS));
     }
 
     private function is_enabled(string $key): bool
@@ -515,8 +688,7 @@ final class StagingModule implements Module
     {
         $value = $this->settings->get_module_setting(self::MODULE_ID, $key, null);
         if ($value === null) {
-            $defaults = self::defaults();
-            return $defaults[$key] ?? $default;
+            return self::defaults()[$key] ?? $default;
         }
         return $value;
     }
@@ -532,6 +704,8 @@ final class StagingModule implements Module
             'require_login'           => false,
             'coming_soon_enabled'     => false,
             'coming_soon_page_id'     => 0,
+            'subdomain_staging'       => true,
+            'subdomain_exceptions'    => [],
             'disable_plugins_enabled' => false,
             'disabled_plugins'        => [],
             'block_auto_updates'      => true,

@@ -4,177 +4,204 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\EngineLink;
 
+use Valolink\Plugin\Admin\SettingsPage;
 use Valolink\Plugin\Context;
 use Valolink\Plugin\Module;
 use Valolink\Plugin\Settings;
 
 final class EngineLinkModule implements Module
 {
-    public const MODULE_ID   = 'enginelink';
-    public const NAMESPACE   = 'enginelink/v1';
-    public const OPTION_KEY  = 'valolink_enginelink_key';
+    public const MODULE_ID        = 'enginelink';
+    public const SUBPAGE_SLUG     = 'valolink-enginelink';
+    public const REGEN_KEY_ACTION = 'valolink_regen_enginelink_key';
+    public const REGEN_KEY_NONCE  = 'valolink_regen_enginelink_key';
+    public const REST_NAMESPACE   = 'enginelink/v1';
 
     public function __construct(private readonly Settings $settings) {}
 
-    public function id(): string
+    public function should_load(Context $context): bool
     {
-        return self::MODULE_ID;
-    }
-
-    public function should_load(Context $ctx): bool
-    {
-        return $ctx->is_rest;
+        return $context->is_admin || $context->is_rest;
     }
 
     public function register(): void
     {
+        add_action('admin_menu', [$this, 'add_settings_page']);
+        add_action('admin_post_' . self::REGEN_KEY_ACTION, [$this, 'handle_regen_key']);
         add_action('rest_api_init', [$this, 'register_routes']);
-    }
-
-    public function register_routes(): void
-    {
-        $auth = new EnginelinkAuth($this->settings);
-
-        register_rest_route(self::NAMESPACE, '/ping', [
-            'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => fn() => new \WP_REST_Response(['ok' => true], 200),
-            'permission_callback' => [$auth, 'check'],
-        ]);
-
-        register_rest_route(self::NAMESPACE, '/status', [
-            'methods'             => \WP_REST_Server::READABLE,
-            'callback'            => [$this, 'status'],
-            'permission_callback' => [$auth, 'check'],
-        ]);
-    }
-
-    public function status(): \WP_REST_Response
-    {
-        global $wpdb;
-
-        $core_updates   = get_site_transient('update_core');
-        $plugin_updates = get_site_transient('update_plugins');
-        $theme_updates  = get_site_transient('update_themes');
-
-        $wp_update_available  = false;
-        $new_wp_version       = null;
-        if (isset($core_updates->updates) && is_array($core_updates->updates)) {
-            foreach ($core_updates->updates as $update) {
-                if ($update->response === 'upgrade') {
-                    $wp_update_available = true;
-                    $new_wp_version      = $update->version;
-                    break;
-                }
-            }
-        }
-
-        $plugin_updates_count = 0;
-        if (isset($plugin_updates->response) && is_array($plugin_updates->response)) {
-            $plugin_updates_count = count($plugin_updates->response);
-        }
-
-        $theme_updates_count = 0;
-        if (isset($theme_updates->response) && is_array($theme_updates->response)) {
-            $theme_updates_count = count($theme_updates->response);
-        }
-
-        // Plugins
-        if (!function_exists('get_plugins')) {
-            require_once ABSPATH . 'wp-admin/includes/plugin.php';
-        }
-        $all_plugins    = get_plugins();
-        $active_plugins = get_option('active_plugins', []);
-        $plugin_data    = [];
-        foreach ($all_plugins as $file => $info) {
-            $slug          = explode('/', $file)[0];
-            $update_info   = $plugin_updates->response[$file] ?? null;
-            $plugin_data[] = [
-                'name'             => $info['Name'],
-                'slug'             => $file,
-                'version'          => $info['Version'],
-                'active'           => in_array($file, $active_plugins, true),
-                'update_available' => $update_info !== null,
-                'new_version'      => $update_info->new_version ?? null,
-                'author'           => wp_strip_all_tags($info['Author']),
-            ];
-        }
-
-        // Active theme
-        $theme        = wp_get_theme();
-        $active_theme = [
-            'name'    => $theme->get('Name'),
-            'slug'    => $theme->get_stylesheet(),
-            'version' => $theme->get('Version'),
-            'author'  => wp_strip_all_tags($theme->get('Author')),
-        ];
-
-        // Users
-        $admin_count = count(get_users(['role' => 'administrator', 'fields' => 'ID']));
-        $total_count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->users}");
-
-        // Database size
-        $db_size_mb = null;
-        $db_name    = DB_NAME;
-        $rows       = $wpdb->get_results(
-            $wpdb->prepare(
-                "SELECT SUM(data_length + index_length) / 1024 / 1024 AS size_mb
-                 FROM information_schema.tables
-                 WHERE table_schema = %s",
-                $db_name,
-            ),
-        );
-        if (!empty($rows[0]->size_mb)) {
-            $db_size_mb = round((float) $rows[0]->size_mb, 2);
-        }
-
-        // Health
-        $health_https = is_ssl();
-        $scheduled_ok = !wp_next_scheduled('wp_version_check') === false; // true if cron is running
-        // Simpler check: verify wp-cron is not disabled
-        $scheduled_ok = !(defined('DISABLE_WP_CRON') && DISABLE_WP_CRON);
-
-        return new \WP_REST_Response([
-            'plugin_version' => VALOLINK_PLUGIN_VERSION,
-            'collected_at'   => gmdate('c'),
-            'wordpress'      => [
-                'version'    => get_bloginfo('version'),
-                'language'   => get_locale(),
-                'timezone'   => wp_timezone_string(),
-                'multisite'  => is_multisite(),
-                'debug_mode' => defined('WP_DEBUG') && WP_DEBUG,
-            ],
-            'php'     => [
-                'version'           => PHP_VERSION,
-                'memory_limit'      => ini_get('memory_limit') ?: null,
-                'max_execution_time' => (int) ini_get('max_execution_time'),
-            ],
-            'themes'  => [
-                'active' => $active_theme,
-            ],
-            'plugins' => $plugin_data,
-            'updates' => [
-                'wordpress_update_available' => $wp_update_available,
-                'new_wordpress_version'      => $new_wp_version,
-                'plugin_updates_count'       => $plugin_updates_count,
-                'theme_updates_count'        => $theme_updates_count,
-            ],
-            'users'    => [
-                'admin_count' => $admin_count,
-                'total_count' => $total_count,
-            ],
-            'database' => [
-                'size_mb' => $db_size_mb,
-            ],
-            'health'   => [
-                'https_ok'             => $health_https,
-                'scheduled_events_ok'  => $scheduled_ok,
-                'loopback_ok'          => null,
-            ],
-        ], 200);
     }
 
     public function uninstall(): void
     {
         $this->settings->forget_module(self::MODULE_ID);
+    }
+
+    // -------------------------------------------------------------------------
+    // Settings page
+    // -------------------------------------------------------------------------
+
+    public function add_settings_page(): void
+    {
+        add_submenu_page(
+            SettingsPage::MENU_SLUG,
+            __('EngineLink', 'valolink-plugin'),
+            __('EngineLink', 'valolink-plugin'),
+            'manage_options',
+            self::SUBPAGE_SLUG,
+            [$this, 'render_settings_page'],
+        );
+    }
+
+    public function render_settings_page(): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        $api_key = $this->ensure_api_key();
+        $updated = isset($_GET['updated']) && $_GET['updated'] === '1';
+        ?>
+        <div class="wrap">
+            <h1><?php esc_html_e('EngineLink', 'valolink-plugin'); ?></h1>
+
+            <?php if ($updated) : ?>
+                <div class="notice notice-success is-dismissible"><p>
+                    <?php esc_html_e('API key regenerated.', 'valolink-plugin'); ?>
+                </p></div>
+            <?php endif; ?>
+
+            <p><?php esc_html_e('EngineLink pulls site status data from this WordPress install on demand. Copy the API key below and paste it into the EngineLink site settings.', 'valolink-plugin'); ?></p>
+
+            <table class="form-table" role="presentation">
+                <tr>
+                    <th scope="row"><?php esc_html_e('Base URL', 'valolink-plugin'); ?></th>
+                    <td><code><?php echo esc_html(rest_url(self::REST_NAMESPACE)); ?></code></td>
+                </tr>
+                <tr>
+                    <th scope="row"><?php esc_html_e('API Key', 'valolink-plugin'); ?></th>
+                    <td>
+                        <div style="display:flex;gap:8px;align-items:center;max-width:520px;">
+                            <input
+                                id="valolink-enginelink-key"
+                                type="text"
+                                class="regular-text code"
+                                value="<?php echo esc_attr($api_key); ?>"
+                                readonly
+                                style="flex:1;"
+                            >
+                            <button
+                                type="button"
+                                class="button"
+                                onclick="(function(btn){
+                                    navigator.clipboard.writeText(document.getElementById('valolink-enginelink-key').value).then(function(){
+                                        var orig = btn.textContent;
+                                        btn.textContent = '<?php echo esc_js(__('Copied!', 'valolink-plugin')); ?>';
+                                        setTimeout(function(){ btn.textContent = orig; }, 2000);
+                                    });
+                                })(this)"
+                            ><?php esc_html_e('Copy', 'valolink-plugin'); ?></button>
+                        </div>
+                    </td>
+                </tr>
+            </table>
+
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:16px;">
+                <input type="hidden" name="action" value="<?php echo esc_attr(self::REGEN_KEY_ACTION); ?>">
+                <?php wp_nonce_field(self::REGEN_KEY_NONCE); ?>
+                <?php submit_button(__('Regenerate API key', 'valolink-plugin'), 'secondary', 'submit', false); ?>
+                <p class="description" style="margin-top:8px;"><?php esc_html_e('Regenerating invalidates the current key immediately. Update EngineLink before regenerating.', 'valolink-plugin'); ?></p>
+            </form>
+        </div>
+        <?php
+    }
+
+    public function handle_regen_key(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(esc_html__('Insufficient permissions.', 'valolink-plugin'), '', ['response' => 403]);
+        }
+
+        check_admin_referer(self::REGEN_KEY_NONCE);
+
+        $this->settings->set_module_settings(self::MODULE_ID, ['api_key' => bin2hex(random_bytes(24))]);
+
+        wp_safe_redirect(add_query_arg(
+            ['page' => self::SUBPAGE_SLUG, 'updated' => '1'],
+            admin_url('admin.php'),
+        ));
+        exit;
+    }
+
+    // -------------------------------------------------------------------------
+    // REST API
+    // -------------------------------------------------------------------------
+
+    public function register_routes(): void
+    {
+        register_rest_route(self::REST_NAMESPACE, '/ping', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_ping'],
+            'permission_callback' => [$this, 'check_auth'],
+        ]);
+
+        register_rest_route(self::REST_NAMESPACE, '/status', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_status'],
+            'permission_callback' => [$this, 'check_auth'],
+        ]);
+    }
+
+    public function check_auth(\WP_REST_Request $request): bool|\WP_Error
+    {
+        $api_key = (string) $this->setting('api_key', '');
+        if ($api_key === '') {
+            return new \WP_Error('no_key', 'API key not configured.', ['status' => 401]);
+        }
+
+        $auth = (string) $request->get_header('Authorization');
+        if (!str_starts_with($auth, 'Bearer ')) {
+            return new \WP_Error('no_bearer', 'Bearer token required.', ['status' => 401]);
+        }
+
+        if (!hash_equals($api_key, substr($auth, 7))) {
+            return new \WP_Error('invalid_key', 'Invalid API key.', ['status' => 401]);
+        }
+
+        return true;
+    }
+
+    public function handle_ping(): \WP_REST_Response
+    {
+        return new \WP_REST_Response([
+            'ok'             => true,
+            'plugin_version' => VALOLINK_PLUGIN_VERSION,
+        ]);
+    }
+
+    public function handle_status(): \WP_REST_Response
+    {
+        return new \WP_REST_Response((new StatusCollector())->collect());
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private function ensure_api_key(): string
+    {
+        $key = $this->setting('api_key', '');
+        if (is_string($key) && $key !== '') {
+            return $key;
+        }
+
+        $key = bin2hex(random_bytes(24));
+        $this->settings->set_module_settings(self::MODULE_ID, ['api_key' => $key]);
+
+        return $key;
+    }
+
+    private function setting(string $key, mixed $default = null): mixed
+    {
+        return $this->settings->get_module_setting(self::MODULE_ID, $key, $default);
     }
 }

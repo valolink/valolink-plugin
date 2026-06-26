@@ -26,6 +26,9 @@ define('VALOLINK_PLUGIN_BASENAME', plugin_basename(__FILE__));
 define('VALOLINK_MIN_PHP', '8.2');
 define('VALOLINK_MIN_WP', '6.5');
 
+// GitHub repo for wp-admin updates, as 'owner/repo'. Set to 'OWNER/REPO' to disable the updater.
+define('VALOLINK_PLUGIN_GITHUB_REPO', 'valolink/valolink-plugin');
+
 require_once VALOLINK_PLUGIN_DIR . 'src/Autoloader.php';
 \Valolink\Plugin\Autoloader::register();
 
