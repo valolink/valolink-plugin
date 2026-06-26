@@ -49,6 +49,7 @@
             pkgs.nodejs   # occasionally useful for build tooling
             pkgs.watchexec
             pkgs.rsync
+            pkgs.zip      # used by build.sh to produce the release zip
           ];
 
           shellHook = ''

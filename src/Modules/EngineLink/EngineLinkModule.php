@@ -138,36 +138,19 @@ final class EngineLinkModule implements Module
 
     public function register_routes(): void
     {
+        $auth = new EnginelinkAuth($this->settings);
+
         register_rest_route(self::REST_NAMESPACE, '/ping', [
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => [$this, 'handle_ping'],
-            'permission_callback' => [$this, 'check_auth'],
+            'permission_callback' => [$auth, 'check'],
         ]);
 
         register_rest_route(self::REST_NAMESPACE, '/status', [
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => [$this, 'handle_status'],
-            'permission_callback' => [$this, 'check_auth'],
+            'permission_callback' => [$auth, 'check'],
         ]);
-    }
-
-    public function check_auth(\WP_REST_Request $request): bool|\WP_Error
-    {
-        $api_key = (string) $this->setting('api_key', '');
-        if ($api_key === '') {
-            return new \WP_Error('no_key', 'API key not configured.', ['status' => 401]);
-        }
-
-        $auth = (string) $request->get_header('Authorization');
-        if (!str_starts_with($auth, 'Bearer ')) {
-            return new \WP_Error('no_bearer', 'Bearer token required.', ['status' => 401]);
-        }
-
-        if (!hash_equals($api_key, substr($auth, 7))) {
-            return new \WP_Error('invalid_key', 'Invalid API key.', ['status' => 401]);
-        }
-
-        return true;
     }
 
     public function handle_ping(): \WP_REST_Response

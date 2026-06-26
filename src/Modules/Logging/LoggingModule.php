@@ -14,7 +14,7 @@ final class LoggingModule implements Module
 {
     public const MODULE_ID   = 'logging';
     public const ROTATE_HOOK = 'valolink_log_rotate';
-    public const REST_NS     = EngineLinkModule::NAMESPACE;
+    public const REST_NS     = EngineLinkModule::REST_NAMESPACE;
 
     private const DEFAULT_RETENTION_DAYS = 90;
     private const ROTATE_BATCH           = 1000;
