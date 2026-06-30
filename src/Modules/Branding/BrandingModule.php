@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\Branding;
 
+use Valolink\Plugin\Admin\PluginDetector;
 use Valolink\Plugin\Admin\SettingsPage;
 use Valolink\Plugin\Context;
 use Valolink\Plugin\Module;
@@ -17,6 +18,15 @@ final class BrandingModule implements Module
     public const SAVE_ACTION = 'valolink_save_branding';
 
     private const LOGO_RELATIVE_PATH = 'src/Modules/Branding/valolink-logo.png';
+
+    /** Login-screen customizers that would fight for the same login_* hooks. */
+    private const COMPETING_LOGIN_PLUGINS = [
+        'loginpress/loginpress.php',
+        'white-label-cms/wlcms-plugin.php',
+        'login-customizer/login-customizer.php',
+        'custom-login-page-customizer/login-customizer.php',
+        'admin-customizer/admin-customizer.php',
+    ];
 
     private Settings $settings;
 
@@ -81,6 +91,11 @@ final class BrandingModule implements Module
                     <?php echo esc_html__('Branding settings saved.', 'valolink-plugin'); ?>
                 </p></div>
             <?php endif; ?>
+
+            <?php PluginDetector::render_conflict_notice(
+                PluginDetector::find_active_in(self::COMPETING_LOGIN_PLUGINS),
+                __('Another login-screen customizer is active:', 'valolink-plugin'),
+            ); ?>
 
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="<?php echo esc_attr(self::SAVE_ACTION); ?>">

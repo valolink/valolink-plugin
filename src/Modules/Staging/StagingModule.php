@@ -150,6 +150,8 @@ final class StagingModule implements Module
                 </p></div>
             <?php endif; ?>
 
+            <?php $this->render_misconfig_warnings($detected, $subdomain); ?>
+
             <div class="card" style="padding:12px 18px;max-width:none;display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
                 <div>
                     <strong><?php esc_html_e('Detected', 'valolink-plugin'); ?>:</strong>
@@ -598,6 +600,29 @@ final class StagingModule implements Module
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    private function render_misconfig_warnings(bool $detected, bool $subdomain): void
+    {
+        $warnings = [];
+
+        if ($this->is_enabled('disable_live_gateways') && !class_exists('WooCommerce')) {
+            $warnings[] = __('Disable live WooCommerce gateways is on, but WooCommerce is not active here. Nothing to filter.', 'valolink-plugin');
+        }
+        if ($this->is_enabled('coming_soon_enabled') && (int) $this->setting('coming_soon_page_id') <= 0) {
+            $warnings[] = __('Coming-soon redirect is on, but no destination page is selected — visitors will not be redirected anywhere.', 'valolink-plugin');
+        }
+        if ((bool) $this->setting('force_staging') && !$detected && !$subdomain) {
+            $warnings[] = __('Staging is forced on a host that does not look like staging. Confirm you mean to apply staging behavior here.', 'valolink-plugin');
+        }
+
+        foreach ($warnings as $msg) {
+            ?>
+            <div class="notice notice-warning inline" style="margin:12px 0;">
+                <p><?php echo esc_html($msg); ?></p>
+            </div>
+            <?php
+        }
+    }
 
     private function is_effectively_staging(): bool
     {

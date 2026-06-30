@@ -115,8 +115,10 @@ final class ScriptsModule implements Module
         if (!is_array($raw)) {
             $raw = [];
         }
-        $include = (array) ($raw['include_urls'] ?? []);
-        $exclude = (array) ($raw['exclude_urls'] ?? []);
+        $include   = (array) ($raw['include_urls'] ?? []);
+        $exclude   = (array) ($raw['exclude_urls'] ?? []);
+        $placement = $this->normalise_placement($raw['placement'] ?? []);
+
         return [
             'id'              => (string) ($raw['id'] ?? wp_generate_uuid4()),
             'name'            => (string) ($raw['name'] ?? ''),
@@ -129,17 +131,153 @@ final class ScriptsModule implements Module
             'strategy'        => in_array($raw['strategy'] ?? '', self::strategies(), true)
                 ? $raw['strategy']
                 : self::STRATEGY_FOOTER,
-            'placement'       => [
-                'frontend'        => !empty($raw['placement']['frontend']) || !isset($raw['placement']),
-                'admin'           => !empty($raw['placement']['admin']),
-                'logged_in_only'  => !empty($raw['placement']['logged_in_only']),
-                'logged_out_only' => !empty($raw['placement']['logged_out_only']),
-            ],
+            'placement'       => $placement,
             'include_urls'    => array_values(array_filter(array_map([$this, 'normalise_pattern'], $include), static fn($v) => $v !== '')),
             'exclude_urls'    => array_values(array_filter(array_map([$this, 'normalise_pattern'], $exclude), static fn($v) => $v !== '')),
             'consent_enabled' => !empty($raw['consent_enabled']),
             'consent_event'   => (string) ($raw['consent_event'] ?? ''),
+            'attributes'      => $this->normalise_attributes($raw['attributes'] ?? []),
         ];
+    }
+
+    /**
+     * Normalise placement, migrating legacy `logged_in_only` / `logged_out_only` booleans
+     * to the new `guests` + `roles` model. Migration only kicks in when the new fields
+     * are absent — once a snippet is saved again, the legacy keys drop off.
+     *
+     * @param  mixed $raw
+     * @return array{frontend:bool, admin:bool, guests:bool, roles:array<int,string>}
+     */
+    private function normalise_placement(mixed $raw): array
+    {
+        if (!is_array($raw)) {
+            $raw = [];
+        }
+
+        $frontend = !empty($raw['frontend']) || !array_key_exists('frontend', $raw);
+        $admin    = !empty($raw['admin']);
+
+        $has_new = array_key_exists('guests', $raw) || array_key_exists('roles', $raw);
+        if (!$has_new) {
+            // Legacy migration.
+            if (!empty($raw['logged_in_only'])) {
+                return ['frontend' => $frontend, 'admin' => $admin, 'guests' => false, 'roles' => self::all_role_slugs()];
+            }
+            if (!empty($raw['logged_out_only'])) {
+                return ['frontend' => $frontend, 'admin' => $admin, 'guests' => true,  'roles' => []];
+            }
+            return ['frontend' => $frontend, 'admin' => $admin, 'guests' => true, 'roles' => self::all_role_slugs()];
+        }
+
+        $guests = !empty($raw['guests']);
+        $roles  = array_values(array_unique(array_filter(
+            array_map('sanitize_key', (array) ($raw['roles'] ?? [])),
+            static fn($r) => $r !== '',
+        )));
+
+        return ['frontend' => $frontend, 'admin' => $admin, 'guests' => $guests, 'roles' => $roles];
+    }
+
+    /** @return array<int, string> */
+    private static function all_role_slugs(): array
+    {
+        if (!function_exists('wp_roles')) {
+            return [];
+        }
+        return array_keys(wp_roles()->roles ?? []);
+    }
+
+    /** @return array<string, string>  slug => display name */
+    private static function all_roles_with_labels(): array
+    {
+        if (!function_exists('wp_roles')) {
+            return [];
+        }
+        $out = [];
+        foreach (wp_roles()->roles as $slug => $data) {
+            $out[$slug] = translate_user_role((string) ($data['name'] ?? $slug));
+        }
+        return $out;
+    }
+
+    /**
+     * Accept either a stored assoc array or a `key=value` per-line string from the form.
+     * Silently drops lines without an `=` or with attribute names that aren't valid identifiers.
+     * Wrapping quotes around values are stripped.
+     *
+     * @param  mixed $raw
+     * @return array<string, string>
+     */
+    private function normalise_attributes(mixed $raw): array
+    {
+        $valid_key = '/^[A-Za-z_:][A-Za-z0-9_.:-]*$/';
+
+        if (is_string($raw)) {
+            $out   = [];
+            $lines = preg_split('/\r\n|\r|\n/', $raw) ?: [];
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if ($line === '' || str_starts_with($line, '#')) continue;
+                $eq = strpos($line, '=');
+                if ($eq === false) continue;
+                $k = trim(substr($line, 0, $eq));
+                $v = trim(substr($line, $eq + 1));
+                if (strlen($v) >= 2 && ($v[0] === '"' || $v[0] === "'") && $v[strlen($v) - 1] === $v[0]) {
+                    $v = substr($v, 1, -1);
+                }
+                if (!preg_match($valid_key, $k)) continue;
+                $out[$k] = $v;
+            }
+            return $out;
+        }
+        if (is_array($raw)) {
+            $out = [];
+            foreach ($raw as $k => $v) {
+                if (!is_string($k) || !preg_match($valid_key, $k)) continue;
+                $out[$k] = is_scalar($v) ? (string) $v : '';
+            }
+            return $out;
+        }
+        return [];
+    }
+
+    /**
+     * Returns human-readable warnings for attributes that "look bad" — non-blocking,
+     * just surfaced on the edit form and list so internal users see suspect pastes.
+     *
+     * @param  array<string, string> $attrs
+     * @return array<int, string>
+     */
+    private function attribute_warnings(array $attrs): array
+    {
+        $warnings = [];
+        foreach ($attrs as $k => $_v) {
+            $lk = strtolower($k);
+            if (str_starts_with($lk, 'on')) {
+                $warnings[] = sprintf(
+                    __('"%s" looks like a JavaScript event handler — usually a sign of a pasted-in script tag with executable code in an attribute. Remove if not intentional.', 'valolink-plugin'),
+                    $k,
+                );
+                continue;
+            }
+            if ($lk === 'src' || $lk === 'href') {
+                $warnings[] = sprintf(
+                    __('"%s" duplicates the Script URL field above. Set the URL there; keep the Attributes field for everything else.', 'valolink-plugin'),
+                    $k,
+                );
+            }
+        }
+        return $warnings;
+    }
+
+    /** @param array<string, string> $attrs */
+    private static function attributes_to_text(array $attrs): string
+    {
+        $lines = [];
+        foreach ($attrs as $k => $v) {
+            $lines[] = $k . '=' . $v;
+        }
+        return implode("\n", $lines);
     }
 
     private function normalise_pattern(mixed $pattern): string
@@ -245,8 +383,13 @@ final class ScriptsModule implements Module
         if ($is_admin && empty($p['admin']))      return false;
         if (!$is_admin && empty($p['frontend'])) return false;
 
-        if (!empty($p['logged_in_only'])  && !is_user_logged_in()) return false;
-        if (!empty($p['logged_out_only']) &&  is_user_logged_in()) return false;
+        if (is_user_logged_in()) {
+            $user_roles = (array) (wp_get_current_user()->roles ?? []);
+            $allowed    = (array) ($p['roles'] ?? []);
+            if (empty(array_intersect($user_roles, $allowed))) return false;
+        } else {
+            if (empty($p['guests'])) return false;
+        }
 
         // URL include/exclude
         $include = $snippet['include_urls'] ?? [];
@@ -277,16 +420,31 @@ final class ScriptsModule implements Module
             if ($url === '') {
                 return '';
             }
+
+            $attrs = (array) ($snippet['attributes'] ?? []);
+
             if ($needs_loader) {
-                $url_js    = wp_json_encode($url);
-                $action_js = 'var s=document.createElement("script");s.src=' . $url_js . ';s.async=true;document.head.appendChild(s);';
+                $url_js   = wp_json_encode($url);
+                $pairs    = [];
+                foreach ($attrs as $k => $v) {
+                    $pairs[] = [$k, $v];
+                }
+                $attrs_js = wp_json_encode($pairs) ?: '[]';
+                $action_js = 'var s=document.createElement("script");s.src=' . $url_js . ';s.async=true;'
+                    . $attrs_js . '.forEach(function(p){s.setAttribute(p[0],p[1])});'
+                    . 'document.head.appendChild(s);';
                 return $this->loader_unified($action_js, $events, $consent_event);
+            }
+
+            $attr_str = '';
+            foreach ($attrs as $k => $v) {
+                $attr_str .= ' ' . $k . '="' . esc_attr($v) . '"';
             }
             switch ($strategy) {
                 case self::STRATEGY_HEAD:
-                case self::STRATEGY_FOOTER:    return '<script src="' . $url . '"></script>';
-                case self::STRATEGY_HEAD_ASYNC: return '<script async src="' . $url . '"></script>';
-                case self::STRATEGY_HEAD_DEFER: return '<script defer src="' . $url . '"></script>';
+                case self::STRATEGY_FOOTER:    return '<script' . $attr_str . ' src="' . $url . '"></script>';
+                case self::STRATEGY_HEAD_ASYNC: return '<script async' . $attr_str . ' src="' . $url . '"></script>';
+                case self::STRATEGY_HEAD_DEFER: return '<script defer' . $attr_str . ' src="' . $url . '"></script>';
             }
             return '';
         }
@@ -409,6 +567,31 @@ final class ScriptsModule implements Module
                 <div class="notice notice-success is-dismissible"><p><?php esc_html_e('Script deleted.', 'valolink-plugin'); ?></p></div>
             <?php endif; ?>
 
+            <?php
+            $flagged = [];
+            foreach ($snippets as $s) {
+                $warnings = $this->attribute_warnings((array) ($s['attributes'] ?? []));
+                if (!empty($warnings)) {
+                    $flagged[] = ['name' => $s['name'] ?: '(untitled)', 'id' => $s['id'], 'warnings' => $warnings];
+                }
+            }
+            if (!empty($flagged)) :
+            ?>
+                <div class="notice notice-warning" style="margin-top:12px;">
+                    <p><strong><?php esc_html_e('Attribute warnings', 'valolink-plugin'); ?></strong></p>
+                    <ul style="margin:0 0 8px 24px;list-style:disc;">
+                        <?php foreach ($flagged as $f) :
+                            $edit_url = esc_url(add_query_arg(['page' => self::SUBPAGE_SLUG, 'action' => 'edit', 'id' => $f['id']], admin_url('admin.php')));
+                            ?>
+                            <li>
+                                <a href="<?php echo $edit_url; ?>"><strong><?php echo esc_html($f['name']); ?></strong></a>:
+                                <?php echo esc_html(implode(' ', $f['warnings'])); ?>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                </div>
+            <?php endif; ?>
+
             <p class="description" style="margin-top: 12px;">
                 <?php esc_html_e('Inline JavaScript snippets and external script URLs, with control over when they load. Frontend/admin and logged-in/logged-out filters per snippet.', 'valolink-plugin'); ?>
             </p>
@@ -442,8 +625,24 @@ final class ScriptsModule implements Module
                         $targets = [];
                         if (!empty($s['placement']['frontend'])) $targets[] = __('frontend', 'valolink-plugin');
                         if (!empty($s['placement']['admin']))    $targets[] = __('admin',    'valolink-plugin');
-                        if (!empty($s['placement']['logged_in_only']))  $targets[] = __('logged-in only',  'valolink-plugin');
-                        if (!empty($s['placement']['logged_out_only'])) $targets[] = __('logged-out only', 'valolink-plugin');
+
+                        $guests   = !empty($s['placement']['guests']);
+                        $roles    = (array) ($s['placement']['roles'] ?? []);
+                        $all_role_slugs = self::all_role_slugs();
+                        $all_roles_checked = !empty($all_role_slugs) && empty(array_diff($all_role_slugs, $roles));
+                        $role_count = count($roles);
+                        if (!$guests && $role_count === 0) {
+                            $targets[] = __('audience: nobody', 'valolink-plugin');
+                        } elseif ($guests && $all_roles_checked) {
+                            // everyone — no label
+                        } elseif ($guests && $role_count === 0) {
+                            $targets[] = __('guests only', 'valolink-plugin');
+                        } elseif (!$guests) {
+                            $targets[] = sprintf(_n('%d role only', '%d roles only', $role_count, 'valolink-plugin'), $role_count);
+                        } else {
+                            $targets[] = sprintf(_n('guests + %d role', 'guests + %d roles', $role_count, 'valolink-plugin'), $role_count);
+                        }
+
                         if (!empty($s['include_urls'])) $targets[] = sprintf(_n('%d URL filter', '%d URL filters', count($s['include_urls']) + count($s['exclude_urls']), 'valolink-plugin'), count($s['include_urls']) + count($s['exclude_urls']));
                         elseif (!empty($s['exclude_urls'])) $targets[] = sprintf(_n('%d URL filter', '%d URL filters', count($s['exclude_urls']), 'valolink-plugin'), count($s['exclude_urls']));
                         if (!empty($s['consent_enabled']) && !empty($s['consent_event'])) {
@@ -554,6 +753,24 @@ final class ScriptsModule implements Module
                         </td>
                     </tr>
                     <tr>
+                        <th scope="row"><label for="vl-attrs"><?php esc_html_e('Attributes', 'valolink-plugin'); ?></label></th>
+                        <td>
+                            <?php $attrs = (array) ($snippet['attributes'] ?? []); ?>
+                            <textarea id="vl-attrs" name="attributes" rows="4" class="large-text code" spellcheck="false"
+                                      placeholder="data-website-id=347cff1f-...&#10;data-domains=example.com"><?php
+                                echo esc_textarea(self::attributes_to_text($attrs));
+                            ?></textarea>
+                            <p class="description">
+                                <?php esc_html_e('External-script only. One key=value per line. Quote-wrapping is optional and stripped. Applies to both direct emit and the on-interaction / on-scroll loader.', 'valolink-plugin'); ?>
+                            </p>
+                            <?php foreach ($this->attribute_warnings($attrs) as $warning) : ?>
+                                <div class="notice notice-warning inline" style="margin:8px 0;">
+                                    <p><?php echo esc_html($warning); ?></p>
+                                </div>
+                            <?php endforeach; ?>
+                        </td>
+                    </tr>
+                    <tr>
                         <th scope="row"><label for="vl-code"><?php esc_html_e('Inline code', 'valolink-plugin'); ?></label></th>
                         <td>
                             <textarea id="vl-code" name="code" rows="14" class="large-text code"
@@ -597,18 +814,37 @@ final class ScriptsModule implements Module
                                     <?php esc_html_e('Admin pages', 'valolink-plugin'); ?>
                                 </label>
                             </fieldset>
-                            <br>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><?php esc_html_e('Audience', 'valolink-plugin'); ?></th>
+                        <td>
                             <fieldset>
                                 <label>
-                                    <input type="checkbox" name="placement_logged_in_only" value="1"
-                                           <?php checked($snippet['placement']['logged_in_only']); ?>>
-                                    <?php esc_html_e('Only for logged-in users', 'valolink-plugin'); ?>
-                                </label><br>
-                                <label>
-                                    <input type="checkbox" name="placement_logged_out_only" value="1"
-                                           <?php checked($snippet['placement']['logged_out_only']); ?>>
-                                    <?php esc_html_e('Only for logged-out visitors', 'valolink-plugin'); ?>
+                                    <input type="checkbox" name="placement_guests" value="1"
+                                           <?php checked(!empty($snippet['placement']['guests'])); ?>>
+                                    <?php esc_html_e('Guests (logged-out visitors)', 'valolink-plugin'); ?>
                                 </label>
+                            </fieldset>
+                            <br>
+                            <fieldset>
+                                <legend style="font-weight:600;margin-bottom:4px;">
+                                    <?php esc_html_e('Logged-in user roles', 'valolink-plugin'); ?>
+                                </legend>
+                                <?php
+                                $checked_roles = (array) ($snippet['placement']['roles'] ?? []);
+                                foreach (self::all_roles_with_labels() as $slug => $label) :
+                                    ?>
+                                    <label style="display:inline-block;margin-right:14px;">
+                                        <input type="checkbox" name="placement_roles[]"
+                                               value="<?php echo esc_attr($slug); ?>"
+                                               <?php checked(in_array($slug, $checked_roles, true)); ?>>
+                                        <?php echo esc_html($label); ?>
+                                    </label>
+                                <?php endforeach; ?>
+                                <p class="description">
+                                    <?php esc_html_e('Roles are an explicit list — if a new role appears later (custom or from a plugin), the snippet will not fire for it until you edit it back here.', 'valolink-plugin'); ?>
+                                </p>
                             </fieldset>
                         </td>
                     </tr>
@@ -706,15 +942,18 @@ final class ScriptsModule implements Module
             'code'            => $code,
             'strategy'        => $strategy,
             'placement'       => [
-                'frontend'        => !empty($_POST['placement_frontend']),
-                'admin'           => !empty($_POST['placement_admin']),
-                'logged_in_only'  => !empty($_POST['placement_logged_in_only']),
-                'logged_out_only' => !empty($_POST['placement_logged_out_only']),
+                'frontend' => !empty($_POST['placement_frontend']),
+                'admin'    => !empty($_POST['placement_admin']),
+                'guests'   => !empty($_POST['placement_guests']),
+                'roles'    => isset($_POST['placement_roles']) && is_array($_POST['placement_roles'])
+                    ? array_map('sanitize_key', wp_unslash($_POST['placement_roles']))
+                    : [],
             ],
             'include_urls'    => $split_lines($_POST['include_urls'] ?? ''),
             'exclude_urls'    => $split_lines($_POST['exclude_urls'] ?? ''),
             'consent_enabled' => !empty($_POST['consent_enabled']),
             'consent_event'   => sanitize_text_field((string) ($_POST['consent_event'] ?? '')),
+            'attributes'      => isset($_POST['attributes']) ? (string) wp_unslash($_POST['attributes']) : '',
         ]);
 
         $snippets = $this->get_snippets();

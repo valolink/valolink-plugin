@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\Toolbox;
 
+use Valolink\Plugin\Admin\PluginDetector;
 use Valolink\Plugin\Admin\SettingsPage;
 use Valolink\Plugin\Context;
 use Valolink\Plugin\Module;
@@ -45,6 +46,18 @@ final class ToolboxModule implements Module
     private const DEFAULT_REVISIONS_LIMIT = 10;
     private const ADMIN_BAR_COOKIE       = 'valolink_hide_bar';
     private const ADMIN_BAR_PARAM        = 'valolink_hide_bar';
+
+    /** Per-feature plugin conflicts surfaced on the settings page. */
+    private const COMPETING_SVG_PLUGINS = [
+        'safe-svg/safe-svg.php',
+        'svg-support/svg-support.php',
+    ];
+    private const COMPETING_COMMENTS_PLUGINS = [
+        'disable-comments/disable-comments.php',
+    ];
+    private const COMPETING_EMOJI_PLUGINS = [
+        'disable-emojis/disable-emojis.php',
+    ];
 
     public function __construct(private readonly Settings $settings) {}
 
@@ -144,6 +157,8 @@ final class ToolboxModule implements Module
                     <?php esc_html_e('Toolbox settings saved.', 'valolink-plugin'); ?>
                 </p></div>
             <?php endif; ?>
+
+            <?php $this->render_conflict_notices(); ?>
 
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="<?php echo esc_attr(self::SAVE_ACTION); ?>">
@@ -609,6 +624,28 @@ final class ToolboxModule implements Module
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    private function render_conflict_notices(): void
+    {
+        if ($this->is_enabled('allow_svg_uploads')) {
+            PluginDetector::render_conflict_notice(
+                PluginDetector::find_active_in(self::COMPETING_SVG_PLUGINS),
+                __('SVG uploads: another SVG plugin is active:', 'valolink-plugin'),
+            );
+        }
+        if ($this->is_enabled('disable_comments')) {
+            PluginDetector::render_conflict_notice(
+                PluginDetector::find_active_in(self::COMPETING_COMMENTS_PLUGINS),
+                __('Disable comments: another comment-disabling plugin is active:', 'valolink-plugin'),
+            );
+        }
+        if ($this->is_enabled('disable_emojis')) {
+            PluginDetector::render_conflict_notice(
+                PluginDetector::find_active_in(self::COMPETING_EMOJI_PLUGINS),
+                __('Disable emojis: another emoji-disabling plugin is active:', 'valolink-plugin'),
+            );
+        }
+    }
 
     private function checkbox_row(string $key, string $label, string $description): void
     {

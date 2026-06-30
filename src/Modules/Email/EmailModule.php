@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\Email;
 
+use Valolink\Plugin\Admin\PluginDetector;
 use Valolink\Plugin\Admin\SettingsPage;
 use Valolink\Plugin\Context;
 use Valolink\Plugin\Module;
@@ -24,6 +25,19 @@ final class EmailModule implements Module
     public const TEST_ACTION   = 'valolink_test_email';
 
     private const API_URL = 'https://api.resend.com/emails';
+
+    /** SMTP / mail-routing plugins that would compete for wp_mail. */
+    private const COMPETING_MAIL_PLUGINS = [
+        'wp-mail-smtp/wp_mail_smtp.php',
+        'easy-wp-smtp/easy-wp-smtp.php',
+        'fluent-smtp/fluent-smtp.php',
+        'post-smtp/postman-smtp.php',
+        'gmail-smtp/main.php',
+        'mailgun/mailgun.php',
+        'sendgrid-email-delivery-simplified/wpsendgrid.php',
+        'wp-offload-ses/wp-offload-ses.php',
+        'smtp-mailer/main.php',
+    ];
 
     /** Guard so the failure-alert send doesn't re-enter our filter. */
     private static bool $is_sending_alert = false;
@@ -341,6 +355,11 @@ final class EmailModule implements Module
                     <?php esc_html_e('Active — all wp_mail() calls are routed through Resend.', 'valolink-plugin'); ?>
                 </p></div>
             <?php endif; ?>
+
+            <?php PluginDetector::render_conflict_notice(
+                PluginDetector::find_active_in(self::COMPETING_MAIL_PLUGINS),
+                __('Another mail-routing plugin is active:', 'valolink-plugin'),
+            ); ?>
 
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="<?php echo esc_attr(self::SAVE_ACTION); ?>">
