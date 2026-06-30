@@ -43,7 +43,7 @@ final class LoggingModule implements Module
         add_action('rest_api_init', [$this, 'register_routes']);
 
         // wp-admin viewer (the hook only fires in admin context, so cheap elsewhere)
-        (new LogViewerPage())->register();
+        (new LogViewerPage($this->settings))->register();
 
         // Daily rotation cron
         add_action(self::ROTATE_HOOK, [$this, 'rotate']);

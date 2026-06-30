@@ -4,14 +4,14 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Admin;
 
-use Valolink\Plugin\Modules\Logging\LoggingModule;
 use Valolink\Plugin\Registry;
 use Valolink\Plugin\Settings;
+use Valolink\Plugin\Updater;
 
 final class SettingsPage
 {
-    public const MENU_SLUG   = 'valolink-plugin';
-    public const CAPABILITY  = 'manage_options';
+    public const MENU_SLUG    = 'valolink-plugin';
+    public const CAPABILITY   = 'manage_options';
     public const NONCE_ACTION = 'valolink_save_settings';
     public const SAVE_ACTION  = 'valolink_save_settings';
 
@@ -45,8 +45,11 @@ final class SettingsPage
             return;
         }
 
-        $manifests = $this->registry->all();
-        $updated   = isset($_GET['updated']) && $_GET['updated'] === '1';
+        $manifests       = $this->registry->all();
+        $updated         = isset($_GET['updated']) && $_GET['updated'] === '1';
+        $update_info     = $this->plugin_update_info();
+        $updater_enabled = defined('VALOLINK_PLUGIN_GITHUB_REPO') && VALOLINK_PLUGIN_GITHUB_REPO !== 'OWNER/REPO';
+        $current_version = defined('VALOLINK_PLUGIN_VERSION') ? VALOLINK_PLUGIN_VERSION : '?';
         ?>
         <div class="wrap">
             <h1><?php echo esc_html__('Valolink Plugin', 'valolink-plugin'); ?></h1>
@@ -57,35 +60,58 @@ final class SettingsPage
                 </p></div>
             <?php endif; ?>
 
+            <h2><?php esc_html_e('Plugin', 'valolink-plugin'); ?></h2>
+            <table class="form-table">
+                <tr>
+                    <th scope="row"><?php esc_html_e('Installed version', 'valolink-plugin'); ?></th>
+                    <td><code><?php echo esc_html($current_version); ?></code></td>
+                </tr>
+                <tr>
+                    <th scope="row"><?php esc_html_e('Updates', 'valolink-plugin'); ?></th>
+                    <td>
+                        <?php if (!$updater_enabled) : ?>
+                            <p><em><?php esc_html_e('Auto-updater is not configured for this site.', 'valolink-plugin'); ?></em></p>
+                        <?php elseif ($update_info['available']) : ?>
+                            <p>
+                                <strong style="color:#b32d2e;">
+                                    <?php printf(
+                                        esc_html__('Update available: %s', 'valolink-plugin'),
+                                        esc_html($update_info['new_version']),
+                                    ); ?>
+                                </strong>
+                            </p>
+                            <p>
+                                <a href="<?php echo esc_url($this->update_now_url()); ?>" class="button button-primary">
+                                    <?php esc_html_e('Update now', 'valolink-plugin'); ?>
+                                </a>
+                                <a href="<?php echo esc_url($this->check_updates_url()); ?>" class="button">
+                                    <?php esc_html_e('Check again', 'valolink-plugin'); ?>
+                                </a>
+                            </p>
+                        <?php elseif ($update_info['known']) : ?>
+                            <p>
+                                <span style="color:#118a4c;">✓ <?php esc_html_e('Up to date.', 'valolink-plugin'); ?></span>
+                            </p>
+                            <p>
+                                <a href="<?php echo esc_url($this->check_updates_url()); ?>" class="button">
+                                    <?php esc_html_e('Check for updates', 'valolink-plugin'); ?>
+                                </a>
+                            </p>
+                        <?php else : ?>
+                            <p><em><?php esc_html_e('Update status not yet checked.', 'valolink-plugin'); ?></em></p>
+                            <p>
+                                <a href="<?php echo esc_url($this->check_updates_url()); ?>" class="button">
+                                    <?php esc_html_e('Check for updates', 'valolink-plugin'); ?>
+                                </a>
+                            </p>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+            </table>
+
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="<?php echo esc_attr(self::SAVE_ACTION); ?>">
                 <?php wp_nonce_field(self::NONCE_ACTION); ?>
-
-                <h2><?php echo esc_html__('Event Log', 'valolink-plugin'); ?></h2>
-                <table class="form-table">
-                    <tr>
-                        <th scope="row">
-                            <label for="logging_retention_days"><?php echo esc_html__('Retention (days)', 'valolink-plugin'); ?></label>
-                        </th>
-                        <td>
-                            <input
-                                type="number"
-                                id="logging_retention_days"
-                                name="logging_retention_days"
-                                value="<?php echo esc_attr((string) $this->settings->get_module_setting(LoggingModule::MODULE_ID, 'retention_days', 90)); ?>"
-                                min="0"
-                                step="1"
-                                class="small-text"
-                            > <?php echo esc_html__('days', 'valolink-plugin'); ?>
-                            <p class="description">
-                                <?php echo esc_html__('Entries older than this are pruned daily. Set to 0 to keep forever.', 'valolink-plugin'); ?>
-                                <a href="<?php echo esc_url(admin_url('admin.php?page=valolink-plugin-logs')); ?>">
-                                    <?php echo esc_html__('Open Event Log →', 'valolink-plugin'); ?>
-                                </a>
-                            </p>
-                        </td>
-                    </tr>
-                </table>
 
                 <?php if (!empty($manifests)) : ?>
                     <h2><?php echo esc_html__('Modules', 'valolink-plugin'); ?></h2>
@@ -130,12 +156,6 @@ final class SettingsPage
 
         check_admin_referer(self::NONCE_ACTION);
 
-        // Logging retention
-        if (isset($_POST['logging_retention_days'])) {
-            $days = max(0, (int) $_POST['logging_retention_days']);
-            $this->settings->set_module_setting(LoggingModule::MODULE_ID, 'retention_days', $days);
-        }
-
         // Module enables
         $submitted = isset($_POST['valolink_enabled']) && is_array($_POST['valolink_enabled'])
             ? array_map('sanitize_key', wp_unslash($_POST['valolink_enabled']))
@@ -153,5 +173,52 @@ final class SettingsPage
             admin_url('admin.php'),
         ));
         exit;
+    }
+
+    /**
+     * Read WP's plugin-update transient (populated by the Updater).
+     *
+     * @return array{available: bool, known: bool, new_version: string}
+     */
+    private function plugin_update_info(): array
+    {
+        if (!defined('VALOLINK_PLUGIN_BASENAME')) {
+            return ['available' => false, 'known' => false, 'new_version' => ''];
+        }
+
+        $basename = VALOLINK_PLUGIN_BASENAME;
+        $transient = get_site_transient('update_plugins');
+
+        if (is_object($transient)) {
+            if (!empty($transient->response[$basename]->new_version)) {
+                return [
+                    'available'   => true,
+                    'known'       => true,
+                    'new_version' => (string) $transient->response[$basename]->new_version,
+                ];
+            }
+            if (isset($transient->no_update[$basename])) {
+                return ['available' => false, 'known' => true, 'new_version' => ''];
+            }
+        }
+
+        return ['available' => false, 'known' => false, 'new_version' => ''];
+    }
+
+    private function update_now_url(): string
+    {
+        $basename = defined('VALOLINK_PLUGIN_BASENAME') ? VALOLINK_PLUGIN_BASENAME : '';
+        return wp_nonce_url(
+            self_admin_url('update.php?action=upgrade-plugin&plugin=' . urlencode($basename)),
+            'upgrade-plugin_' . $basename,
+        );
+    }
+
+    private function check_updates_url(): string
+    {
+        return wp_nonce_url(
+            admin_url('admin-post.php?action=' . Updater::CHECK_ACTION),
+            Updater::CHECK_ACTION,
+        );
     }
 }

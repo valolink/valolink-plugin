@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Valolink\Plugin\Modules\Logging;
 
 use Valolink\Plugin\Admin\SettingsPage;
+use Valolink\Plugin\Settings;
 
 /**
  * Admin viewer for the event log. Lives under Valolink → Event Log.
@@ -12,25 +13,34 @@ use Valolink\Plugin\Admin\SettingsPage;
  * Default "folded" view groups similar entries by (event, level, user_login, ip, hour bucket)
  * and shows a count + first/last-seen range. Single-row groups display normally. A "raw" view
  * shows every entry. Delete buttons remove single rows, folded groups, or all matching the
- * current filter.
+ * current filter. Retention is configured at the bottom of the page.
  */
 final class LogViewerPage
 {
-    public const MENU_SLUG     = 'valolink-plugin-logs';
-    public const CAPABILITY    = 'manage_options';
-    public const DELETE_ACTION = 'valolink_log_delete';
-    public const CLEAR_ACTION  = 'valolink_log_clear';
+    public const MENU_SLUG        = 'valolink-plugin-logs';
+    public const CAPABILITY       = 'manage_options';
+    public const DELETE_ACTION    = 'valolink_log_delete';
+    public const CLEAR_ACTION     = 'valolink_log_clear';
+    public const RETENTION_ACTION = 'valolink_log_save_retention';
 
+    private const DEFAULT_RETENTION_DAYS = 90;
     private const PER_PAGE     = 50;
-    /** SQL DATE_FORMAT mask for the folding bucket. Hour-resolution. */
-    private const BUCKET_FMT   = '%Y-%m-%d %H:00:00';
+    /**
+     * SQL DATE_FORMAT mask for the folding bucket. Hour-resolution.
+     * Percent signs are doubled because this expression is passed through $wpdb->prepare,
+     * which would otherwise treat %Y/%m/%d/%H as its own placeholders.
+     */
+    private const BUCKET_FMT   = '%%Y-%%m-%%d %%H:00:00';
     private const BUCKET_SECS  = 3600;
+
+    public function __construct(private readonly Settings $settings) {}
 
     public function register(): void
     {
         add_action('admin_menu', [$this, 'add_menu'], 12); // after the main Valolink page
-        add_action('admin_post_' . self::DELETE_ACTION, [$this, 'handle_delete']);
-        add_action('admin_post_' . self::CLEAR_ACTION,  [$this, 'handle_clear']);
+        add_action('admin_post_' . self::DELETE_ACTION,    [$this, 'handle_delete']);
+        add_action('admin_post_' . self::CLEAR_ACTION,     [$this, 'handle_clear']);
+        add_action('admin_post_' . self::RETENTION_ACTION, [$this, 'handle_set_retention']);
     }
 
     public function add_menu(): void
@@ -338,6 +348,30 @@ final class LogViewerPage
                 </div>
             <?php endif; ?>
 
+            <hr style="margin:24px 0 16px;">
+            <h2><?php esc_html_e('Retention', 'valolink-plugin'); ?></h2>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="valolink-log-retention">
+                <input type="hidden" name="action" value="<?php echo esc_attr(self::RETENTION_ACTION); ?>">
+                <?php wp_nonce_field(self::RETENTION_ACTION); ?>
+                <label for="valolink-log-retention-days">
+                    <?php esc_html_e('Keep entries for', 'valolink-plugin'); ?>
+                </label>
+                <input
+                    type="number"
+                    id="valolink-log-retention-days"
+                    name="retention_days"
+                    value="<?php echo esc_attr((string) $this->retention_days()); ?>"
+                    min="0"
+                    step="1"
+                    class="small-text"
+                >
+                <?php esc_html_e('days', 'valolink-plugin'); ?>
+                <button type="submit" class="button"><?php esc_html_e('Save', 'valolink-plugin'); ?></button>
+                <span class="description">
+                    <?php esc_html_e('Older entries are pruned daily. Set to 0 to keep forever.', 'valolink-plugin'); ?>
+                </span>
+            </form>
+
             <style>
                 .valolink-log-filters { margin: 16px 0 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
                 .valolink-log-actions { margin: 0 0 12px; }
@@ -436,6 +470,28 @@ final class LogViewerPage
         }
 
         $this->redirect_back();
+    }
+
+    public function handle_set_retention(): void
+    {
+        if (!current_user_can(self::CAPABILITY)) {
+            wp_die(esc_html__('Insufficient permissions.', 'valolink-plugin'), '', ['response' => 403]);
+        }
+        check_admin_referer(self::RETENTION_ACTION);
+
+        $days = max(0, (int) ($_POST['retention_days'] ?? self::DEFAULT_RETENTION_DAYS));
+        $this->settings->set_module_setting(LoggingModule::MODULE_ID, 'retention_days', $days);
+
+        $this->redirect_back();
+    }
+
+    public function retention_days(): int
+    {
+        return (int) $this->settings->get_module_setting(
+            LoggingModule::MODULE_ID,
+            'retention_days',
+            self::DEFAULT_RETENTION_DAYS,
+        );
     }
 
     private function redirect_back(): void
@@ -587,13 +643,15 @@ final class LogViewerPage
 
         $bucket_expr = "DATE_FORMAT(created_at, '" . self::BUCKET_FMT . "')";
 
-        // Total = number of distinct groups
+        // Total = number of distinct groups. Always run through prepare so the %% in
+        // $bucket_expr is un-escaped to literal %; the trailing LIMIT %d (always 1) is
+        // a no-op on a single-row COUNT but guarantees prepare has a placeholder.
         $count_sql = "SELECT COUNT(*) FROM (
             SELECT 1 FROM $table WHERE $where_sql
             GROUP BY event, level, user_login, ip, $bucket_expr
-        ) g";
+        ) g LIMIT %d";
         $total = (int) $wpdb->get_var(
-            $where_args ? $wpdb->prepare($count_sql, $where_args) : $count_sql
+            $wpdb->prepare($count_sql, [...$where_args, 1]),
         );
 
         $row_args = [...$where_args, self::PER_PAGE, $offset];
