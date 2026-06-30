@@ -10,8 +10,10 @@ use Valolink\Plugin\Modules\Email\EmailModule;
 use Valolink\Plugin\Modules\EngineLink\EngineLinkModule;
 use Valolink\Plugin\Modules\Logging\LoggingModule;
 use Valolink\Plugin\Modules\Scripts\ScriptsModule;
+use Valolink\Plugin\Modules\Security\SecurityModule;
 use Valolink\Plugin\Modules\Staging\MuPluginInstaller;
 use Valolink\Plugin\Modules\Staging\StagingModule;
+use Valolink\Plugin\Modules\Toolbox\ToolboxModule;
 
 final class Plugin
 {
@@ -104,6 +106,24 @@ final class Plugin
             label: __('Email (Resend)', 'valolink-plugin'),
             description: __('Routes wp_mail() through Resend\'s HTTPS API — avoids blocked SMTP ports. Force From email/name, default Reply-To, BCC catch-all, fallback on failure, admin alerts, and a one-click test send. Per-message logging goes through the Event Log module. Configure under Valolink → Email.', 'valolink-plugin'),
             class: EmailModule::class,
+            default_enabled: false,
+            constructor_args: [$settings],
+        ));
+
+        $registry->register(new ModuleManifest(
+            id: SecurityModule::MODULE_ID,
+            label: __('Security', 'valolink-plugin'),
+            description: __('Per-feature hardening toggles (disable XML-RPC, etc.). Configure under Valolink → Security.', 'valolink-plugin'),
+            class: SecurityModule::class,
+            default_enabled: false,
+            constructor_args: [$settings],
+        ));
+
+        $registry->register(new ModuleManifest(
+            id: ToolboxModule::MODULE_ID,
+            label: __('Toolbox', 'valolink-plugin'),
+            description: __('Grab-bag of small toggles (allow SVG uploads, …) that don\'t justify a module of their own. Configure under Valolink → Toolbox.', 'valolink-plugin'),
+            class: ToolboxModule::class,
             default_enabled: false,
             constructor_args: [$settings],
         ));
