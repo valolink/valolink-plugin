@@ -88,3 +88,43 @@ Full snapshot of the site's current state. This is the main endpoint EngineLink 
 Use `null` for any field that cannot be determined rather than omitting it. EngineLink handles nulls.
 
 Do not include credentials, secret keys, or file system paths anywhere in the response.
+
+---
+
+### GET /wp-json/enginelink/v1/logs
+
+Provided by the Logging module. Returns rows from the plugin's custom log table, newest first. EngineLink proxies this behind `GET /api/websites/[id]/logs` for the website detail page's Logs tab.
+
+Query args: `event` (string), `user_login` (string), `level` (string), `before` (integer id cursor — returns rows with `id < before`), `limit` (integer, max 500, default 100).
+
+```json
+{
+  "logs": [
+    {
+      "id": 123,
+      "created_at": "2026-07-01 09:12:44",
+      "event": "user_login",
+      "level": "info",
+      "user_id": 1,
+      "user_login": "admin",
+      "ip": "192.0.2.10",
+      "message": "User logged in",
+      "context": { "any": "json" }
+    }
+  ],
+  "next_cursor": 42
+}
+```
+
+`next_cursor` is the last returned id when a full page was served, `null` when there are no more rows.
+
+### GET /wp-json/enginelink/v1/log-events
+
+Distinct event names with counts, for building filter dropdowns:
+
+```json
+[
+  { "event": "user_login", "count": 231 },
+  { "event": "plugin_activated", "count": 4 }
+]
+```

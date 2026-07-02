@@ -34,8 +34,8 @@ See `ROADMAP.md` for modules outside the current phase.
   - `uninstall(): void` — remove this module's persistent footprint.
 - **Module loader:** Reads `valolink_settings`, instantiates only enabled modules, calls `should_load(ctx)`, then `register()`. The loader itself has no per-module knowledge; modules self-describe via a registry.
 - **Logging during Phase 1:** Modules log to `error_log()` until Module D ships. No direct DB writes for diagnostics.
-- **Module C transport:** WP → Nuxt, one-way, HMAC-signed POSTs. Per-site secret generated at activation, shown once in admin for pasting into Nuxt. Signed payload includes `{site_url, timestamp, body_hash}`; Nuxt rejects timestamps outside a ±5 min window. No inbound endpoints in v1.
-- **Update channel:** Self-hosted update manifest (likely served from the Nuxt app, since it already knows which sites exist). Hooked via `pre_set_site_transient_update_plugins` and `plugins_api`. Signature verification on the downloaded zip.
+- **EngineLink transport (implemented — replaces the earlier HMAC-push design):** pull-based REST. EngineLink calls `enginelink/v1` endpoints (`/ping`, `/status` from EngineLinkModule; `/logs`, `/log-events` from LoggingModule) with an `Authorization: Bearer <key>` header. The key is generated on the plugin's EngineLink settings page and pasted into EngineLink's website settings (`Website.pluginApiKey`); `EnginelinkAuth` validates it. The plugin never pushes. Full API spec: `enginelink.md`.
+- **Update channel (implemented):** GitHub releases. `src/Updater.php` checks `api.github.com/repos/valolink/valolink-plugin/releases/latest` and hooks `pre_set_site_transient_update_plugins` + `plugins_api`; releases are cut with `release.sh` (version bump → tag → GitHub Actions builds the zip). EngineLink does not serve an update manifest. Server-side install/upgrade on HestiaCP boxes: `hestiascripts/v-wp-valolink-plugin-install`.
 
 ## 4. Phase 1 Scope
 
@@ -47,8 +47,8 @@ Only these ship in v1. Everything else in `ROADMAP.md`.
 ### Module B — Staging Detection & Helpers
 Detect staging/local environments reliably (multiple heuristics: hostname patterns, `WP_ENVIRONMENT_TYPE`, known host markers, IP ranges). On detection: block search indexing, intercept outgoing mail, disable live payment gateways (WooCommerce). Admin notice that staging mode is active.
 
-### Module C v1 — Inventory Push to Nuxt
-Read-only WP → Nuxt push. Reports: WP core version, active theme + version, all installed plugins with version + active state, PHP version, multisite flag. Triggered on a daily cron + on plugin/theme/core update events + on demand from admin. HMAC-signed as described in §3.
+### EngineLink module (shipped — pull, not push)
+Read-only inventory served over REST: `/ping` + `/status` (WP core version, theme, plugins with update state, PHP env, users, DB size, health). EngineLink pulls on its own 6-hourly cron and on demand; Bearer-key auth as described in §3. The Logging module adds `/logs` + `/log-events` on the same namespace. Spec: `enginelink.md`.
 
 ### Module E — Agency Branding
 Replace WP login logo with agency logo, inject agency support contact info beneath the login form. Must coexist with 2FA/security plugins on the login screen.
@@ -60,4 +60,4 @@ Replace WP login logo with agency logo, inject agency support contact info benea
 - When in doubt about scope, ask before adding. Do not pre-build infrastructure for roadmap modules.
 - Don't introduce a dependency injection container, event bus, or other framework abstraction unless a Phase 1 module concretely needs it.
 - Tests: PHPUnit + WP test suite for the core loader and any non-trivial module logic. Manual smoke test on a real WP install before declaring a module done.
-- Repo currently contains only `CLAUDE.md`, `ROADMAP.md`, and `.git`. Scaffolding the plugin file structure is the next concrete step.
+- Current layout: `valolink-plugin.php` (bootstrap) + `src/` (Loader, Registry, Settings, Context, Updater, `Modules/{Branding,Email,EngineLink,Logging,Scripts,Security,Staging,Toolbox}`) + `bin/` build tooling + `release.sh`. Shipped as v0.1.x via GitHub releases.
