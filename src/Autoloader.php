@@ -10,6 +10,16 @@ final class Autoloader
 
     public static function register(): void
     {
+        // Idempotent: the staging mu-loader registers this early (on
+        // `option_active_plugins`) and valolink-plugin.php registers it again
+        // during normal bootstrap. spl_autoload_register does not dedupe
+        // identical callbacks, so without this guard load() would run twice on
+        // every class miss.
+        static $registered = false;
+        if ($registered) {
+            return;
+        }
+        $registered = true;
         spl_autoload_register([self::class, 'load']);
     }
 

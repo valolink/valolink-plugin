@@ -12,6 +12,12 @@ if (!defined('ABSPATH')) {
 }
 
 add_filter('option_active_plugins', static function ($plugins) {
+    // This closure runs on every request during the earliest bootstrap phase
+    // (before regular plugins load). It MUST NOT be able to fatal the site:
+    // any failure fails open, returning the plugin list untouched. The worst
+    // case is a staging site briefly loading a plugin it should have hidden —
+    // never a broken production site.
+    try {
     if (!is_array($plugins) || empty($plugins)) {
         return $plugins;
     }
@@ -63,4 +69,8 @@ add_filter('option_active_plugins', static function ($plugins) {
         }
         return !in_array($p, $disabled, true);
     }));
+    } catch (\Throwable $e) {
+        error_log('[valolink-plugin] staging mu-loader failed, leaving active_plugins untouched: ' . $e->getMessage());
+        return $plugins;
+    }
 }, 10, 1);

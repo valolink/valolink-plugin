@@ -19,20 +19,34 @@ final class Plugin
 {
     public static function boot(): void
     {
-        $settings = new Settings();
-        $registry = new Registry();
-        self::register_modules($registry, $settings);
+        // Last-resort guard: boot() runs on `plugins_loaded`, so anything that
+        // throws here would WSOD the site. Per-module failures are already
+        // isolated in Loader::load(); this catches the surrounding wiring
+        // (settings, registry, updater, settings page) so the plugin degrades
+        // to inert-but-logged rather than fataling. Never let a Throwable escape.
+        try {
+            $settings = new Settings();
+            $registry = new Registry();
+            self::register_modules($registry, $settings);
 
-        if (defined('VALOLINK_PLUGIN_GITHUB_REPO') && VALOLINK_PLUGIN_GITHUB_REPO !== 'OWNER/REPO') {
-            (new Updater(VALOLINK_PLUGIN_FILE, VALOLINK_PLUGIN_GITHUB_REPO, VALOLINK_PLUGIN_VERSION))->register();
+            if (defined('VALOLINK_PLUGIN_GITHUB_REPO') && VALOLINK_PLUGIN_GITHUB_REPO !== 'OWNER/REPO') {
+                (new Updater(VALOLINK_PLUGIN_FILE, VALOLINK_PLUGIN_GITHUB_REPO, VALOLINK_PLUGIN_VERSION))->register();
+            }
+
+            if (is_admin()) {
+                (new SettingsPage($settings, $registry))->register();
+            }
+
+            $loader = new Loader($settings, $registry, Context::detect());
+            $loader->load();
+        } catch (\Throwable $e) {
+            error_log(sprintf(
+                '[valolink-plugin] boot failed, plugin inactive this request: %s in %s:%d',
+                $e->getMessage(),
+                $e->getFile(),
+                $e->getLine(),
+            ));
         }
-
-        if (is_admin()) {
-            (new SettingsPage($settings, $registry))->register();
-        }
-
-        $loader = new Loader($settings, $registry, Context::detect());
-        $loader->load();
     }
 
     public static function on_activate(): void

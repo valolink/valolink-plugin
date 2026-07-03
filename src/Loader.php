@@ -23,14 +23,30 @@ final class Loader
                 continue;
             }
 
-            /** @var Module $module */
-            $module = new ($manifest->class)(...$manifest->constructor_args);
+            // Isolate each module. A module whose constructor, should_load(), or
+            // register() throws must never take down the site or stop sibling
+            // modules from loading — the plugin's Graceful Failure principle.
+            // (This guards load-time only; a throw inside a hook callback fires
+            // later and is outside any try/catch here — modules must still guard
+            // their own runtime work.)
+            try {
+                /** @var Module $module */
+                $module = new ($manifest->class)(...$manifest->constructor_args);
 
-            if (!$module->should_load($this->context)) {
-                continue;
+                if (!$module->should_load($this->context)) {
+                    continue;
+                }
+
+                $module->register();
+            } catch (\Throwable $e) {
+                error_log(sprintf(
+                    '[valolink-plugin] module "%s" failed to load and was skipped: %s in %s:%d',
+                    $manifest->id,
+                    $e->getMessage(),
+                    $e->getFile(),
+                    $e->getLine(),
+                ));
             }
-
-            $module->register();
         }
     }
 }
