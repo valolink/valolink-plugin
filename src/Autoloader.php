@@ -20,7 +20,13 @@ final class Autoloader
         }
 
         $relative = substr($class, strlen(self::PREFIX));
-        $path = VALOLINK_PLUGIN_DIR . 'src/' . str_replace('\\', '/', $relative) . '.php';
+        // Resolve against this file's own directory (src/) rather than the
+        // VALOLINK_PLUGIN_DIR constant. The staging mu-loader registers this
+        // autoloader during the very early `option_active_plugins` filter —
+        // before valolink-plugin.php has run and defined that constant — so
+        // depending on it here fataled with "Undefined constant
+        // Valolink\Plugin\VALOLINK_PLUGIN_DIR". __DIR__ is always available.
+        $path = __DIR__ . '/' . str_replace('\\', '/', $relative) . '.php';
 
         if (is_file($path)) {
             require_once $path;
