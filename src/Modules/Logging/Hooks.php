@@ -10,6 +10,9 @@ namespace Valolink\Plugin\Modules\Logging;
  */
 final class Hooks
 {
+    /** One failed-login row per IP per this window — throttle against hammering. */
+    private const LOGIN_FAIL_THROTTLE_SECONDS = 300;
+
     public function register(): void
     {
         // Auth
@@ -50,6 +53,27 @@ final class Hooks
 
     public function on_login_failed(string $user_login): void
     {
+        // Throttle: collapse a burst of failed logins from one IP into a single
+        // row per window so login-hammering can't flood the table. The gate is
+        // a transient — on our stack that's the Redis object cache, so it costs
+        // no DB write. Independent of the Security module's login guard (which,
+        // when enabled, stops most of this upstream before wp_login_failed even
+        // fires). Fails OPEN (logs) on any error — this runs inside a hook,
+        // outside the loader's try/catch, so it must never throw into the login
+        // path; a duplicate row beats a fatal.
+        try {
+            $ip = EventLogger::client_ip();
+            if ($ip !== null) {
+                $key = 'vl_llf_' . md5($ip);
+                if (get_transient($key)) {
+                    return;
+                }
+                set_transient($key, 1, self::LOGIN_FAIL_THROTTLE_SECONDS);
+            }
+        } catch (\Throwable $e) {
+            // fall through to logging
+        }
+
         EventLogger::log('auth.login_failed', [
             '__user_login' => $user_login,
             '__message'    => "Failed login for: {$user_login}",

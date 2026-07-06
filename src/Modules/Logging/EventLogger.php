@@ -54,7 +54,7 @@ final class EventLogger
         );
     }
 
-    private static function client_ip(): ?string
+    public static function client_ip(): ?string
     {
         foreach (['HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'REMOTE_ADDR'] as $key) {
             if (empty($_SERVER[$key])) {

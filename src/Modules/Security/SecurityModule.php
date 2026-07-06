@@ -28,6 +28,7 @@ final class SecurityModule implements Module
         'hide_wp_version',
         'remove_wlw_rsd',
         'generic_login_errors',
+        'login_timing_guard',
         'disable_file_editing',
         'header_hsts',
         'header_xframe',
@@ -44,6 +45,11 @@ final class SecurityModule implements Module
         'header_referrer_policy',
         'header_permissions_policy',
     ];
+
+    // --- Login timing guard ---
+    private const LOGIN_TOKEN_FIELD   = 'vl_lt';
+    private const LOGIN_MIN_SECONDS   = 2;      // human floor: page load → submit. Lower if autofill users get blocked.
+    private const LOGIN_TOKEN_MAX_AGE = 43200;  // 12h — rejects stale/cached forms and bounds the single-use store TTL.
 
     public function __construct(private readonly Settings $settings) {}
 
@@ -87,6 +93,15 @@ final class SecurityModule implements Module
 
         if ($this->is_enabled('generic_login_errors')) {
             add_filter('login_errors', [$this, 'generic_login_error']);
+        }
+
+        if ($this->is_enabled('login_timing_guard')) {
+            // Invisible wp-login.php bot filter. These are ordinary plugin
+            // hooks — NOT a mu-plugin: wp-login.php loads all plugins before
+            // firing login_init, so this runs early enough without the
+            // mu-plugin bootstrap-ordering hazards that bit the staging module.
+            add_action('login_form', [$this, 'render_login_token']);
+            add_action('login_init', [$this, 'enforce_login_timing'], 0);
         }
 
         if ($this->is_enabled('disable_file_editing')) {
@@ -175,6 +190,15 @@ final class SecurityModule implements Module
                         'generic_login_errors',
                         __('Use a generic login error message', 'valolink-plugin'),
                         __('Replaces "Unknown username" and "Incorrect password" with a single non-specific message to avoid leaking which usernames exist.', 'valolink-plugin'),
+                    ); ?>
+                </tbody></table>
+
+                <h2><?php esc_html_e('Login protection', 'valolink-plugin'); ?></h2>
+                <table class="form-table" role="presentation"><tbody>
+                    <?php $this->checkbox_row(
+                        'login_timing_guard',
+                        __('Invisible login bot filter', 'valolink-plugin'),
+                        __('Plants a signed, single-use token in the login form and rejects credential submissions with no token, a forged token, or an implausibly fast submit — the fingerprint of bots that POST straight to wp-login.php. Invisible to real users; blocked attempts are dropped before password checking, so they never reach the database or the event log. Enable per site.', 'valolink-plugin'),
                     ); ?>
                 </tbody></table>
 
@@ -304,6 +328,165 @@ final class SecurityModule implements Module
     {
         // Only override messages that leak which half of the credentials was wrong.
         return __('Login failed. Check your username and password and try again.', 'valolink-plugin');
+    }
+
+    // -------------------------------------------------------------------------
+    // Login timing guard
+    // -------------------------------------------------------------------------
+    //
+    // Invisible bot filter for wp-login.php. A signed, single-use, timestamped
+    // token is planted in the login form; a credential POST with no token, a
+    // forged token, an implausibly fast submit, or a replayed token is rejected
+    // at `login_init` — BEFORE wp_signon(), so it skips the user lookup and
+    // password hashing and never fires `wp_login_failed` (no event-log row for
+    // the flood). Depends on nothing but WordPress core — no coupling to the
+    // Logging module; its only telemetry is a flat error_log line for fail2ban.
+    //
+    // GRACEFUL FAILURE: these run inside hook callbacks, OUTSIDE the Loader's
+    // load-time try/catch. Every path MUST fail OPEN (let the login proceed) —
+    // a guard that fataled on wp-login.php would lock everyone out. Worst case
+    // on an internal error is a bot slipping through, never a locked-out admin.
+
+    public function render_login_token(): void
+    {
+        try {
+            printf(
+                '<input type="hidden" name="%s" value="%s" autocomplete="off">',
+                esc_attr(self::LOGIN_TOKEN_FIELD),
+                esc_attr($this->make_login_token()),
+            );
+        } catch (\Throwable $e) {
+            error_log('[valolink-plugin] login guard: token render failed (open): ' . $e->getMessage());
+        }
+    }
+
+    public function enforce_login_timing(): void
+    {
+        try {
+            $method = isset($_SERVER['REQUEST_METHOD']) ? (string) $_SERVER['REQUEST_METHOD'] : '';
+            $reason = $this->evaluate_login((array) wp_unslash($_POST), $method);
+            if ($reason !== null) {
+                $this->reject_login($reason);
+            }
+        } catch (\Throwable $e) {
+            error_log('[valolink-plugin] login guard: check failed (open): ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Decide whether to block. Returns a short block reason, or null to allow.
+     * Consumes the token (single-use) as a side effect on an otherwise-valid pass.
+     *
+     * @param array<string, mixed> $post
+     */
+    private function evaluate_login(array $post, string $method): ?string
+    {
+        if ($method !== 'POST') {
+            return null;
+        }
+        // Only genuine credential submits carry both fields; register /
+        // lost-password POSTs do not, and must pass through untouched.
+        if (!isset($post['log'], $post['pwd'])) {
+            return null;
+        }
+
+        $token = isset($post[self::LOGIN_TOKEN_FIELD]) ? (string) $post[self::LOGIN_TOKEN_FIELD] : '';
+        $age   = $this->login_token_age($token);
+        if ($age === null) {
+            return 'no_token';          // missing / forged / tampered / stale
+        }
+        if ($age < self::LOGIN_MIN_SECONDS) {
+            return 'too_fast';
+        }
+        if (!$this->consume_login_token($token)) {
+            return 'replay';            // a scraped token reused across a flood
+        }
+        return null;
+    }
+
+    private function reject_login(string $reason): void
+    {
+        error_log(sprintf(
+            '[valolink-plugin] login guard blocked (%s) from %s',
+            $reason,
+            $this->client_ip(),
+        ));
+        status_header(403);
+        nocache_headers();
+        // Stop here — before wp_signon(): no user lookup, no password hashing,
+        // no wp_login_failed. Keep the rejection body minimal.
+        exit;
+    }
+
+    private function make_login_token(): string
+    {
+        // timestamp + random nonce (the nonce makes the token single-use-able).
+        $payload = time() . '.' . bin2hex(random_bytes(8));
+        return $payload . '.' . hash_hmac('sha256', $payload, $this->login_secret());
+    }
+
+    /** Age in seconds if the token is authentic and within the window; null otherwise. */
+    private function login_token_age(string $token): ?int
+    {
+        $parts = explode('.', $token);
+        if (count($parts) !== 3) {
+            return null;
+        }
+        [$ts, $nonce, $sig] = $parts;
+        if (!ctype_digit($ts) || $nonce === '' || !ctype_xdigit($nonce)) {
+            return null;
+        }
+        $expected = hash_hmac('sha256', $ts . '.' . $nonce, $this->login_secret());
+        if (!hash_equals($expected, $sig)) {
+            return null;                                   // forged / tampered
+        }
+        $age = time() - (int) $ts;
+        if ($age < 0 || $age > self::LOGIN_TOKEN_MAX_AGE) {
+            return null;                                   // clock skew / stale form
+        }
+        return $age;
+    }
+
+    private function login_secret(): string
+    {
+        // Per-site server secret; rotates with the auth salt (rotation only
+        // invalidates outstanding tokens — the login page re-issues on load).
+        return wp_salt('auth');
+    }
+
+    /**
+     * Single-use gate. True the first time a token is seen, false on reuse.
+     * Backed by a transient (the Redis object cache on our stack → no DB
+     * write). Fails OPEN (true) if the store is unavailable — a down cache
+     * must never lock out real logins.
+     */
+    private function consume_login_token(string $token): bool
+    {
+        try {
+            $key = 'vl_lg_seen_' . hash('sha256', $token);
+            if (get_transient($key)) {
+                return false;
+            }
+            set_transient($key, 1, self::LOGIN_TOKEN_MAX_AGE);
+            return true;
+        } catch (\Throwable $e) {
+            error_log('[valolink-plugin] login guard: token store failed (open): ' . $e->getMessage());
+            return true;
+        }
+    }
+
+    private function client_ip(): string
+    {
+        foreach (['HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'REMOTE_ADDR'] as $key) {
+            if (empty($_SERVER[$key])) {
+                continue;
+            }
+            $ip = trim(explode(',', (string) wp_unslash($_SERVER[$key]))[0]);
+            if (filter_var($ip, FILTER_VALIDATE_IP)) {
+                return $ip;
+            }
+        }
+        return '?';
     }
 
     /**

@@ -16,8 +16,9 @@ final class LoggingModule implements Module
     public const ROTATE_HOOK = 'valolink_log_rotate';
     public const REST_NS     = EngineLinkModule::REST_NAMESPACE;
 
-    private const DEFAULT_RETENTION_DAYS = 90;
-    private const ROTATE_BATCH           = 1000;
+    private const DEFAULT_RETENTION_DAYS       = 90;
+    private const FAILED_LOGIN_RETENTION_DAYS   = 14;   // failed logins are high-volume noise — age out sooner
+    private const ROTATE_BATCH                  = 1000;
 
     public function __construct(private readonly Settings $settings) {}
 
@@ -173,8 +174,33 @@ final class LoggingModule implements Module
             $deleted_total += (int) $deleted;
         }
 
+        // Second pass: failed-login rows are high-volume / low-value (login
+        // hammering) — age them out faster than the general audit trail.
+        // Tunable via the same settings bag; only meaningful when shorter than
+        // the general retention (otherwise the pass above already covered it).
+        $failed_days = (int) $this->settings->get_module_setting(
+            self::MODULE_ID,
+            'failed_login_retention_days',
+            self::FAILED_LOGIN_RETENTION_DAYS,
+        );
+        if ($failed_days > 0 && $failed_days < $retention) {
+            $failed_cutoff = gmdate('Y-m-d H:i:s', time() - $failed_days * DAY_IN_SECONDS);
+            for ($i = 0; $i < 50; $i++) {
+                $deleted = $wpdb->query($wpdb->prepare(
+                    "DELETE FROM $table WHERE event = %s AND created_at < %s ORDER BY id LIMIT %d",
+                    'auth.login_failed',
+                    $failed_cutoff,
+                    self::ROTATE_BATCH,
+                ));
+                if (!$deleted) {
+                    break;
+                }
+                $deleted_total += (int) $deleted;
+            }
+        }
+
         if ($deleted_total > 0) {
-            error_log("[valolink-plugin] rotation: pruned {$deleted_total} log rows older than {$cutoff}");
+            error_log("[valolink-plugin] rotation: pruned {$deleted_total} log rows");
         }
     }
 
