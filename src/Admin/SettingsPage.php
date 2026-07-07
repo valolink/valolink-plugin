@@ -134,8 +134,8 @@ final class SettingsPage
                                             <?php checked($this->settings->is_module_enabled($manifest->id)); ?>
                                         >
                                     </td>
-                                    <td><strong><?php echo esc_html($manifest->label); ?></strong></td>
-                                    <td><?php echo esc_html($manifest->description); ?></td>
+                                    <td><strong><?php echo esc_html($manifest->label()); ?></strong></td>
+                                    <td><?php echo esc_html($manifest->description()); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
