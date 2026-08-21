@@ -240,6 +240,24 @@ final class StagingModule implements Module
                     <?php $this->checkbox_row('intercept_mail',
                         __('Intercept outgoing mail', 'valolink-plugin'),
                         __('All outgoing wp_mail() is redirected to the site admin with a [STAGING] prefix; CC/BCC headers stripped.', 'valolink-plugin')); ?>
+                    <tr>
+                        <th scope="row">
+                            <label for="valolink-intercept-mail-extra"><?php esc_html_e('Additional intercept recipient', 'valolink-plugin'); ?></label>
+                        </th>
+                        <td>
+                            <input
+                                id="valolink-intercept-mail-extra"
+                                type="email"
+                                name="intercept_mail_extra"
+                                class="regular-text"
+                                value="<?php echo esc_attr((string) $this->setting('intercept_mail_extra', '')); ?>"
+                                placeholder="<?php esc_attr_e('customer@example.com', 'valolink-plugin'); ?>"
+                            >
+                            <p class="description">
+                                <?php esc_html_e('Optional. Intercepted mail also goes to this address — e.g. the customer, so they can test flows that send email. Leave empty to send to the site admin only.', 'valolink-plugin'); ?>
+                            </p>
+                        </td>
+                    </tr>
                     <?php $this->checkbox_row('disable_live_gateways',
                         __('Disable live WooCommerce payment gateways', 'valolink-plugin'),
                         __('Only safe offline gateways (BACS, Cheque, COD) remain active when WooCommerce is installed.', 'valolink-plugin')); ?>
@@ -377,6 +395,7 @@ final class StagingModule implements Module
             'force_staging'           => $bool('force_staging'),
             'block_indexing'          => $bool('block_indexing'),
             'intercept_mail'          => $bool('intercept_mail'),
+            'intercept_mail_extra'    => sanitize_email((string) wp_unslash($_POST['intercept_mail_extra'] ?? '')),
             'disable_live_gateways'   => $bool('disable_live_gateways'),
             'require_login'           => $bool('require_login'),
             'coming_soon_enabled'     => $bool('coming_soon_enabled'),
@@ -470,8 +489,8 @@ final class StagingModule implements Module
     /** @param array<string, mixed> $atts */
     public function intercept_mail(array $atts): array
     {
-        $admin_email = (string) get_option('admin_email', '');
-        if ($admin_email === '') {
+        $recipients = $this->intercept_recipients();
+        if ($recipients === []) {
             return $atts;
         }
 
@@ -479,7 +498,7 @@ final class StagingModule implements Module
             ? implode(', ', $atts['to'])
             : (string) ($atts['to'] ?? '');
 
-        $atts['to']      = $admin_email;
+        $atts['to']      = $recipients;
         $atts['subject'] = '[STAGING] ' . ($atts['subject'] ?? '');
 
         $headers = $atts['headers'] ?? [];
@@ -497,6 +516,23 @@ final class StagingModule implements Module
         ) . ($atts['message'] ?? '');
 
         return $atts;
+    }
+
+    /**
+     * Site admin plus the optional extra recipient, deduplicated.
+     *
+     * @return list<string>
+     */
+    private function intercept_recipients(): array
+    {
+        $candidates = [
+            (string) get_option('admin_email', ''),
+            (string) $this->setting('intercept_mail_extra', ''),
+        ];
+
+        $valid = array_filter(array_map('trim', $candidates), 'is_email');
+
+        return array_values(array_unique(array_map('strtolower', $valid)));
     }
 
     /**
@@ -569,7 +605,13 @@ final class StagingModule implements Module
         }
         $active = [];
         if ($this->is_enabled('block_indexing'))        $active[] = __('indexing blocked', 'valolink-plugin');
-        if ($this->is_enabled('intercept_mail'))        $active[] = __('mail intercepted', 'valolink-plugin');
+        if ($this->is_enabled('intercept_mail')) {
+            $extra = (string) $this->setting('intercept_mail_extra', '');
+            $active[] = is_email($extra)
+                /* translators: %s: additional intercept recipient address. */
+                ? sprintf(__('mail intercepted (also to %s)', 'valolink-plugin'), $extra)
+                : __('mail intercepted', 'valolink-plugin');
+        }
         if ($this->is_enabled('disable_live_gateways') && class_exists('WooCommerce'))
                                                         $active[] = __('Woo live gateways off', 'valolink-plugin');
         if ($this->is_enabled('require_login'))         $active[] = __('login required', 'valolink-plugin');
@@ -607,6 +649,12 @@ final class StagingModule implements Module
 
         if ($this->is_enabled('disable_live_gateways') && !class_exists('WooCommerce')) {
             $warnings[] = __('Disable live WooCommerce gateways is on, but WooCommerce is not active here. Nothing to filter.', 'valolink-plugin');
+        }
+        $extra_recipient = trim((string) $this->setting('intercept_mail_extra', ''));
+        if ($extra_recipient !== '' && !is_email($extra_recipient)) {
+            $warnings[] = __('The additional intercept recipient is not a valid email address — it will be ignored.', 'valolink-plugin');
+        } elseif ($extra_recipient !== '' && !$this->is_enabled('intercept_mail')) {
+            $warnings[] = __('An additional intercept recipient is set, but mail interception is off — nothing is redirected anywhere.', 'valolink-plugin');
         }
         if ($this->is_enabled('coming_soon_enabled') && (int) $this->setting('coming_soon_page_id') <= 0) {
             $warnings[] = __('Coming-soon redirect is on, but no destination page is selected — visitors will not be redirected anywhere.', 'valolink-plugin');
@@ -725,6 +773,7 @@ final class StagingModule implements Module
             'force_staging'           => false,
             'block_indexing'          => true,
             'intercept_mail'          => true,
+            'intercept_mail_extra'    => '',
             'disable_live_gateways'   => true,
             'require_login'           => false,
             'coming_soon_enabled'     => false,
