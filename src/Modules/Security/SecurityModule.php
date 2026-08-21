@@ -48,7 +48,7 @@ final class SecurityModule implements Module
 
     // --- Login timing guard ---
     private const LOGIN_TOKEN_FIELD   = 'vl_lt';
-    private const LOGIN_MIN_SECONDS   = 2;      // human floor: page load → submit. Lower if autofill users get blocked.
+    private const LOGIN_MIN_SECONDS   = 1;      // human floor: page load → submit. Lower if autofill users get blocked.
     private const LOGIN_TOKEN_MAX_AGE = 43200;  // 12h — rejects stale/cached forms and bounds the single-use store TTL.
 
     public function __construct(private readonly Settings $settings) {}
