@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Valolink\Plugin;
 
 use Valolink\Plugin\Admin\SettingsPage;
+use Valolink\Plugin\Modules\Accesslink\AccesslinkModule;
 use Valolink\Plugin\Modules\Branding\BrandingModule;
 use Valolink\Plugin\Modules\Email\EmailModule;
 use Valolink\Plugin\Modules\EngineLink\EngineLinkModule;
@@ -93,6 +94,15 @@ final class Plugin
             label: static fn (): string => __('EngineLink', 'valolink-plugin'),
             description: static fn (): string => __('Exposes REST endpoints for EngineLink to pull site inventory (WP version, PHP, plugins, health). Requires an API key set below.', 'valolink-plugin'),
             class: EngineLinkModule::class,
+            default_enabled: false,
+            constructor_args: [$settings],
+        ));
+
+        $registry->register(new ModuleManifest(
+            id: AccesslinkModule::MODULE_ID,
+            label: static fn (): string => __('Accesslink', 'valolink-plugin'),
+            description: static fn (): string => __('Lets an authorised agent propose content changes over REST. Nothing is applied until a human approves it under Valolink → Accesslink. Needs its own API key and an explicit "accept new changes" toggle before it will take anything.', 'valolink-plugin'),
+            class: AccesslinkModule::class,
             default_enabled: false,
             constructor_args: [$settings],
         ));

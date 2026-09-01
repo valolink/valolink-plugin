@@ -1,0 +1,301 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Valolink\Plugin\Modules\Accesslink;
+
+use Valolink\Plugin\Settings;
+
+/**
+ * The review screen. Renders the pending queue with a diff per change and
+ * approve/reject buttons; every button is a nonced admin-post form that ends
+ * up in ChangeService, the same code path the REST routes use.
+ */
+final class QueuePage
+{
+    public function __construct(
+        private readonly Settings $settings,
+        private readonly ChangeRepository $repo,
+        private readonly AccesslinkAuth $auth,
+    ) {}
+
+    public function render(): void
+    {
+        if (!current_user_can(ChangeService::APPROVE_CAP)) {
+            wp_die(esc_html__('You do not have permission to review changes.', 'valolink-plugin'));
+        }
+
+        $pending  = $this->repo->list(ChangeRepository::STATUS_PENDING, 50);
+        $recent   = array_filter(
+            $this->repo->list(null, 30),
+            static fn (array $c): bool => $c['status'] !== ChangeRepository::STATUS_PENDING,
+        );
+        $notice   = isset($_GET['vl_msg']) ? sanitize_key(wp_unslash($_GET['vl_msg'])) : '';
+        ?>
+        <div class="wrap">
+            <h1><?php esc_html_e('Accesslink', 'valolink-plugin'); ?></h1>
+
+            <?php $this->render_notice($notice); ?>
+            <?php $this->render_status_banner(); ?>
+
+            <h2><?php
+                /* translators: %d: number of pending changes */
+                printf(esc_html__('Pending changes (%d)', 'valolink-plugin'), count($pending));
+            ?></h2>
+
+            <?php if ($pending === []) : ?>
+                <p><?php esc_html_e('Nothing waiting for review.', 'valolink-plugin'); ?></p>
+            <?php else : ?>
+                <?php foreach ($pending as $change) : ?>
+                    <?php $this->render_change($change); ?>
+                <?php endforeach; ?>
+            <?php endif; ?>
+
+            <?php if ($recent !== []) : ?>
+                <h2><?php esc_html_e('Recently resolved', 'valolink-plugin'); ?></h2>
+                <table class="widefat striped">
+                    <thead>
+                        <tr>
+                            <th><?php esc_html_e('What', 'valolink-plugin'); ?></th>
+                            <th><?php esc_html_e('Action', 'valolink-plugin'); ?></th>
+                            <th><?php esc_html_e('Status', 'valolink-plugin'); ?></th>
+                            <th><?php esc_html_e('Reviewed', 'valolink-plugin'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($recent as $change) : ?>
+                        <tr>
+                            <td><?php echo esc_html((string) $change['summary']); ?></td>
+                            <td><?php echo esc_html((string) $change['action']); ?></td>
+                            <td>
+                                <?php echo esc_html((string) $change['status']); ?>
+                                <?php if (!empty($change['error'])) : ?>
+                                    <br><small><?php echo esc_html((string) $change['error']); ?></small>
+                                <?php endif; ?>
+                            </td>
+                            <td><?php echo esc_html((string) ($change['reviewed_at'] ?? '')); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php endif; ?>
+
+            <?php if (current_user_can('manage_options')) : ?>
+                <hr>
+                <?php $this->render_settings(); ?>
+            <?php endif; ?>
+        </div>
+        <?php
+    }
+
+    private function render_change(array $change): void
+    {
+        $target_id = (int) $change['target_id'];
+        $is_create = $change['action'] === ChangeRepository::ACTION_CREATE;
+        ?>
+        <div class="card" style="max-width:none;margin-bottom:1em;padding:1em;">
+            <h3 style="margin-top:0;">
+                <?php echo $is_create ? '+ ' : '&#9998; '; ?>
+                <?php echo esc_html((string) $change['summary']); ?>
+                <span style="font-weight:normal;color:#666;">
+                    — <?php echo esc_html((string) $change['post_type']); ?>,
+                    <?php echo esc_html((string) $change['created_at']); ?> UTC
+                    <?php if (!empty($change['requested_by'])) : ?>
+                        · <?php echo esc_html((string) $change['requested_by']); ?>
+                    <?php endif; ?>
+                </span>
+            </h3>
+
+            <?php if (!empty($change['note'])) : ?>
+                <p><em><?php echo esc_html((string) $change['note']); ?></em></p>
+            <?php endif; ?>
+
+            <?php if ($is_create) : ?>
+                <p><?php esc_html_e('Drafted and ready to preview. Approving publishes it.', 'valolink-plugin'); ?></p>
+            <?php else : ?>
+                <?php $this->render_diff($change); ?>
+            <?php endif; ?>
+
+            <p>
+                <?php if ($target_id > 0) : ?>
+                    <a class="button" target="_blank" rel="noopener"
+                       href="<?php echo esc_url((string) get_preview_post_link($target_id)); ?>">
+                        <?php esc_html_e('Preview', 'valolink-plugin'); ?>
+                    </a>
+                    <a class="button" target="_blank" rel="noopener"
+                       href="<?php echo esc_url((string) get_edit_post_link($target_id)); ?>">
+                        <?php esc_html_e('Open in editor', 'valolink-plugin'); ?>
+                    </a>
+                <?php endif; ?>
+            </p>
+
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline;">
+                <?php wp_nonce_field(AccesslinkModule::REVIEW_NONCE); ?>
+                <input type="hidden" name="action" value="<?php echo esc_attr(AccesslinkModule::REVIEW_ACTION); ?>">
+                <input type="hidden" name="change_id" value="<?php echo esc_attr((string) $change['id']); ?>">
+                <button class="button button-primary" name="decision" value="approve">
+                    <?php esc_html_e('Approve', 'valolink-plugin'); ?>
+                </button>
+                <button class="button" name="decision" value="reject">
+                    <?php esc_html_e('Reject', 'valolink-plugin'); ?>
+                </button>
+            </form>
+        </div>
+        <?php
+    }
+
+    /**
+     * Diff the live post against what the change proposes, field by field.
+     * wp_text_diff() is what the revisions screen uses and it escapes its own
+     * output; if it is somehow unavailable we degrade to plain before/after
+     * rather than rendering nothing.
+     */
+    private function render_diff(array $change): void
+    {
+        $post = get_post((int) $change['target_id']);
+        if (!$post instanceof \WP_Post) {
+            echo '<p><strong>' . esc_html__('Target post no longer exists.', 'valolink-plugin') . '</strong></p>';
+            return;
+        }
+
+        $fields = $change['payload']['fields'] ?? [];
+        foreach ($fields as $field => $proposed) {
+            $current = (string) ($post->{$field} ?? '');
+            if ($current === (string) $proposed) {
+                continue;
+            }
+
+            echo '<h4>' . esc_html($field) . '</h4>';
+
+            if (function_exists('wp_text_diff')) {
+                $diff = wp_text_diff($current, (string) $proposed, [
+                    'title_left'  => __('Current', 'valolink-plugin'),
+                    'title_right' => __('Proposed', 'valolink-plugin'),
+                ]);
+                if ($diff !== '') {
+                    echo $diff; // phpcs:ignore WordPress.Security.EscapeOutput -- wp_text_diff escapes internally.
+                    continue;
+                }
+            }
+
+            echo '<p><strong>' . esc_html__('Current', 'valolink-plugin') . '</strong></p>';
+            echo '<pre style="white-space:pre-wrap;">' . esc_html($current) . '</pre>';
+            echo '<p><strong>' . esc_html__('Proposed', 'valolink-plugin') . '</strong></p>';
+            echo '<pre style="white-space:pre-wrap;">' . esc_html((string) $proposed) . '</pre>';
+        }
+    }
+
+    private function render_status_banner(): void
+    {
+        if ($this->auth->api_key() === '') {
+            echo '<div class="notice notice-warning"><p>'
+                . esc_html__('No Accesslink API key yet — generate one below before pointing an agent at this site.', 'valolink-plugin')
+                . '</p></div>';
+        }
+
+        if (!$this->auth->writes_enabled()) {
+            echo '<div class="notice notice-info"><p>'
+                . esc_html__('Accesslink writes are switched off. Existing changes can still be reviewed, but new ones are refused.', 'valolink-plugin')
+                . '</p></div>';
+        }
+    }
+
+    private function render_notice(string $msg): void
+    {
+        $map = [
+            'approved' => [__('Change applied.', 'valolink-plugin'), 'success'],
+            'rejected' => [__('Change rejected.', 'valolink-plugin'), 'success'],
+            'stale'    => [__('The post changed after that was proposed — it was parked as stale, nothing was overwritten.', 'valolink-plugin'), 'warning'],
+            'failed'   => [__('Applying that change failed. See the row below for the error.', 'valolink-plugin'), 'error'],
+            'saved'    => [__('Settings saved.', 'valolink-plugin'), 'success'],
+            'keyregen' => [__('API key regenerated.', 'valolink-plugin'), 'success'],
+        ];
+
+        if (!isset($map[$msg])) {
+            return;
+        }
+
+        [$text, $type] = $map[$msg];
+        printf(
+            '<div class="notice notice-%s is-dismissible"><p>%s</p></div>',
+            esc_attr($type),
+            esc_html($text),
+        );
+    }
+
+    /**
+     * Admins only — the queue itself is visible to anyone who can publish, but
+     * the API key on this panel is a write credential for the whole site.
+     */
+    private function render_settings(): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        $key   = $this->auth->api_key();
+        $types = implode(', ', (array) $this->settings->get_module_setting(
+            AccesslinkModule::MODULE_ID,
+            'allowed_post_types',
+            ['post', 'page'],
+        ));
+        ?>
+        <h2><?php esc_html_e('Settings', 'valolink-plugin'); ?></h2>
+
+        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+            <?php wp_nonce_field(AccesslinkModule::SETTINGS_NONCE); ?>
+            <input type="hidden" name="action" value="<?php echo esc_attr(AccesslinkModule::SETTINGS_ACTION); ?>">
+
+            <table class="form-table" role="presentation">
+                <tr>
+                    <th scope="row"><?php esc_html_e('Base URL', 'valolink-plugin'); ?></th>
+                    <td><code><?php echo esc_html(rest_url(AccesslinkModule::REST_NAMESPACE)); ?></code></td>
+                </tr>
+                <tr>
+                    <th scope="row"><?php esc_html_e('API key', 'valolink-plugin'); ?></th>
+                    <td>
+                        <code><?php echo $key !== '' ? esc_html($key) : esc_html__('not generated', 'valolink-plugin'); ?></code>
+                        <p class="description">
+                            <?php esc_html_e('Propose-only. This key cannot approve anything — approving needs a logged-in user who can publish.', 'valolink-plugin'); ?>
+                        </p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><?php esc_html_e('Accept new changes', 'valolink-plugin'); ?></th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="writes_enabled" value="1"
+                                <?php checked($this->auth->writes_enabled()); ?>>
+                            <?php esc_html_e('Allow agents to file changes', 'valolink-plugin'); ?>
+                        </label>
+                        <p class="description">
+                            <?php esc_html_e('Kill switch. Unchecking stops all incoming proposals immediately; the queue stays readable.', 'valolink-plugin'); ?>
+                        </p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><?php esc_html_e('Allowed post types', 'valolink-plugin'); ?></th>
+                    <td>
+                        <input type="text" class="regular-text" name="allowed_post_types"
+                               value="<?php echo esc_attr($types); ?>">
+                        <p class="description">
+                            <?php esc_html_e('Comma-separated. Anything not listed here is refused at the API boundary.', 'valolink-plugin'); ?>
+                        </p>
+                    </td>
+                </tr>
+            </table>
+
+            <?php submit_button(__('Save settings', 'valolink-plugin')); ?>
+        </form>
+
+        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+            <?php wp_nonce_field(AccesslinkModule::REGEN_NONCE); ?>
+            <input type="hidden" name="action" value="<?php echo esc_attr(AccesslinkModule::REGEN_ACTION); ?>">
+            <?php submit_button(__('Regenerate API key', 'valolink-plugin'), 'secondary', 'submit', false); ?>
+            <p class="description">
+                <?php esc_html_e('Any agent using the old key stops working immediately.', 'valolink-plugin'); ?>
+            </p>
+        </form>
+        <?php
+    }
+}

@@ -76,6 +76,18 @@ Deliberately deferred until v1 inventory push is solid. The threat surface flips
 
 Do not start this before Phase 2 ships.
 
+### Accesslink follow-ups
+**Objective:** widen the agent change queue past posts and pages.
+
+The module shipped with a `PostApplier` covering `post_title` / `post_content` / `post_excerpt`. Deferred, in rough order of usefulness:
+
+- **WooCommerce products.** A `ProductApplier` beside `PostApplier`, going through `wc_get_product()` setters and `save()` — price/stock/SKU live in postmeta *and* Woo's `wp_wc_product_meta_lookup`, so `wp_update_post` desynchronises them. Queue, auth, staleness gate and review UI need no changes.
+- **Taxonomy terms, featured image, custom fields** on the existing post applier.
+- **Remote approval from EngineLink.** `ChangeService` is already the single implementation behind both the REST routes and the admin screen, so aggregating every site's queue into one Nuxt page is additive — but it needs an approver credential distinct from the propose key, since the whole design rests on those not being the same secret.
+- **Per-key scoping** (which post types, which categories) rather than one all-or-nothing site key.
+
+Spec and current wire shapes: `accesslink.md`.
+
 ### Module K — Isolated Shortcode Lazy Loader
 **Objective:** Last-resort optimization for genuinely unfixable heavy shortcodes/plugins.
 

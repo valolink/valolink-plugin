@@ -35,6 +35,7 @@ See `ROADMAP.md` for modules outside the current phase.
 - **Module loader:** Reads `valolink_settings`, instantiates only enabled modules, calls `should_load(ctx)`, then `register()`. The loader itself has no per-module knowledge; modules self-describe via a registry.
 - **Logging during Phase 1:** Modules log to `error_log()` until Module D ships. No direct DB writes for diagnostics.
 - **EngineLink transport (implemented — replaces the earlier HMAC-push design):** pull-based REST. EngineLink calls `enginelink/v1` endpoints (`/ping`, `/status` from EngineLinkModule; `/logs`, `/log-events` from LoggingModule) with an `Authorization: Bearer <key>` header. The key is generated on the plugin's EngineLink settings page and pasted into EngineLink's website settings (`Website.pluginApiKey`); `EnginelinkAuth` validates it. The plugin never pushes. Full API spec: `enginelink.md`.
+- **Accesslink transport (implemented):** its own REST namespace `accesslink/v1` and its own Bearer key, separate from EngineLink's. Agents may only *propose* content changes; applying requires the `publish_posts` capability, so the propose key can never approve its own work. Ships disabled, with an explicit writes toggle acting as kill switch. Full API spec: `accesslink.md`.
 - **Update channel (implemented):** GitHub releases. `src/Updater.php` checks `api.github.com/repos/valolink/valolink-plugin/releases/latest` and hooks `pre_set_site_transient_update_plugins` + `plugins_api`; releases are cut with `release.sh` (version bump → tag → GitHub Actions builds the zip). EngineLink does not serve an update manifest. Server-side install/upgrade on HestiaCP boxes: `hestiascripts/v-wp-valolink-plugin-install`.
 
 ## 4. Phase 1 Scope
@@ -60,4 +61,4 @@ Replace WP login logo with agency logo, inject agency support contact info benea
 - When in doubt about scope, ask before adding. Do not pre-build infrastructure for roadmap modules.
 - Don't introduce a dependency injection container, event bus, or other framework abstraction unless a Phase 1 module concretely needs it.
 - Tests: PHPUnit + WP test suite for the core loader and any non-trivial module logic. Manual smoke test on a real WP install before declaring a module done.
-- Current layout: `valolink-plugin.php` (bootstrap) + `src/` (Loader, Registry, Settings, Context, Updater, `Modules/{Branding,Email,EngineLink,Logging,Scripts,Security,Staging,Toolbox}`) + `bin/` build tooling + `release.sh`. Shipped as v0.1.x via GitHub releases.
+- Current layout: `valolink-plugin.php` (bootstrap) + `src/` (Loader, Registry, Settings, Context, Updater, `Modules/{Accesslink,Branding,Email,EngineLink,Logging,Scripts,Security,Staging,Toolbox}`) + `bin/` build tooling + `release.sh`. Shipped as v0.1.x via GitHub releases.
