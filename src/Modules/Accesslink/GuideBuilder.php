@@ -217,6 +217,23 @@ final class GuideBuilder
         $md[] = 'HTML: they carry the block\'s styling, and dropping them is the usual way a';
         $md[] = 'block edit comes out looking broken.';
         $md[] = '';
+        $md[] = '## Adding, removing and moving blocks';
+        $md[] = '';
+        $md[] = 'Editing text is not enough to write a page. Three more actions, all taking';
+        $md[] = 'a `path` from the block listing:';
+        $md[] = '';
+        $md[] = '- `insert_block` — `path`, `position` (`before`/`after`), `markup` (one block\'s';
+        $md[] = '  full markup, delimiters included). Inserts as a *sibling* of the block at';
+        $md[] = '  `path`. Copy the shape of a block already on the page rather than inventing';
+        $md[] = '  markup; if the block type is not installed here the proposal is refused.';
+        $md[] = '- `delete_block` — `path`.';
+        $md[] = '- `move_block` — `path`, `target_path`, `position`. Both paths as they appear';
+        $md[] = '  in the current document; the shift from removing the source is handled for you.';
+        $md[] = '';
+        $md[] = 'These reorder the document, so their staleness check covers the whole page, not';
+        $md[] = 'one block: if anything moves before approval, "after the second paragraph" no';
+        $md[] = 'longer means what you meant, and the change is parked as `stale`.';
+        $md[] = '';
         $md[] = '## Checking on your proposals';
         $md[] = '';
         $md[] = "- `GET {$base}/changes?status=pending` — the queue. Also `applied`, `rejected`, `stale`, `failed`.";
@@ -225,6 +242,10 @@ final class GuideBuilder
         $md[] = 'Statuses mean: `pending` waiting on a human · `applied` live on the site ·';
         $md[] = '`rejected` a human declined it · `stale` the post changed before approval, so it';
         $md[] = 'was not applied · `failed` WordPress refused the write, see `error`.';
+        $md[] = '';
+        $md[] = 'A rejection may carry `review_note` — the reviewer explaining why. Read it';
+        $md[] = 'before proposing anything similar; re-filing the same idea after it has been';
+        $md[] = 'turned down wastes their attention, which is the scarce resource here.';
         $md[] = '';
         $md[] = '## Notes for future agents';
         $md[] = '';
@@ -239,6 +260,8 @@ final class GuideBuilder
         $md[] = '## Rules';
         $md[] = '';
         $md[] = "- Post types you may touch: `{$types}`.";
+        $md[] = '- `post_status` may be set on an update as well as a create, so you can propose';
+        $md[] = '  publishing a draft or unpublishing a page.';
         $md[] = "- Fields you may set: `{$fields}`. Anything else is silently dropped.";
         $md[] = "- A `create` may request status: `{$statuses}`.";
         $md[] = '- You cannot delete or trash anything. There is no such action.';
@@ -253,6 +276,23 @@ final class GuideBuilder
             . ' characters comes back truncated, flagged with `truncated: true`.';
         $md[] = '  Do not propose a replacement built from truncated content.';
         $md[] = '';
+
+        $unavailable = [];
+        $seo_adapter = $applier->seo();
+        if (!$seo_adapter->can_write()) {
+            $unavailable[] = sprintf('SEO fields (%s)', $seo_adapter->label());
+        }
+        if ($unavailable !== []) {
+            $md[] = '## Not available on this site';
+            $md[] = '';
+            $md[] = 'Sites differ in what they have installed. Here, these are off the table —';
+            $md[] = 'not broken, just absent, so do not propose them:';
+            $md[] = '';
+            foreach ($unavailable as $line) {
+                $md[] = '- ' . $line;
+            }
+            $md[] = '';
+        }
 
         $notes = $this->notes->for_guide(self::NOTES_CHAR_BUDGET);
         if ($notes !== []) {

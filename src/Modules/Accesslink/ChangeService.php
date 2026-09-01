@@ -51,11 +51,13 @@ final class ChangeService
             ChangeRepository::ACTION_UPDATE,
             ChangeRepository::ACTION_UPDATE_BLOCK,
             ChangeRepository::ACTION_UPDATE_TEXT,
+            ...ChangeRepository::STRUCTURAL_ACTIONS,
         ];
         if (!in_array($action, $actions, true)) {
             return new \WP_Error(
                 'bad_action',
-                'action must be "create", "update", "update_text" or "update_block".',
+                'action must be one of: create, update, update_text, update_block, '
+                    . implode(', ', ChangeRepository::STRUCTURAL_ACTIONS) . '.',
                 ['status' => 400],
             );
         }
@@ -73,11 +75,19 @@ final class ChangeService
             }
         }
 
-        // A block edit carries a path and HTML rather than a field map.
-        if (in_array($action, [ChangeRepository::ACTION_UPDATE_BLOCK, ChangeRepository::ACTION_UPDATE_TEXT], true)) {
-            $note_early = isset($input['note']) ? sanitize_textarea_field((string) $input['note']) : null;
+        $note_early = isset($input['note']) ? sanitize_textarea_field((string) $input['note']) : null;
 
-            return $this->propose_update_block($action, $input, $note_early, $requested_by, $idempotency_key);
+        // Block edits carry a path rather than a field map.
+        if (in_array($action, [ChangeRepository::ACTION_UPDATE_BLOCK, ChangeRepository::ACTION_UPDATE_TEXT], true)) {
+            return $this->announce(
+                $this->propose_update_block($action, $input, $note_early, $requested_by, $idempotency_key),
+            );
+        }
+
+        if (in_array($action, ChangeRepository::STRUCTURAL_ACTIONS, true)) {
+            return $this->announce(
+                $this->propose_structural($action, $input, $note_early, $requested_by, $idempotency_key),
+            );
         }
 
         $fields = $this->sanitize_fields($input['fields'] ?? []);
@@ -91,9 +101,11 @@ final class ChangeService
 
         $note = isset($input['note']) ? sanitize_textarea_field((string) $input['note']) : null;
 
-        return $action === ChangeRepository::ACTION_CREATE
-            ? $this->propose_create($input, $fields, $note, $requested_by, $idempotency_key)
-            : $this->propose_update($input, $fields, $note, $requested_by, $idempotency_key);
+        return $this->announce(
+            $action === ChangeRepository::ACTION_CREATE
+                ? $this->propose_create($input, $fields, $note, $requested_by, $idempotency_key)
+                : $this->propose_update($input, $fields, $note, $requested_by, $idempotency_key),
+        );
     }
 
     private function propose_create(
@@ -281,6 +293,119 @@ final class ChangeService
     }
 
     /**
+     * Adding, removing or moving a block.
+     *
+     * Staleness here hashes the whole document rather than one block: paths are
+     * positional, so any structural change elsewhere means "after the second
+     * paragraph" no longer refers to what the agent meant.
+     */
+    private function propose_structural(
+        string $action,
+        array $input,
+        ?string $note,
+        ?string $requested_by,
+        ?string $idempotency_key,
+    ): array|\WP_Error {
+        $target_id = (int) ($input['target_id'] ?? 0);
+        $post = $target_id > 0 ? get_post($target_id) : null;
+        if (!$post instanceof \WP_Post) {
+            return new \WP_Error('not_found', 'No post with that id.', ['status' => 404]);
+        }
+        if (!in_array($post->post_type, $this->allowed_post_types(), true)) {
+            return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 400]);
+        }
+
+        $path = trim((string) ($input['path'] ?? ''));
+        if ($path === '') {
+            return new \WP_Error('no_path', 'path is required — see GET /content/{id}/blocks.', ['status' => 400]);
+        }
+
+        $reader = new BlockReader();
+        $content = (string) $post->post_content;
+        $payload = ['path' => $path];
+
+        switch ($action) {
+            case ChangeRepository::ACTION_INSERT_BLOCK:
+                $markup = (string) ($input['markup'] ?? '');
+                if (trim($markup) === '') {
+                    return new \WP_Error('no_markup', 'markup is required.', ['status' => 400]);
+                }
+                $position = (string) ($input['position'] ?? 'after');
+                $trial = $reader->insert_block($content, $path, $position, $markup);
+                $payload += ['markup' => $markup, 'position' => $position];
+                break;
+
+            case ChangeRepository::ACTION_DELETE_BLOCK:
+                $trial = $reader->delete_block($content, $path);
+                break;
+
+            default:
+                $target_path = trim((string) ($input['target_path'] ?? ''));
+                if ($target_path === '') {
+                    return new \WP_Error('no_target_path', 'target_path is required.', ['status' => 400]);
+                }
+                $position = (string) ($input['position'] ?? 'after');
+                $trial = $reader->move_block($content, $path, $target_path, $position);
+                $payload += ['target_path' => $target_path, 'position' => $position];
+                break;
+        }
+
+        if (is_wp_error($trial)) {
+            $trial->add_data(['status' => 400], $trial->get_error_code());
+
+            return $trial;
+        }
+
+        $issues = (new BlockValidator())->check_diff($content, $trial);
+        if ($issues !== []) {
+            return new \WP_Error('invalid_block_markup', implode(' ', $issues), ['status' => 400, 'issues' => $issues]);
+        }
+
+        $block = $reader->get_at($content, $path);
+        $id = $this->repo->insert([
+            'action'          => $action,
+            'target_id'       => $target_id,
+            'post_type'       => $post->post_type,
+            'base_hash'       => $this->content_hash($post),
+            'payload'         => $payload,
+            'summary'         => $this->summarize($post->post_title . ' — ' . ($block['name'] ?? $path)),
+            'note'            => $note,
+            'requested_by'    => $requested_by,
+            'idempotency_key' => $idempotency_key,
+        ]);
+
+        $this->audit('accesslink_proposed', [
+            'change_id' => $id,
+            'action'    => $action,
+            'post_id'   => $target_id,
+            'path'      => $path,
+            'by'        => $requested_by,
+        ]);
+
+        return $this->repo->find($id) ?? [];
+    }
+
+    /**
+     * Single funnel for "a change was just queued", so a future action type
+     * cannot silently skip telling anyone. Never allowed to affect the result:
+     * the change is already safely stored by this point.
+     */
+    private function announce(array|\WP_Error $result): array|\WP_Error
+    {
+        if (!is_wp_error($result) && ($result['status'] ?? '') === ChangeRepository::STATUS_PENDING) {
+            (new ChangeNotifier($this->settings))->notify_queued($result);
+        }
+
+        return $result;
+    }
+
+    /** Whole-document digest, for changes whose meaning depends on structure. */
+    private function content_hash(\WP_Post $post): string
+    {
+        return hash('sha256', $post->post_modified_gmt . '|' . $post->post_content);
+    }
+
+    /**
      * Staleness for a block edit covers the block itself, not the whole post —
      * so unrelated edits elsewhere on the page don't needlessly invalidate it,
      * while a change to this block (or its disappearance) does.
@@ -317,7 +442,45 @@ final class ChangeService
         $target_id = (int) $change['target_id'];
         $fields    = $change['payload']['fields'] ?? [];
 
-        if (in_array($change['action'], [ChangeRepository::ACTION_UPDATE_BLOCK, ChangeRepository::ACTION_UPDATE_TEXT], true)) {
+        if (in_array($change['action'], ChangeRepository::STRUCTURAL_ACTIONS, true)) {
+            $post = get_post($target_id);
+            if (!$post instanceof \WP_Post) {
+                return $this->fail($id, 'Target post no longer exists.');
+            }
+            if (!hash_equals((string) $change['base_hash'], $this->content_hash($post))) {
+                return $this->mark_stale(
+                    $id,
+                    $target_id,
+                    'The page changed after this was proposed, so the block positions no longer mean the same thing. Re-read it and propose again.',
+                );
+            }
+
+            $reader = new BlockReader();
+            $p = $change['payload'];
+            $content = match ($change['action']) {
+                ChangeRepository::ACTION_INSERT_BLOCK => $reader->insert_block(
+                    (string) $post->post_content,
+                    (string) ($p['path'] ?? ''),
+                    (string) ($p['position'] ?? 'after'),
+                    (string) ($p['markup'] ?? ''),
+                ),
+                ChangeRepository::ACTION_DELETE_BLOCK => $reader->delete_block(
+                    (string) $post->post_content,
+                    (string) ($p['path'] ?? ''),
+                ),
+                default => $reader->move_block(
+                    (string) $post->post_content,
+                    (string) ($p['path'] ?? ''),
+                    (string) ($p['target_path'] ?? ''),
+                    (string) ($p['position'] ?? 'after'),
+                ),
+            };
+            if (is_wp_error($content)) {
+                return $this->fail($id, $content->get_error_message());
+            }
+
+            $result = $this->applier->apply_raw_content($target_id, $content);
+        } elseif (in_array($change['action'], [ChangeRepository::ACTION_UPDATE_BLOCK, ChangeRepository::ACTION_UPDATE_TEXT], true)) {
             $post = get_post($target_id);
             if (!$post instanceof \WP_Post) {
                 return $this->fail($id, 'Target post no longer exists.');
@@ -390,7 +553,20 @@ final class ChangeService
         return $this->repo->find($id) ?? [];
     }
 
-    public function reject(int $id): array|\WP_Error
+    private function mark_stale(int $id, int $target_id, string $message): array
+    {
+        $this->repo->update($id, [
+            'status'      => ChangeRepository::STATUS_STALE,
+            'reviewed_by' => get_current_user_id() ?: null,
+            'reviewed_at' => current_time('mysql', true),
+            'error'       => $message,
+        ]);
+        $this->audit('accesslink_stale', ['change_id' => $id, 'post_id' => $target_id], 'warning');
+
+        return $this->repo->find($id) ?? [];
+    }
+
+    public function reject(int $id, ?string $reason = null): array|\WP_Error
     {
         if (!current_user_can(self::APPROVE_CAP)) {
             return new \WP_Error('forbidden', 'You cannot reject changes.', ['status' => 403]);
@@ -410,10 +586,13 @@ final class ChangeService
             wp_trash_post((int) $change['target_id']);
         }
 
+        // The reason is the agent's only feedback channel. Without it a
+        // rejection teaches nothing and the same proposal comes back.
         $this->repo->update($id, [
             'status'      => ChangeRepository::STATUS_REJECTED,
             'reviewed_by' => get_current_user_id() ?: null,
             'reviewed_at' => current_time('mysql', true),
+            'review_note' => $reason !== null && trim($reason) !== '' ? trim($reason) : null,
         ]);
 
         $this->audit('accesslink_rejected', [

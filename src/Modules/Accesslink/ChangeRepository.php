@@ -19,6 +19,16 @@ final class ChangeRepository
     public const ACTION_UPDATE = 'update';
     public const ACTION_UPDATE_BLOCK = 'update_block';
     public const ACTION_UPDATE_TEXT  = 'update_text';
+    public const ACTION_INSERT_BLOCK = 'insert_block';
+    public const ACTION_DELETE_BLOCK = 'delete_block';
+    public const ACTION_MOVE_BLOCK   = 'move_block';
+
+    /** Actions that rearrange the document, so positional paths may shift. */
+    public const STRUCTURAL_ACTIONS = [
+        self::ACTION_INSERT_BLOCK,
+        self::ACTION_DELETE_BLOCK,
+        self::ACTION_MOVE_BLOCK,
+    ];
 
     public function insert(array $row): int
     {

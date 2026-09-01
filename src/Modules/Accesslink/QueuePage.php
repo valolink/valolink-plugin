@@ -59,6 +59,7 @@ final class QueuePage
                             <th><?php esc_html_e('What', 'valolink-plugin'); ?></th>
                             <th><?php esc_html_e('Action', 'valolink-plugin'); ?></th>
                             <th><?php esc_html_e('Status', 'valolink-plugin'); ?></th>
+                            <th><?php esc_html_e('Reason given', 'valolink-plugin'); ?></th>
                             <th><?php esc_html_e('Reviewed', 'valolink-plugin'); ?></th>
                         </tr>
                     </thead>
@@ -73,6 +74,7 @@ final class QueuePage
                                     <br><small><?php echo esc_html((string) $change['error']); ?></small>
                                 <?php endif; ?>
                             </td>
+                            <td><?php echo esc_html((string) ($change['review_note'] ?? '')); ?></td>
                             <td><?php echo esc_html((string) ($change['reviewed_at'] ?? '')); ?></td>
                         </tr>
                     <?php endforeach; ?>
@@ -150,10 +152,14 @@ final class QueuePage
                 <?php endif; ?>
             </p>
 
-            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline;">
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <?php wp_nonce_field(AccesslinkModule::REVIEW_NONCE); ?>
                 <input type="hidden" name="action" value="<?php echo esc_attr(AccesslinkModule::REVIEW_ACTION); ?>">
                 <input type="hidden" name="change_id" value="<?php echo esc_attr((string) $change['id']); ?>">
+                <p>
+                    <input type="text" name="review_note" class="regular-text"
+                           placeholder="<?php esc_attr_e('Reason, if rejecting — the agent reads this', 'valolink-plugin'); ?>">
+                </p>
                 <button class="button button-primary" name="decision" value="approve">
                     <?php esc_html_e('Approve', 'valolink-plugin'); ?>
                 </button>
@@ -388,6 +394,28 @@ final class QueuePage
                         </label>
                         <p class="description">
                             <?php esc_html_e('Kill switch. Unchecking stops all incoming proposals immediately; the queue stays readable.', 'valolink-plugin'); ?>
+                        </p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><?php esc_html_e('Notify on new changes', 'valolink-plugin'); ?></th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="notify_enabled" value="1" <?php
+                                checked((bool) $this->settings->get_module_setting(
+                                    AccesslinkModule::MODULE_ID, 'notify_enabled', true,
+                                )); ?>>
+                            <?php esc_html_e('Email when an agent files a change', 'valolink-plugin'); ?>
+                        </label>
+                        <p>
+                            <input type="text" class="regular-text" name="notify_emails"
+                                   value="<?php echo esc_attr((string) $this->settings->get_module_setting(
+                                       AccesslinkModule::MODULE_ID, 'notify_emails', '',
+                                   )); ?>"
+                                   placeholder="<?php echo esc_attr((string) get_option('admin_email')); ?>">
+                        </p>
+                        <p class="description">
+                            <?php esc_html_e('Comma-separated; the site admin address is used when blank. At most one mail per 15 minutes however many changes arrive. A notice also appears in wp-admin regardless, in case mail is unreliable.', 'valolink-plugin'); ?>
                         </p>
                     </td>
                 </tr>

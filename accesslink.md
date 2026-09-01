@@ -32,6 +32,10 @@ agent                          site                         human
 
 A change ends in exactly one of: `applied`, `rejected`, `failed`, `stale`.
 
+A rejection may carry `review_note` — the reviewer saying why, entered next to the Reject button and returned to the agent on `GET /changes/{id}`. Without it a rejection teaches nothing and the same proposal comes back; it is the only feedback channel the loop has.
+
+**Notification.** Queuing a change emails the addresses configured on the Accesslink screen (the site admin address by default), at most one message per fifteen minutes however many changes arrive, and a wp-admin notice appears regardless in case mail is unreliable. Built on `wp_mail()` alone — the Email module routes it through Resend when enabled, WordPress falls back to PHP mail when it isn't. A failing mailer is logged and swallowed: the change is already stored by then, and losing it because SMTP is down would be far worse than a missed email.
+
 `stale` is the interesting one. An update proposal records a hash of the fields it intends to touch plus the post's modification time. That hash is recomputed at approval; if it disagrees, somebody edited the post in the meantime and the proposal is answering a stale question. The change is parked rather than applied, and nothing is overwritten. Re-propose against the current version.
 
 ## Create vs update
@@ -112,6 +116,24 @@ The block tree, flattened into addressable paths. Paths are dot-joined child ind
 ```
 
 Only `editable: true` blocks — leaves with their own HTML — can be changed. Capped at 400 blocks.
+
+### Composing a page — insert_block · delete_block · move_block
+
+Editing text is not enough to write a page, so three structural actions sit alongside `update_text`:
+
+| Action | Payload |
+|---|---|
+| `insert_block` | `target_id`, `path`, `position` (`before`/`after`), `markup` |
+| `delete_block` | `target_id`, `path` |
+| `move_block` | `target_id`, `path`, `target_path`, `position` |
+
+Insert places the new block as a **sibling** of the one at `path`. Sibling-only is deliberate: inserting *inside* an arbitrary block raises the question of where among its children and text it goes, and for a leaf there is no sensible answer. Both `move_block` paths are given as they appear in the current document — removing the source shifts later siblings, and that adjustment is handled internally rather than asked of the agent.
+
+`markup` must parse to exactly one block whose type is **registered on this site**. A block from a plugin that isn't installed is refused by name, which is how plugin differences surface: as a narrower set of possibilities, never as a failure.
+
+Maintaining `innerContent` is the subtle part. A parent block stores its children as an array of literal HTML interleaved with `null` markers, one per child in order; adding or removing a child without adding or removing the matching `null` renders the children in the wrong places. That bookkeeping is in `BlockReader`.
+
+Staleness for these covers the **whole document**, not one block, because paths are positional: if anything moves before approval, "after the second paragraph" no longer means what the agent meant.
 
 ### POST /validate
 
@@ -209,6 +231,7 @@ Send `X-Accesslink-Agent: <name>` to identify the caller in the queue and the au
 | `seo_title`, `seo_description`, `focus_keyword` | Normalised across SEO plugins — see below. Empty string clears the value so the plugin's global template takes over. |
 | `categories`, `tags` | Arrays of **existing** term slugs. Unknown slugs are refused with the valid list; Accesslink never creates terms, because an agent inventing near-duplicates quietly wrecks a taxonomy. Refused outright on post types without that taxonomy. |
 | `featured_media` | Attachment id, must be an image. `0` clears it. Uploading is not possible. |
+| `post_status` | `draft`, `pending`, `publish`, `private`. Settable on an update as well as a create, so unpublishing and publishing can be proposed. |
 
 Everything is validated at **propose** time, not just at apply, so an agent finds out immediately and the reviewer's queue doesn't fill with proposals that were never applicable. Apply re-checks anyway, since the site can move underneath a queued change.
 
@@ -267,6 +290,18 @@ Filtering does **not** go through `wp_kses_post()` directly. That call preserves
 `ContentSanitizer` is therefore `post` plus a conservative SVG subset, which brings the loss to 0.5% while still removing `on*` handlers, `<script>` inside SVG, `<use>` (external document references) and `javascript:` protocols. `<style>` is deliberately not allowed, which accounts for most of the remaining 0.5%.
 
 ---
+
+## Degrading rather than failing
+
+Sites differ, and absence of a plugin narrows what Accesslink offers instead of breaking it:
+
+- **No SEO plugin, or an unwritable one** — the SEO fields drop out of `allowed_fields` entirely and a proposal naming them is refused with the reason. `GET /guide` reports the resolved adapter and lists what is unavailable on this site.
+- **A post type without a taxonomy** — refused by name rather than written where nothing renders it.
+- **A block type whose plugin isn't installed** — `insert_block` refuses it by name.
+- **Logging module off** — audit calls are wrapped and swallowed; nothing depends on it.
+- **Queue table never installed** — every endpoint answers `503 accesslink_unavailable` instead of leaking SQL errors.
+
+`GET /guide` returns a `capabilities` object so an agent can branch on what a site supports rather than discovering absence through a failed proposal.
 
 ## Not built yet
 

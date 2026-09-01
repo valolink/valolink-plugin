@@ -25,6 +25,9 @@ final class PostApplier
     /** Plain post columns. */
     public const POST_FIELDS = ['post_title', 'post_content', 'post_excerpt'];
 
+    /** Settable on an update as well as a create. */
+    public const STATUS_FIELD = 'post_status';
+
     /** Taxonomy assignment. Values are arrays of existing term slugs. */
     public const TERM_FIELDS = ['categories' => 'category', 'tags' => 'post_tag'];
 
@@ -55,6 +58,7 @@ final class PostApplier
         }
         $fields = array_merge($fields, array_keys(self::TERM_FIELDS));
         $fields[] = self::MEDIA_FIELD;
+        $fields[] = self::STATUS_FIELD;
 
         return $fields;
     }
@@ -91,6 +95,10 @@ final class PostApplier
 
         if ($field === self::MEDIA_FIELD) {
             return (string) (int) get_post_thumbnail_id($post_id);
+        }
+
+        if ($field === self::STATUS_FIELD) {
+            return (string) $post->post_status;
         }
 
         return '';
@@ -215,6 +223,16 @@ final class PostApplier
             }
         }
 
+        if (array_key_exists(self::STATUS_FIELD, $fields)
+            && !in_array((string) $fields[self::STATUS_FIELD], self::ALLOWED_STATUSES, true)
+        ) {
+            return new \WP_Error(
+                'bad_status',
+                sprintf('post_status must be one of: %s.', implode(', ', self::ALLOWED_STATUSES)),
+                ['status' => 400],
+            );
+        }
+
         if (array_key_exists(self::MEDIA_FIELD, $fields) && (int) $fields[self::MEDIA_FIELD] !== 0) {
             $check = $this->validate_attachment((int) $fields[self::MEDIA_FIELD]);
             if (is_wp_error($check)) {
@@ -264,6 +282,14 @@ final class PostApplier
             $set = wp_set_object_terms($post_id, $ids, $taxonomy, false);
             if (is_wp_error($set)) {
                 return $set;
+            }
+            $wrote = true;
+        }
+
+        if (array_key_exists(self::STATUS_FIELD, $fields)) {
+            $status = $this->set_status($post_id, (string) $fields[self::STATUS_FIELD]);
+            if (is_wp_error($status)) {
+                return $status;
             }
             $wrote = true;
         }

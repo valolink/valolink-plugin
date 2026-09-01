@@ -10,7 +10,7 @@ namespace Valolink\Plugin\Modules\Accesslink;
  */
 final class ChangeTable
 {
-    public const SCHEMA_VERSION = 1;
+    public const SCHEMA_VERSION = 2;
     public const VERSION_OPTION = 'valolink_changes_schema_version';
 
     public static function table_name(): string
@@ -56,6 +56,7 @@ final class ChangeTable
             idempotency_key varchar(100) DEFAULT NULL,
             reviewed_by bigint(20) unsigned DEFAULT NULL,
             reviewed_at datetime DEFAULT NULL,
+            review_note text DEFAULT NULL,
             error text DEFAULT NULL,
             PRIMARY KEY  (id),
             UNIQUE KEY idempotency_key (idempotency_key),
@@ -66,6 +67,28 @@ final class ChangeTable
 
         dbDelta($sql);
         update_option(self::VERSION_OPTION, self::SCHEMA_VERSION, false);
+    }
+
+    /**
+     * Cheap existence probe, cached per request.
+     *
+     * dbDelta can fail quietly — no CREATE privilege, a full disk, a filtered
+     * prefix — and every endpoint would then surface raw SQL errors. Checking
+     * once lets the module answer "temporarily unavailable" instead, which is
+     * the difference between a degraded feature and a broken site.
+     */
+    public static function exists(): bool
+    {
+        static $exists = null;
+        if ($exists !== null) {
+            return $exists;
+        }
+
+        global $wpdb;
+        $table = self::table_name();
+        $found = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
+
+        return $exists = ($found === $table);
     }
 
     public static function drop(): void

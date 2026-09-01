@@ -193,6 +193,234 @@ final class BlockReader
         return $serialized;
     }
 
+
+    // -------------------------------------------------------------------------
+    // Composition: adding, removing and moving blocks
+    // -------------------------------------------------------------------------
+
+    /**
+     * Insert new block markup as a sibling of the block at $path.
+     *
+     * Sibling-only on purpose. Inserting *inside* an arbitrary block raises the
+     * question of where among its existing children and text the new one goes,
+     * and for a leaf there is no sensible answer at all. "Before/after this
+     * block" covers what is actually asked for — add a paragraph after the
+     * intro — with no ambiguity.
+     */
+    public function insert_block(string $content, string $path, string $position, string $markup): string|\WP_Error
+    {
+        if (!in_array($position, ['before', 'after'], true)) {
+            return new \WP_Error('bad_position', 'position must be "before" or "after".');
+        }
+
+        $parsed = parse_blocks($markup);
+        // parse_blocks emits whitespace-only filler blocks; ignore them.
+        $real = array_values(array_filter(
+            $parsed,
+            static fn (array $b): bool => ($b['blockName'] ?? null) !== null,
+        ));
+        if (count($real) !== 1) {
+            return new \WP_Error(
+                'not_one_block',
+                sprintf('Expected markup for exactly one block, parsed %d.', count($real)),
+            );
+        }
+        $new = $real[0];
+
+        $registry = \WP_Block_Type_Registry::get_instance();
+        if (!$registry->is_registered((string) $new['blockName'])) {
+            return new \WP_Error(
+                'block_not_available',
+                sprintf(
+                    'Block type "%s" is not available on this site — the plugin providing it is not installed.',
+                    $new['blockName'],
+                ),
+            );
+        }
+
+        $blocks = parse_blocks($content);
+        $ok = $this->at_parent($blocks, $path, function (array &$children, ?array &$inner, int $index) use ($new, $position): bool {
+            $at = $position === 'after' ? $index + 1 : $index;
+            array_splice($children, $at, 0, [$new]);
+            if ($inner !== null) {
+                $this->splice_null($inner, $at, true);
+            }
+
+            return true;
+        });
+
+        if (!$ok) {
+            return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path));
+        }
+
+        return serialize_blocks($blocks);
+    }
+
+    public function delete_block(string $content, string $path): string|\WP_Error
+    {
+        $blocks = parse_blocks($content);
+        $ok = $this->at_parent($blocks, $path, function (array &$children, ?array &$inner, int $index): bool {
+            array_splice($children, $index, 1);
+            if ($inner !== null) {
+                $this->splice_null($inner, $index, false);
+            }
+
+            return true;
+        });
+
+        if (!$ok) {
+            return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path));
+        }
+
+        return serialize_blocks($blocks);
+    }
+
+    /**
+     * Move the block at $path to sit before/after the block at $target_path.
+     *
+     * Both paths are given as they appear in the *current* document. Removing
+     * the source first shifts anything after it within the same parent, so the
+     * target index is adjusted by one in that case — the alternative is asking
+     * the agent to reason about post-removal indices, which is a reliable way
+     * to get silently wrong placements.
+     */
+    public function move_block(string $content, string $path, string $target_path, string $position): string|\WP_Error
+    {
+        if (!in_array($position, ['before', 'after'], true)) {
+            return new \WP_Error('bad_position', 'position must be "before" or "after".');
+        }
+        if ($path === $target_path) {
+            return new \WP_Error('same_block', 'Source and target are the same block.');
+        }
+        if (str_starts_with($target_path, $path . '.')) {
+            return new \WP_Error('move_into_self', 'Cannot move a block inside itself.');
+        }
+
+        $moving = $this->get_at($content, $path);
+        if ($moving === null) {
+            return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path));
+        }
+        if ($this->get_at($content, $target_path) === null) {
+            return new \WP_Error('block_not_found', sprintf('No block at path %s.', $target_path));
+        }
+
+        $src_parent = $this->parent_path($path);
+        $src_index  = $this->last_index($path);
+        $tgt_parent = $this->parent_path($target_path);
+        $tgt_index  = $this->last_index($target_path);
+
+        $markup = $this->serialize_one($content, $path);
+        if ($markup === null) {
+            return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path));
+        }
+
+        $removed = $this->delete_block($content, $path);
+        if (is_wp_error($removed)) {
+            return $removed;
+        }
+
+        // Same parent and the source sat earlier: everything after it shifted.
+        if ($src_parent === $tgt_parent && $src_index < $tgt_index) {
+            $tgt_index--;
+        }
+        $adjusted = $tgt_parent === '' ? (string) $tgt_index : $tgt_parent . '.' . $tgt_index;
+
+        return $this->insert_block($removed, $adjusted, $position, $markup);
+    }
+
+    /** Serialize just the block at $path, for re-insertion elsewhere. */
+    private function serialize_one(string $content, string $path): ?string
+    {
+        $block = $this->find(parse_blocks($content), $path);
+
+        return $block === null ? null : serialize_block($block);
+    }
+
+    /**
+     * Run $op against the child list that contains $path, handing it the
+     * parent's innerContent too so the two stay in step.
+     */
+    private function at_parent(array &$blocks, string $path, callable $op): bool
+    {
+        $parts = explode('.', $path);
+        $index = (int) array_pop($parts);
+
+        if ($parts === []) {
+            $nothing = null;
+
+            return $op($blocks, $nothing, $index);
+        }
+
+        return $this->descend($blocks, $parts, $index, $op);
+    }
+
+    /** Walk to the parent block named by $parts, then run $op on its children. */
+    private function descend(array &$level, array $parts, int $index, callable $op): bool
+    {
+        $i = (int) array_shift($parts);
+        if (!isset($level[$i]) || !is_array($level[$i]['innerBlocks'] ?? null)) {
+            return false;
+        }
+
+        if ($parts === []) {
+            if (!isset($level[$i]['innerBlocks'][$index]) && $index > count($level[$i]['innerBlocks'])) {
+                return false;
+            }
+
+            return $op($level[$i]['innerBlocks'], $level[$i]['innerContent'], $index);
+        }
+
+        return $this->descend($level[$i]['innerBlocks'], $parts, $index, $op);
+    }
+
+    /**
+     * innerContent interleaves literal HTML with nulls, one null per child in
+     * order. Adding or removing a child means adding or removing the matching
+     * null, or the parent renders its children in the wrong places.
+     */
+    private function splice_null(array &$inner, int $child_index, bool $insert): void
+    {
+        $nulls = [];
+        foreach ($inner as $k => $v) {
+            if ($v === null) {
+                $nulls[] = $k;
+            }
+        }
+
+        if ($insert) {
+            if (isset($nulls[$child_index])) {
+                $at = $nulls[$child_index];
+            } elseif ($nulls !== []) {
+                $at = end($nulls) + 1;
+            } else {
+                // No children yet: drop the placeholder just inside the wrapper.
+                $at = count($inner) > 1 ? count($inner) - 1 : count($inner);
+            }
+            array_splice($inner, $at, 0, [null]);
+
+            return;
+        }
+
+        if (isset($nulls[$child_index])) {
+            array_splice($inner, $nulls[$child_index], 1);
+        }
+    }
+
+    private function parent_path(string $path): string
+    {
+        $parts = explode('.', $path);
+        array_pop($parts);
+
+        return implode('.', $parts);
+    }
+
+    private function last_index(string $path): int
+    {
+        $parts = explode('.', $path);
+
+        return (int) end($parts);
+    }
+
     // -------------------------------------------------------------------------
 
     private function walk(array $blocks, string $prefix, int $depth, array &$out): void

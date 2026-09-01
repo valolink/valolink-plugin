@@ -67,6 +67,7 @@ final class AccesslinkModule implements Module
         ChangeTable::maybe_install();
 
         add_action('admin_menu', [$this, 'add_settings_page']);
+        add_action('admin_notices', [$this, 'render_pending_notice']);
         add_action('admin_post_' . self::REVIEW_ACTION, [$this, 'handle_review']);
         add_action('admin_post_' . self::SETTINGS_ACTION, [$this, 'handle_settings']);
         add_action('admin_post_' . self::REGEN_ACTION, [$this, 'handle_regen_key']);
@@ -113,6 +114,11 @@ final class AccesslinkModule implements Module
         );
     }
 
+    public function render_pending_notice(): void
+    {
+        (new ChangeNotifier($this->settings))->render_admin_notice();
+    }
+
     public function render_page(): void
     {
         (new QueuePage($this->settings, new ChangeRepository(), new AccesslinkAuth($this->settings)))->render();
@@ -125,6 +131,23 @@ final class AccesslinkModule implements Module
     public function register_routes(): void
     {
         $auth = new AccesslinkAuth($this->settings);
+
+        // If the queue table never installed — no CREATE privilege, a filtered
+        // prefix — answer honestly instead of leaking SQL errors from every
+        // endpoint. The module degrades to unavailable, the site stays up.
+        if (!ChangeTable::exists()) {
+            register_rest_route(self::REST_NAMESPACE, '/(?P<any>.*)', [
+                'methods'             => \WP_REST_Server::ALLMETHODS,
+                'callback'            => static fn (): \WP_Error => new \WP_Error(
+                    'accesslink_unavailable',
+                    'Accesslink storage is not installed on this site; the module cannot operate.',
+                    ['status' => 503],
+                ),
+                'permission_callback' => '__return_true',
+            ]);
+
+            return;
+        }
 
         // Both verbs in one call rather than two registrations of the same
         // route — WP would merge those, but relying on that is needlessly
@@ -259,6 +282,22 @@ final class AccesslinkModule implements Module
             'allowed_fields'     => (new PostApplier())->allowed_fields(),
             'seo_plugin'         => (new PostApplier())->seo()->id(),
             'allowed_statuses'   => PostApplier::ALLOWED_STATUSES,
+            'actions'            => [
+                'create', 'update', 'update_text', 'update_block',
+                ...ChangeRepository::STRUCTURAL_ACTIONS,
+            ],
+            // What this particular install supports, so an agent can branch on
+            // it rather than discovering absence through a failed proposal.
+            'capabilities'       => [
+                'seo'            => (new PostApplier())->seo()->can_write(),
+                'taxonomy'       => true,
+                'featured_image' => true,
+                'blocks'         => true,
+                'menus'          => false,
+                'elements'       => false,
+                'delete_post'    => false,
+                'media_upload'   => false,
+            ],
             'limits'             => [
                 'content_list_max'     => ContentReader::LIST_MAX,
                 'content_max_chars'    => ContentReader::CONTENT_MAX_CHARS,
@@ -445,7 +484,9 @@ final class AccesslinkModule implements Module
 
     public function handle_reject(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        $result = $this->service()->reject((int) $request['id']);
+        $body = $request->get_json_params();
+        $reason = is_array($body) ? (string) ($body['reason'] ?? '') : '';
+        $result = $this->service()->reject((int) $request['id'], $reason !== '' ? $reason : null);
 
         return is_wp_error($result) ? $result : new \WP_REST_Response($this->shape($result));
     }
@@ -466,6 +507,9 @@ final class AccesslinkModule implements Module
             'created_at'   => $change['created_at'],
             'reviewed_at'  => $change['reviewed_at'],
             'error'        => $change['error'],
+            // Why a human turned it down. The agent's only feedback channel —
+            // without it a rejection teaches nothing.
+            'review_note'  => $change['review_note'] ?? null,
             'edit_link'    => $change['target_id'] ? get_edit_post_link((int) $change['target_id'], 'raw') : null,
         ];
     }
@@ -490,8 +534,12 @@ final class AccesslinkModule implements Module
             $this->redirect_back('failed');
         }
 
+        $reason = isset($_POST['review_note'])
+            ? sanitize_textarea_field(wp_unslash($_POST['review_note']))
+            : null;
+
         $service = $this->service();
-        $result  = $decision === 'approve' ? $service->approve($id) : $service->reject($id);
+        $result  = $decision === 'approve' ? $service->approve($id) : $service->reject($id, $reason);
 
         if (is_wp_error($result)) {
             $msg = 'failed';
@@ -528,6 +576,10 @@ final class AccesslinkModule implements Module
         $instructions = mb_substr($instructions, 0, GuideBuilder::INSTRUCTIONS_MAX_CHARS);
 
         $this->settings->set_module_settings(self::MODULE_ID, [
+            'notify_enabled'     => !empty($_POST['notify_enabled']),
+            'notify_emails'      => isset($_POST['notify_emails'])
+                ? sanitize_text_field(wp_unslash($_POST['notify_emails']))
+                : '',
             'writes_enabled'     => !empty($_POST['writes_enabled']),
             'allowed_post_types' => $types !== [] ? $types : ['post', 'page'],
             'instructions'       => $instructions,
