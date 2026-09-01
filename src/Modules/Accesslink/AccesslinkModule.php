@@ -31,7 +31,8 @@ final class AccesslinkModule implements Module
     public const REGEN_ACTION    = 'valolink_accesslink_regen';
     public const REGEN_NONCE     = 'valolink_accesslink_regen';
 
-    public const PRUNE_HOOK = 'valolink_accesslink_prune';
+    public const PRUNE_HOOK    = 'valolink_accesslink_prune';
+    public const PREVIEW_PARAM = 'accesslink_preview';
 
     public function __construct(private readonly Settings $settings) {}
 
@@ -42,11 +43,25 @@ final class AccesslinkModule implements Module
         // from wp-cli — without it `wp eval` sees the classes (they autoload)
         // but never the schema, which makes the module untestable and
         // unadministrable from a shell. Neither CLI nor cron is a hot path.
-        return $context->is_admin || $context->is_rest || $context->is_cron || $context->is_cli;
+        //
+        // Frontend loads only when a preview is explicitly being asked for, so
+        // ordinary page views keep the module's footprint at zero. Reading one
+        // query var is as cheap as this check gets.
+        return $context->is_admin
+            || $context->is_rest
+            || $context->is_cron
+            || $context->is_cli
+            || ($context->is_frontend && isset($_GET[self::PREVIEW_PARAM]));
     }
 
     public function register(): void
     {
+        // A preview request never touches the queue schema.
+        if (isset($_GET[self::PREVIEW_PARAM]) && !is_admin()) {
+            add_filter('the_posts', [$this, 'filter_preview_posts'], 10, 2);
+            return;
+        }
+
         ChangeTable::maybe_install();
 
         add_action('admin_menu', [$this, 'add_settings_page']);
@@ -296,6 +311,81 @@ final class AccesslinkModule implements Module
     {
         $days = (int) $this->settings->get_module_setting(self::MODULE_ID, 'retention_days', 30);
         (new ChangeRepository())->prune(max(1, $days));
+    }
+
+    // -------------------------------------------------------------------------
+    // Preview
+    // -------------------------------------------------------------------------
+
+    /**
+     * Link that renders the target post through the theme with the proposed
+     * values swapped in.
+     *
+     * Reviewing an update used to offer only a text diff, because the whole
+     * point of the design is that the live post is untouched while a change is
+     * pending — so "Preview" showed the unchanged original, which is worse than
+     * useless. This renders the proposal without storing it anywhere.
+     */
+    public static function preview_url(int $change_id, int $target_id): string
+    {
+        return add_query_arg(
+            [
+                self::PREVIEW_PARAM => $change_id,
+                '_wpnonce'          => wp_create_nonce(self::PREVIEW_PARAM . '_' . $change_id),
+            ],
+            (string) get_permalink($target_id),
+        );
+    }
+
+    /**
+     * Swap the proposed field values into the main query's post. Nothing is
+     * written; the substitution lives and dies with this request.
+     */
+    public function filter_preview_posts(array $posts, \WP_Query $query): array
+    {
+        if (!$query->is_main_query() || $posts === []) {
+            return $posts;
+        }
+
+        $change_id = isset($_GET[self::PREVIEW_PARAM]) ? (int) $_GET[self::PREVIEW_PARAM] : 0;
+        if ($change_id <= 0) {
+            return $posts;
+        }
+
+        // Nonce first, then capability: previewing a proposal must not be a way
+        // to see, or to have the theme render, content the viewer couldn't
+        // otherwise reach.
+        $nonce = isset($_GET['_wpnonce']) ? sanitize_text_field(wp_unslash($_GET['_wpnonce'])) : '';
+        if (!wp_verify_nonce($nonce, self::PREVIEW_PARAM . '_' . $change_id)) {
+            return $posts;
+        }
+        if (!current_user_can(ChangeService::APPROVE_CAP)) {
+            return $posts;
+        }
+
+        $change = (new ChangeRepository())->find($change_id);
+        if ($change === null || $change['status'] !== ChangeRepository::STATUS_PENDING) {
+            return $posts;
+        }
+
+        $target = (int) $change['target_id'];
+        if ($target <= 0 || (int) $posts[0]->ID !== $target) {
+            return $posts;
+        }
+
+        // Clone so the substitution doesn't bleed into the post cache — only
+        // what this loop renders should show the proposal.
+        $preview = clone $posts[0];
+        foreach (($change['payload']['fields'] ?? []) as $field => $value) {
+            if (in_array($field, PostApplier::ALLOWED_FIELDS, true)) {
+                $preview->{$field} = (string) $value;
+            }
+        }
+        $posts[0] = $preview;
+
+        nocache_headers();
+
+        return $posts;
     }
 
     private function redirect_back(string $msg): void

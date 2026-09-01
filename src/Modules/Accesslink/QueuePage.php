@@ -118,13 +118,31 @@ final class QueuePage
 
             <p>
                 <?php if ($target_id > 0) : ?>
-                    <a class="button" target="_blank" rel="noopener"
-                       href="<?php echo esc_url((string) get_preview_post_link($target_id)); ?>">
-                        <?php esc_html_e('Preview', 'valolink-plugin'); ?>
-                    </a>
+                    <?php if ($is_create) : ?>
+                        <a class="button" target="_blank" rel="noopener"
+                           href="<?php echo esc_url((string) get_preview_post_link($target_id)); ?>">
+                            <?php esc_html_e('Preview draft', 'valolink-plugin'); ?>
+                        </a>
+                    <?php else : ?>
+                        <a class="button button-secondary" target="_blank" rel="noopener"
+                           href="<?php echo esc_url(AccesslinkModule::preview_url((int) $change['id'], $target_id)); ?>">
+                            <?php esc_html_e('Preview proposed version', 'valolink-plugin'); ?>
+                        </a>
+                        <a class="button" target="_blank" rel="noopener"
+                           href="<?php echo esc_url((string) get_permalink($target_id)); ?>">
+                            <?php esc_html_e('View current version', 'valolink-plugin'); ?>
+                        </a>
+                    <?php endif; ?>
                     <a class="button" target="_blank" rel="noopener"
                        href="<?php echo esc_url((string) get_edit_post_link($target_id)); ?>">
-                        <?php esc_html_e('Open in editor', 'valolink-plugin'); ?>
+                        <?php
+                        // For an update this opens the *live* post, which is
+                        // deliberately still unchanged — labelled so it doesn't
+                        // read as "edit the proposal".
+                        echo $is_create
+                            ? esc_html__('Open draft in editor', 'valolink-plugin')
+                            : esc_html__('Open current version in editor', 'valolink-plugin');
+                        ?>
                     </a>
                 <?php endif; ?>
             </p>
