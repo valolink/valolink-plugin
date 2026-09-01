@@ -113,6 +113,26 @@ The block tree, flattened into addressable paths. Paths are dot-joined child ind
 
 Only `editable: true` blocks — leaves with their own HTML — can be changed. Capped at 400 blocks.
 
+### POST /validate
+
+Dry-runs block checks without filing anything. Send `{content}` to check markup outright, or `{target_id, path, text|html}` to test an edit against a real post.
+
+```json
+{ "ok": false,
+  "issues": ["<div> is not inline formatting. Block text may contain only: a, b, strong…"],
+  "pre_existing": ["<svg> inside core/paragraph: …"] }
+```
+
+`issues` is what *your edit* would introduce; `pre_existing` is what was already wrong on that post. They are separated deliberately — validating the whole document would make any page with an old problem uneditable, and an agent fixing a typo is not responsible for markup someone pasted in two years ago.
+
+**What can and cannot be checked.** Gutenberg decides block validity by re-running each block type's JavaScript `save()` against the stored attributes and comparing the result to the saved HTML. Those functions exist only in JS, so **PHP cannot reproduce that verdict** — content can round-trip through `parse_blocks()`/`serialize_blocks()` perfectly and still be rejected by the editor. What this endpoint does check:
+
+- the markup round-trips through the block parser (catches malformed delimiters and broken attribute JSON)
+- every block name is registered on this site
+- rich-text regions contain only inline formatting, which is the mistake that actually happens — an `<svg>` inside a `core/paragraph` can never match what its `save()` emits
+
+The rich-text check is skipped for blocks whose content selector is class-based (`.gb-text`), because there is no reliable way to tell which element is the legitimate wrapper, and guessing produced false positives on valid GenerateBlocks pages.
+
 ### POST /changes
 
 Files a proposal. Returns `201` with the created row.
@@ -129,6 +149,10 @@ For a block edit, use `action: "update_block"` with a `path` and replacement `ht
   "idempotency_key": "…"
 }
 ```
+
+**Prefer `action: "update_text"`**, which takes a `text` instead of `html` and replaces only what is inside the block's wrapper element, leaving the wrapper and its classes byte-identical. Since the wrapper is what `save()` would regenerate, not touching it removes the main way an edit turns a block invalid. `text` may contain only inline formatting; a `<div>` or `<svg>` is refused at propose time.
+
+`update_block` remains for cases where the whole block HTML genuinely must change — it is the sharper tool and correspondingly easier to cut yourself on.
 
 This is the right way to edit a block-based page. Regenerating a whole `post_content` is how an agent destroys one: on a GenerateBlocks site the copy sits four or five levels inside container wrappers whose delimiters carry JSON attributes, and rewriting the raw string reformats that JSON, drops attributes or mis-nests wrappers — after which the editor shows "this block contains unexpected or invalid content" and the diff is too large for a reviewer to catch it.
 

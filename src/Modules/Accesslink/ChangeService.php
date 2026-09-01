@@ -50,11 +50,12 @@ final class ChangeService
             ChangeRepository::ACTION_CREATE,
             ChangeRepository::ACTION_UPDATE,
             ChangeRepository::ACTION_UPDATE_BLOCK,
+            ChangeRepository::ACTION_UPDATE_TEXT,
         ];
         if (!in_array($action, $actions, true)) {
             return new \WP_Error(
                 'bad_action',
-                'action must be "create", "update" or "update_block".',
+                'action must be "create", "update", "update_text" or "update_block".',
                 ['status' => 400],
             );
         }
@@ -73,10 +74,10 @@ final class ChangeService
         }
 
         // A block edit carries a path and HTML rather than a field map.
-        if ($action === ChangeRepository::ACTION_UPDATE_BLOCK) {
+        if (in_array($action, [ChangeRepository::ACTION_UPDATE_BLOCK, ChangeRepository::ACTION_UPDATE_TEXT], true)) {
             $note_early = isset($input['note']) ? sanitize_textarea_field((string) $input['note']) : null;
 
-            return $this->propose_update_block($input, $note_early, $requested_by, $idempotency_key);
+            return $this->propose_update_block($action, $input, $note_early, $requested_by, $idempotency_key);
         }
 
         $fields = $this->sanitize_fields($input['fields'] ?? []);
@@ -192,6 +193,7 @@ final class ChangeService
     }
 
     private function propose_update_block(
+        string $action,
         array $input,
         ?string $note,
         ?string $requested_by,
@@ -214,10 +216,12 @@ final class ChangeService
         if ($path === '') {
             return new \WP_Error('no_path', 'path is required — see GET /content/{id}/blocks.', ['status' => 400]);
         }
-        if (!array_key_exists('html', $input)) {
-            return new \WP_Error('no_html', 'html is required.', ['status' => 400]);
+        $is_text = $action === ChangeRepository::ACTION_UPDATE_TEXT;
+        $key = $is_text ? 'text' : 'html';
+        if (!array_key_exists($key, $input)) {
+            return new \WP_Error('no_' . $key, sprintf('%s is required.', $key), ['status' => 400]);
         }
-        $html = (string) $input['html'];
+        $html = (string) $input[$key];
 
         $reader = new BlockReader();
         $block = $reader->get_at((string) $post->post_content, $path);
@@ -227,15 +231,29 @@ final class ChangeService
 
         // Dry-run the replacement now rather than at approval, so a structural
         // failure reaches the agent instead of the reviewer's queue.
-        $trial = $reader->replace_at((string) $post->post_content, $path, $html);
+        $trial = $is_text
+            ? $reader->replace_text_at((string) $post->post_content, $path, $html)
+            : $reader->replace_at((string) $post->post_content, $path, $html);
         if (is_wp_error($trial)) {
             $trial->add_data(['status' => 400], $trial->get_error_code());
 
             return $trial;
         }
 
+        // Cheap block-validity checks on the result. These cannot prove
+        // Gutenberg will accept it — that verdict lives in JavaScript — but
+        // they catch the mistakes an agent actually makes.
+        $issues = (new BlockValidator())->check_diff((string) $post->post_content, $trial);
+        if ($issues !== []) {
+            return new \WP_Error(
+                'invalid_block_markup',
+                implode(' ', $issues),
+                ['status' => 400, 'issues' => $issues],
+            );
+        }
+
         $id = $this->repo->insert([
-            'action'          => ChangeRepository::ACTION_UPDATE_BLOCK,
+            'action'          => $action,
             'target_id'       => $target_id,
             'post_type'       => $post->post_type,
             'base_hash'       => $this->block_hash($post, $path),
@@ -253,7 +271,7 @@ final class ChangeService
 
         $this->audit('accesslink_proposed', [
             'change_id' => $id,
-            'action'    => 'update_block',
+            'action'    => $action,
             'post_id'   => $target_id,
             'path'      => $path,
             'by'        => $requested_by,
@@ -299,7 +317,7 @@ final class ChangeService
         $target_id = (int) $change['target_id'];
         $fields    = $change['payload']['fields'] ?? [];
 
-        if ($change['action'] === ChangeRepository::ACTION_UPDATE_BLOCK) {
+        if (in_array($change['action'], [ChangeRepository::ACTION_UPDATE_BLOCK, ChangeRepository::ACTION_UPDATE_TEXT], true)) {
             $post = get_post($target_id);
             if (!$post instanceof \WP_Post) {
                 return $this->fail($id, 'Target post no longer exists.');
@@ -318,11 +336,10 @@ final class ChangeService
                 return $this->repo->find($id) ?? [];
             }
 
-            $content = (new BlockReader())->replace_at(
-                (string) $post->post_content,
-                $path,
-                (string) ($change['payload']['html'] ?? ''),
-            );
+            $reader = new BlockReader();
+            $content = $change['action'] === ChangeRepository::ACTION_UPDATE_TEXT
+                ? $reader->replace_text_at((string) $post->post_content, $path, (string) ($change['payload']['html'] ?? ''))
+                : $reader->replace_at((string) $post->post_content, $path, (string) ($change['payload']['html'] ?? ''));
             if (is_wp_error($content)) {
                 return $this->fail($id, $content->get_error_message());
             }

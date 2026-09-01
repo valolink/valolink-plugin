@@ -60,6 +60,94 @@ final class BlockReader
     }
 
     /**
+     * Replace only the text *inside* a block's wrapper element, leaving the
+     * wrapper — its tag, classes and every attribute — byte-identical.
+     *
+     * This is the safe way to edit a block and should be preferred over
+     * replace_at(). Gutenberg decides a block is valid by re-running its
+     * JavaScript save() against the stored attributes and comparing to the
+     * saved HTML, so anything that alters the wrapper risks a mismatch that
+     * PHP cannot predict. Leave the wrapper alone and there is nothing to
+     * disagree about; the only remaining requirement is that the replacement
+     * uses inline formatting RichText can actually emit.
+     */
+    public function replace_text_at(string $content, string $path, string $inner): string|\WP_Error
+    {
+        $block = $this->get_at($content, $path);
+        if ($block === null) {
+            return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path));
+        }
+        if ($block['has_inner_blocks']) {
+            return new \WP_Error(
+                'block_has_children',
+                sprintf('Block at %s contains other blocks; edit the leaf holding the text.', $path),
+            );
+        }
+
+        $parts = $this->split_wrapper((string) $block['html']);
+        if ($parts === null) {
+            return new \WP_Error(
+                'no_single_wrapper',
+                sprintf(
+                    'Block at %s has no single wrapping element, so its text cannot be replaced in isolation. Use update_block with full HTML if you are sure.',
+                    $path,
+                ),
+            );
+        }
+
+        foreach ($this->tags_in($inner) as $tag) {
+            if (!in_array($tag, BlockValidator::INLINE_TAGS, true)) {
+                return new \WP_Error(
+                    'disallowed_inline_tag',
+                    sprintf(
+                        '<%s> is not inline formatting. Block text may contain only: %s.',
+                        $tag,
+                        implode(', ', BlockValidator::INLINE_TAGS),
+                    ),
+                );
+            }
+        }
+
+        return $this->replace_at($content, $path, $parts[0] . $inner . $parts[2]);
+    }
+
+    /** The editable text of a block: the inner HTML of its wrapper element. */
+    public function text_html(string $content, string $path): ?string
+    {
+        $block = $this->get_at($content, $path);
+        if ($block === null) {
+            return null;
+        }
+        $parts = $this->split_wrapper((string) $block['html']);
+
+        return $parts === null ? null : $parts[1];
+    }
+
+    /**
+     * Split "<p class=x>hello</p>" into open tag / inner / close tag. Returns
+     * null when the HTML isn't a single wrapping element, in which case there
+     * is no unambiguous "inside" to replace.
+     *
+     * @return array{0:string,1:string,2:string}|null
+     */
+    private function split_wrapper(string $html): ?array
+    {
+        if (!preg_match('/^(\s*<([a-zA-Z][\w:-]*)\b[^>]*>)(.*)(<\/\2>\s*)$/s', $html, $m)) {
+            return null;
+        }
+
+        return [$m[1], $m[3], $m[4]];
+    }
+
+    /** @return array<int, string> */
+    private function tags_in(string $html): array
+    {
+        preg_match_all('/<\s*([a-zA-Z][\w:-]*)/', $html, $m);
+
+        return array_values(array_unique(array_map('strtolower', $m[1])));
+    }
+
+    /**
      * Replace one block's own HTML, leaving its attributes, its children and
      * every other block exactly as they were.
      */
@@ -134,6 +222,9 @@ final class BlockReader
             'has_inner_blocks' => !empty($block['innerBlocks']),
             'editable'         => empty($block['innerBlocks']) && trim($html) !== '',
             'html'             => $html,
+            // The inner HTML of the wrapper — what update_text replaces. Null
+            // when the block has no single wrapping element.
+            'text_html'        => $this->split_wrapper($html)[1] ?? null,
             'text'             => mb_substr($text, 0, self::TEXT_PREVIEW)
                 . (mb_strlen($text) > self::TEXT_PREVIEW ? '…' : ''),
         ];

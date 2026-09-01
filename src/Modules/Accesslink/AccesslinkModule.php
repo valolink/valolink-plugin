@@ -175,6 +175,14 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        // Dry-run the block checks without filing anything, so an agent can
+        // iterate before it puts something in a human's queue.
+        register_rest_route(self::REST_NAMESPACE, '/validate', [
+            'methods'             => \WP_REST_Server::CREATABLE,
+            'callback'            => [$this, 'handle_validate'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
         // Lookups for the two fields whose valid values an agent cannot guess:
         // term slugs (creating terms is refused) and attachment ids (uploading
         // is not possible).
@@ -294,6 +302,61 @@ final class AccesslinkModule implements Module
         $flat['has_blocks'] = has_blocks($post->post_content);
 
         return new \WP_REST_Response($flat);
+    }
+
+    public function handle_validate(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $body = $request->get_json_params();
+        if (!is_array($body)) {
+            return new \WP_Error('bad_body', 'Expected a JSON object.', ['status' => 400]);
+        }
+
+        $reader = new BlockReader();
+
+        // Either validate supplied content outright, or dry-run a block edit
+        // against a real post without queueing it.
+        if (isset($body['target_id'], $body['path'])) {
+            $post = get_post((int) $body['target_id']);
+            if (!$post instanceof \WP_Post) {
+                return new \WP_Error('not_found', 'No post with that id.', ['status' => 404]);
+            }
+            $path = (string) $body['path'];
+            $result = array_key_exists('text', $body)
+                ? $reader->replace_text_at((string) $post->post_content, $path, (string) $body['text'])
+                : $reader->replace_at((string) $post->post_content, $path, (string) ($body['html'] ?? ''));
+
+            if (is_wp_error($result)) {
+                return new \WP_REST_Response([
+                    'ok'     => false,
+                    'issues' => [$result->get_error_message()],
+                ]);
+            }
+            $issues = (new BlockValidator())->check_diff((string) $post->post_content, $result);
+            $pre = (new BlockValidator())->check((string) $post->post_content);
+
+            return new \WP_REST_Response([
+                'ok'           => $issues === [],
+                'issues'       => $issues,
+                'pre_existing' => $pre,
+                'note'         => 'issues = problems this edit would introduce. pre_existing = already wrong on that post, not your doing. Gutenberg decides final validity in JavaScript; PHP cannot reproduce that.',
+            ]);
+        } elseif (isset($body['content'])) {
+            $content = (string) $body['content'];
+        } else {
+            return new \WP_Error(
+                'nothing_to_validate',
+                'Send either {content} or {target_id, path, text|html}.',
+                ['status' => 400],
+            );
+        }
+
+        $issues = (new BlockValidator())->check($content);
+
+        return new \WP_REST_Response([
+            'ok'     => $issues === [],
+            'issues' => $issues,
+            'note'   => 'These are server-side checks only. Gutenberg decides final validity in JavaScript by re-running each block\'s save(); PHP cannot reproduce that.',
+        ]);
     }
 
     public function handle_taxonomies(): \WP_REST_Response
