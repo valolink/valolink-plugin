@@ -46,8 +46,17 @@ final class ChangeService
     public function propose(array $input, ?string $requested_by): array|\WP_Error
     {
         $action = (string) ($input['action'] ?? '');
-        if (!in_array($action, [ChangeRepository::ACTION_CREATE, ChangeRepository::ACTION_UPDATE], true)) {
-            return new \WP_Error('bad_action', 'action must be "create" or "update".', ['status' => 400]);
+        $actions = [
+            ChangeRepository::ACTION_CREATE,
+            ChangeRepository::ACTION_UPDATE,
+            ChangeRepository::ACTION_UPDATE_BLOCK,
+        ];
+        if (!in_array($action, $actions, true)) {
+            return new \WP_Error(
+                'bad_action',
+                'action must be "create", "update" or "update_block".',
+                ['status' => 400],
+            );
         }
 
         $idempotency_key = isset($input['idempotency_key'])
@@ -61,6 +70,13 @@ final class ChangeService
             if ($existing !== null) {
                 return $existing;
             }
+        }
+
+        // A block edit carries a path and HTML rather than a field map.
+        if ($action === ChangeRepository::ACTION_UPDATE_BLOCK) {
+            $note_early = isset($input['note']) ? sanitize_textarea_field((string) $input['note']) : null;
+
+            return $this->propose_update_block($input, $note_early, $requested_by, $idempotency_key);
         }
 
         $fields = $this->sanitize_fields($input['fields'] ?? []);
@@ -175,6 +191,93 @@ final class ChangeService
         return $this->repo->find($id) ?? [];
     }
 
+    private function propose_update_block(
+        array $input,
+        ?string $note,
+        ?string $requested_by,
+        ?string $idempotency_key,
+    ): array|\WP_Error {
+        $target_id = (int) ($input['target_id'] ?? 0);
+        if ($target_id <= 0) {
+            return new \WP_Error('no_target', 'target_id is required.', ['status' => 400]);
+        }
+
+        $post = get_post($target_id);
+        if (!$post instanceof \WP_Post) {
+            return new \WP_Error('not_found', 'No post with that id.', ['status' => 404]);
+        }
+        if (!in_array($post->post_type, $this->allowed_post_types(), true)) {
+            return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 400]);
+        }
+
+        $path = trim((string) ($input['path'] ?? ''));
+        if ($path === '') {
+            return new \WP_Error('no_path', 'path is required — see GET /content/{id}/blocks.', ['status' => 400]);
+        }
+        if (!array_key_exists('html', $input)) {
+            return new \WP_Error('no_html', 'html is required.', ['status' => 400]);
+        }
+        $html = (string) $input['html'];
+
+        $reader = new BlockReader();
+        $block = $reader->get_at((string) $post->post_content, $path);
+        if ($block === null) {
+            return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path), ['status' => 404]);
+        }
+
+        // Dry-run the replacement now rather than at approval, so a structural
+        // failure reaches the agent instead of the reviewer's queue.
+        $trial = $reader->replace_at((string) $post->post_content, $path, $html);
+        if (is_wp_error($trial)) {
+            $trial->add_data(['status' => 400], $trial->get_error_code());
+
+            return $trial;
+        }
+
+        $id = $this->repo->insert([
+            'action'          => ChangeRepository::ACTION_UPDATE_BLOCK,
+            'target_id'       => $target_id,
+            'post_type'       => $post->post_type,
+            'base_hash'       => $this->block_hash($post, $path),
+            'payload'         => [
+                'path'          => $path,
+                'html'          => $html,
+                'block_name'    => $block['name'],
+                'previous_html' => $block['html'],
+            ],
+            'summary'         => $this->summarize($post->post_title . ' — ' . $block['name']),
+            'note'            => $note,
+            'requested_by'    => $requested_by,
+            'idempotency_key' => $idempotency_key,
+        ]);
+
+        $this->audit('accesslink_proposed', [
+            'change_id' => $id,
+            'action'    => 'update_block',
+            'post_id'   => $target_id,
+            'path'      => $path,
+            'by'        => $requested_by,
+        ]);
+
+        return $this->repo->find($id) ?? [];
+    }
+
+    /**
+     * Staleness for a block edit covers the block itself, not the whole post —
+     * so unrelated edits elsewhere on the page don't needlessly invalidate it,
+     * while a change to this block (or its disappearance) does.
+     */
+    private function block_hash(\WP_Post $post, string $path): string
+    {
+        $block = (new BlockReader())->get_at((string) $post->post_content, $path);
+
+        return hash('sha256', (string) wp_json_encode([
+            'path' => $path,
+            'name' => $block['name'] ?? null,
+            'html' => $block['html'] ?? null,
+        ]));
+    }
+
     // -------------------------------------------------------------------------
     // Approve / reject
     // -------------------------------------------------------------------------
@@ -196,7 +299,36 @@ final class ChangeService
         $target_id = (int) $change['target_id'];
         $fields    = $change['payload']['fields'] ?? [];
 
-        if ($change['action'] === ChangeRepository::ACTION_UPDATE) {
+        if ($change['action'] === ChangeRepository::ACTION_UPDATE_BLOCK) {
+            $post = get_post($target_id);
+            if (!$post instanceof \WP_Post) {
+                return $this->fail($id, 'Target post no longer exists.');
+            }
+
+            $path = (string) ($change['payload']['path'] ?? '');
+            if (!hash_equals((string) $change['base_hash'], $this->block_hash($post, $path))) {
+                $this->repo->update($id, [
+                    'status'      => ChangeRepository::STATUS_STALE,
+                    'reviewed_by' => get_current_user_id() ?: null,
+                    'reviewed_at' => current_time('mysql', true),
+                    'error'       => 'That block changed after this was proposed; re-read it and propose again.',
+                ]);
+                $this->audit('accesslink_stale', ['change_id' => $id, 'post_id' => $target_id], 'warning');
+
+                return $this->repo->find($id) ?? [];
+            }
+
+            $content = (new BlockReader())->replace_at(
+                (string) $post->post_content,
+                $path,
+                (string) ($change['payload']['html'] ?? ''),
+            );
+            if (is_wp_error($content)) {
+                return $this->fail($id, $content->get_error_message());
+            }
+
+            $result = $this->applier->apply_raw_content($target_id, $content);
+        } elseif ($change['action'] === ChangeRepository::ACTION_UPDATE) {
             // Staleness gate. Someone editing the post between proposal and
             // approval must not have their work silently overwritten.
             $current = $this->applier->hash($target_id, array_keys($fields));

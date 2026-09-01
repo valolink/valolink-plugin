@@ -344,6 +344,21 @@ final class PostApplier
         return true;
     }
 
+    /**
+     * Write a whole post_content that was produced by re-serialising the block
+     * tree. Still passes the sanitizer, so a block edit is filtered on exactly
+     * the same terms as any other content change.
+     */
+    public function apply_raw_content(int $post_id, string $content): bool|\WP_Error
+    {
+        $result = wp_update_post(
+            wp_slash(['ID' => $post_id, 'post_content' => $this->filter_content($content)]),
+            true,
+        );
+
+        return is_wp_error($result) ? $result : true;
+    }
+
     public function set_status(int $post_id, string $status): bool|\WP_Error
     {
         if (!in_array($status, self::ALLOWED_STATUSES, true)) {
@@ -358,16 +373,16 @@ final class PostApplier
     /**
      * Mirror WordPress's own rule rather than inventing one: content is passed
      * through kses unless the acting user could have written it by hand. On a
-     * single site an administrator has unfiltered_html, so approving an agent's
-     * post is equivalent to pasting it into the editor yourself.
+     * single site administrators and editors have unfiltered_html, so approving
+     * an agent's post is equivalent to pasting it into the editor yourself; the
+     * filtered path is what an author-role reviewer gets.
      *
-     * KNOWN RISK: kses strips HTML comments, and block markup *is* HTML
-     * comments, so a non-administrator approving a block-based post flattens it
-     * to classic HTML. On a site where nearly everything is blocks that is data
-     * loss, not a safe fallback. Tracked as the next fix.
+     * ContentSanitizer rather than wp_kses_post() because the latter has no SVG
+     * allowlist and would strip every inline icon — see that class for the
+     * measurements.
      */
     private function filter_content(string $content): string
     {
-        return current_user_can('unfiltered_html') ? $content : wp_kses_post($content);
+        return current_user_can('unfiltered_html') ? $content : ContentSanitizer::filter($content);
     }
 }

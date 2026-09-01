@@ -17,6 +17,7 @@ final class ChangeRepository
 
     public const ACTION_CREATE = 'create';
     public const ACTION_UPDATE = 'update';
+    public const ACTION_UPDATE_BLOCK = 'update_block';
 
     public function insert(array $row): int
     {

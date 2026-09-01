@@ -169,6 +169,12 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        register_rest_route(self::REST_NAMESPACE, '/content/(?P<id>\d+)/blocks', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_content_blocks'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
         // Lookups for the two fields whose valid values an agent cannot guess:
         // term slugs (creating terms is refused) and attachment ids (uploading
         // is not possible).
@@ -271,6 +277,23 @@ final class AccesslinkModule implements Module
         $result = (new ContentReader($this->service(), new PostApplier()))->get((int) $request['id']);
 
         return is_wp_error($result) ? $result : new \WP_REST_Response($result);
+    }
+
+    public function handle_content_blocks(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $post = get_post((int) $request['id']);
+        if (!$post instanceof \WP_Post) {
+            return new \WP_Error('not_found', 'No post with that id.', ['status' => 404]);
+        }
+        if (!in_array($post->post_type, $this->service()->allowed_post_types(), true)) {
+            return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 403]);
+        }
+
+        $flat = (new BlockReader())->flatten((string) $post->post_content);
+        $flat['id'] = $post->ID;
+        $flat['has_blocks'] = has_blocks($post->post_content);
+
+        return new \WP_REST_Response($flat);
     }
 
     public function handle_taxonomies(): \WP_REST_Response
@@ -551,6 +574,22 @@ final class AccesslinkModule implements Module
         // Clone so the substitution doesn't bleed into the post cache — only
         // what this loop renders should show the proposal.
         $preview = clone $posts[0];
+
+        if ($change['action'] === ChangeRepository::ACTION_UPDATE_BLOCK) {
+            $replaced = (new BlockReader())->replace_at(
+                (string) $preview->post_content,
+                (string) ($change['payload']['path'] ?? ''),
+                (string) ($change['payload']['html'] ?? ''),
+            );
+            if (!is_wp_error($replaced)) {
+                $preview->post_content = $replaced;
+                $posts[0] = $preview;
+                nocache_headers();
+            }
+
+            return $posts;
+        }
+
         foreach (($change['payload']['fields'] ?? []) as $field => $value) {
             // Only the post columns are worth swapping for a preview — they
             // are what the theme renders from the post object. A proposed

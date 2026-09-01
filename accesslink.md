@@ -99,9 +99,42 @@ There is deliberately **no delete over the API**. Curating what agents tell each
 
 Writing a note respects the kill switch (`503` when writes are off); reading does not.
 
+### GET /content/{id}/blocks
+
+The block tree, flattened into addressable paths. Paths are dot-joined child indices — `0.1` is the second child of the first top-level block.
+
+```json
+{ "id": 2324, "has_blocks": true, "total": 36, "truncated": false,
+  "blocks": [
+    {"path":"0","name":"generateblocks/container","depth":0,"has_inner_blocks":true,"editable":false,"html":"…","text":""},
+    {"path":"0.0.1","name":"generateblocks/headline","depth":2,"has_inner_blocks":false,"editable":true,"html":"<h1 …>Verkkokaupat</h1>","text":"Verkkokaupat"}
+  ] }
+```
+
+Only `editable: true` blocks — leaves with their own HTML — can be changed. Capped at 400 blocks.
+
 ### POST /changes
 
 Files a proposal. Returns `201` with the created row.
+
+For a block edit, use `action: "update_block"` with a `path` and replacement `html` instead of `fields`:
+
+```json
+{
+  "action": "update_block",
+  "target_id": 2324,
+  "path": "0.0.1",
+  "html": "<h1 class=\"gb-headline\">Uusi otsikko</h1>",
+  "note": "Shorter headline for the hero.",
+  "idempotency_key": "…"
+}
+```
+
+This is the right way to edit a block-based page. Regenerating a whole `post_content` is how an agent destroys one: on a GenerateBlocks site the copy sits four or five levels inside container wrappers whose delimiters carry JSON attributes, and rewriting the raw string reformats that JSON, drops attributes or mis-nests wrappers — after which the editor shows "this block contains unexpected or invalid content" and the diff is too large for a reviewer to catch it.
+
+Only the addressed block's own HTML is replaced; attributes, children and every sibling are re-serialised untouched from the parsed tree. Editing a block that contains other blocks is refused — go to the leaf holding the text. After replacement the document is re-parsed and the block-name sequence compared to before; if it differs the change is refused rather than saved.
+
+Staleness for a block edit hashes that block alone, so unrelated edits elsewhere on the page don't invalidate it while a change to this block does.
 
 ```json
 {
@@ -205,7 +238,9 @@ Capability-gated (`publish_posts`), **not** key-gated. With no logged-in user th
 
 `post_content` is stored raw and filtered at apply time, mirroring WordPress's own rule: if the approving user has `unfiltered_html` (an administrator on a single site does), the content is applied as-is, exactly as if they had pasted it into the editor. Otherwise it goes through `wp_kses_post()`.
 
-Be aware that kses strips HTML comments, and block markup *is* HTML comments — so filtered content loses its block structure and degrades to classic HTML. That is the safe direction to fail in, but it means a non-admin approving a block-editor post gets a worse result than an admin approving the same post.
+Filtering does **not** go through `wp_kses_post()` directly. That call preserves block delimiters fine — they are HTML comments and modern kses keeps them — but it has no allowlist for inline SVG, and on a GeneratePress/GenerateBlocks site SVG icons are everywhere. Measured on this project's own front page, plain `wp_kses_post()` stripped 42 `<svg>`, 82 `<path>` and every `<g>`/`<circle>`/`<defs>`/`<mask>`, costing 14% of the document; across all 16 block posts it lost 7.9%.
+
+`ContentSanitizer` is therefore `post` plus a conservative SVG subset, which brings the loss to 0.5% while still removing `on*` handlers, `<script>` inside SVG, `<use>` (external document references) and `javascript:` protocols. `<style>` is deliberately not allowed, which accounts for most of the remaining 0.5%.
 
 ---
 
@@ -214,7 +249,8 @@ Be aware that kses strips HTML comments, and block markup *is* HTML comments —
 Named here so nobody assumes otherwise:
 
 - **WooCommerce products.** Products are a CPT, but price/stock/SKU live in postmeta *and* in Woo's `wp_wc_product_meta_lookup` table. Writing them through `wp_update_post` desynchronises the two. A `ProductApplier` going through `wc_get_product()` setters and `save()` slots in beside `PostApplier`; the queue, auth, staleness and review UI all work unchanged.
-- **Block-aware editing.** The big one. On a GeneratePress/GenerateBlocks site nearly all content is blocks, with copy nested several levels inside wrappers, and an agent that regenerates whole `post_content` will corrupt block attribute JSON. The right primitive is addressing individual blocks. Related and urgent: `wp_kses_post()` strips HTML comments, and block markup *is* HTML comments, so a non-administrator approving a block-based post currently flattens it.
+- **GeneratePress Elements.** Reading them (type, hook, and display conditions resolved to which posts they apply to) so an agent can tell that the footer CTA is an Element rather than a page.
+- **Menus.** `nav_menu_item` posts as a tree. Blocked less by the write than by the review: a text diff of a menu is meaningless, so the queue screen needs a tree diff before approving one is honest.
 - **Custom fields / ACF.** Common on agency sites, entirely absent here.
 - **Reading back a proposal's payload.** `GET /changes/{id}` returns metadata, not the proposed content, so an agent cannot inspect what a *different* agent queued — only that something is queued.
 - **Per-key scoping.** One key per site; the only granularity is the site-wide `allowed_post_types` list.

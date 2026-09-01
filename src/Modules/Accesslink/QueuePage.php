@@ -179,6 +179,25 @@ final class QueuePage
             return;
         }
 
+        // A block edit diffs just that block, which is the whole point of
+        // addressing one — a whole-post diff of a nested GenerateBlocks page is
+        // unreadable and a reviewer cannot judge it.
+        if ($change['action'] === ChangeRepository::ACTION_UPDATE_BLOCK) {
+            $path = (string) ($change['payload']['path'] ?? '');
+            $current = (new BlockReader())->get_at((string) $post->post_content, $path);
+            printf(
+                '<h4>%s <code>%s</code></h4>',
+                esc_html__('Block', 'valolink-plugin'),
+                esc_html(($change['payload']['block_name'] ?? '?') . ' @ ' . $path),
+            );
+            $this->render_field_diff(
+                $current['html'] ?? '',
+                (string) ($change['payload']['html'] ?? ''),
+            );
+
+            return;
+        }
+
         $applier = new PostApplier();
         $fields = $change['payload']['fields'] ?? [];
         foreach ($fields as $field => $proposed) {
@@ -193,23 +212,28 @@ final class QueuePage
             }
 
             echo '<h4>' . esc_html($field) . '</h4>';
-
-            if (function_exists('wp_text_diff')) {
-                $diff = wp_text_diff($current, (string) $proposed, [
-                    'title_left'  => __('Current', 'valolink-plugin'),
-                    'title_right' => __('Proposed', 'valolink-plugin'),
-                ]);
-                if ($diff !== '') {
-                    echo $diff; // phpcs:ignore WordPress.Security.EscapeOutput -- wp_text_diff escapes internally.
-                    continue;
-                }
-            }
-
-            echo '<p><strong>' . esc_html__('Current', 'valolink-plugin') . '</strong></p>';
-            echo '<pre style="white-space:pre-wrap;">' . esc_html($current) . '</pre>';
-            echo '<p><strong>' . esc_html__('Proposed', 'valolink-plugin') . '</strong></p>';
-            echo '<pre style="white-space:pre-wrap;">' . esc_html((string) $proposed) . '</pre>';
+            $this->render_field_diff($current, (string) $proposed);
         }
+    }
+
+    private function render_field_diff(string $current, string $proposed): void
+    {
+        if (function_exists('wp_text_diff')) {
+            $diff = wp_text_diff($current, $proposed, [
+                'title_left'  => __('Current', 'valolink-plugin'),
+                'title_right' => __('Proposed', 'valolink-plugin'),
+            ]);
+            if ($diff !== '') {
+                echo $diff; // phpcs:ignore WordPress.Security.EscapeOutput -- wp_text_diff escapes internally.
+
+                return;
+            }
+        }
+
+        echo '<p><strong>' . esc_html__('Current', 'valolink-plugin') . '</strong></p>';
+        echo '<pre style="white-space:pre-wrap;">' . esc_html($current) . '</pre>';
+        echo '<p><strong>' . esc_html__('Proposed', 'valolink-plugin') . '</strong></p>';
+        echo '<pre style="white-space:pre-wrap;">' . esc_html($proposed) . '</pre>';
     }
 
     private function render_status_banner(): void
