@@ -81,6 +81,14 @@ Scope is the same `allowed_post_types` list that governs proposing, so a CPT out
 
 Note this widens the key beyond propose-only: it can read unpublished content. That is required for the workflow (an agent must be able to see the draft it proposed) but it is a real broadening of what a leaked key exposes.
 
+### GET /taxonomies · GET /media
+
+Lookups for the two fields whose valid values an agent cannot guess.
+
+`GET /taxonomies` returns the category and tag slugs it may assign. `GET /media` returns images available for `featured_media` (query `search`, `limit`), with id, title, alt text and dimensions.
+
+Both exist because Accesslink refuses to create terms and cannot upload files — so without them the only discovery route is to guess and read the error.
+
 ### GET /notes · POST /notes
 
 A scratchpad agents leave for whoever works the site next — terminology a client insists on, sections to avoid, conventions worked out the hard way. Not session state.
@@ -130,11 +138,30 @@ For a new post:
 | `target_id` | Required for `update`. |
 | `post_type` | `create` only. Must be in the site's allowed list (default `post`, `page`). |
 | `status` | `create` only — the status to move to on approval. Default `publish`. |
-| `fields` | At least one of `post_title`, `post_content`, `post_excerpt`. Anything else is dropped. |
+| `fields` | See the field table below. Anything unrecognised is dropped. |
 | `note` | Free text shown to the reviewer. Use it — a reviewer deciding on a diff alone has to reverse-engineer intent. |
 | `idempotency_key` | Optional but recommended. A repeat returns the original row instead of filing a duplicate. |
 
 Send `X-Accesslink-Agent: <name>` to identify the caller in the queue and the audit log.
+
+#### Fields
+
+| Field | Notes |
+|---|---|
+| `post_title`, `post_content`, `post_excerpt` | Post columns. |
+| `seo_title`, `seo_description`, `focus_keyword` | Normalised across SEO plugins — see below. Empty string clears the value so the plugin's global template takes over. |
+| `categories`, `tags` | Arrays of **existing** term slugs. Unknown slugs are refused with the valid list; Accesslink never creates terms, because an agent inventing near-duplicates quietly wrecks a taxonomy. Refused outright on post types without that taxonomy. |
+| `featured_media` | Attachment id, must be an image. `0` clears it. Uploading is not possible. |
+
+Everything is validated at **propose** time, not just at apply, so an agent finds out immediately and the reviewer's queue doesn't fill with proposals that were never applicable. Apply re-checks anyway, since the site can move underneath a queued change.
+
+#### SEO across plugins
+
+The agent uses normalised names; Accesslink maps them onto whatever the site runs. Rank Math (`rank_math_*`) and Yoast (`_yoast_wpseo_*`) are supported. All in One SEO and SEOPress are *detected but not writable* — they keep data outside postmeta, so the fields are reported unavailable rather than written somewhere that does nothing. `GET /guide` reports the resolved adapter as `seo_plugin`.
+
+Scope is three fields on purpose. `noindex` is excluded: an agent proposing to deindex a page is a decision with delayed, silent, severe consequences that a reviewer skimming a diff would not weigh correctly.
+
+Existing values frequently contain plugin template variables (`%sep%`, `%sitename%`) that expand at render time. The guide tells agents to preserve them.
 
 Errors: `400` bad action/fields/post type · `401` bad key · `404` no such target · `503` writes switched off.
 
@@ -187,7 +214,8 @@ Be aware that kses strips HTML comments, and block markup *is* HTML comments —
 Named here so nobody assumes otherwise:
 
 - **WooCommerce products.** Products are a CPT, but price/stock/SKU live in postmeta *and* in Woo's `wp_wc_product_meta_lookup` table. Writing them through `wp_update_post` desynchronises the two. A `ProductApplier` going through `wc_get_product()` setters and `save()` slots in beside `PostApplier`; the queue, auth, staleness and review UI all work unchanged.
-- **Taxonomy, featured images, custom fields.** `PostApplier::ALLOWED_FIELDS` is three fields on purpose. This is the most-missed gap in practice: "write a new post" realistically means categories and an image, and approving currently yields an uncategorised, image-less post that needs finishing by hand.
+- **Block-aware editing.** The big one. On a GeneratePress/GenerateBlocks site nearly all content is blocks, with copy nested several levels inside wrappers, and an agent that regenerates whole `post_content` will corrupt block attribute JSON. The right primitive is addressing individual blocks. Related and urgent: `wp_kses_post()` strips HTML comments, and block markup *is* HTML comments, so a non-administrator approving a block-based post currently flattens it.
+- **Custom fields / ACF.** Common on agency sites, entirely absent here.
 - **Reading back a proposal's payload.** `GET /changes/{id}` returns metadata, not the proposed content, so an agent cannot inspect what a *different* agent queued — only that something is queued.
 - **Per-key scoping.** One key per site; the only granularity is the site-wide `allowed_post_types` list.
 - **Remote approval from EngineLink.** The service layer is already the single implementation behind both entry points, so aggregating queues across sites is additive — but it needs an approver credential that is not the propose key.

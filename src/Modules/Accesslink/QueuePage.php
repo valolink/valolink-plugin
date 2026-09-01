@@ -179,10 +179,16 @@ final class QueuePage
             return;
         }
 
+        $applier = new PostApplier();
         $fields = $change['payload']['fields'] ?? [];
         foreach ($fields as $field => $proposed) {
-            $current = (string) ($post->{$field} ?? '');
-            if ($current === (string) $proposed) {
+            // Resolved through PostApplier so SEO meta, term lists and the
+            // featured image diff the same way post columns do — and so the
+            // diff can never disagree with the staleness hash about what
+            // "current" means.
+            $current = $applier->current_value((int) $change['target_id'], $field);
+            $proposed = is_array($proposed) ? implode(', ', $proposed) : (string) $proposed;
+            if ($current === $proposed) {
                 continue;
             }
 

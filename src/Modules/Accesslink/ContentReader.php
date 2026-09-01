@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\Accesslink;
 
+use Valolink\Plugin\Modules\Accesslink\Seo\SeoAdapterFactory;
+
 /**
  * The read half of Accesslink.
  *
@@ -27,7 +29,10 @@ final class ContentReader
     /** Statuses an agent may see. Trash and auto-drafts are never listed. */
     public const VISIBLE_STATUSES = ['publish', 'draft', 'pending', 'private', 'future'];
 
-    public function __construct(private readonly ChangeService $service) {}
+    public function __construct(
+        private readonly ChangeService $service,
+        private readonly PostApplier $applier,
+    ) {}
 
     /**
      * @return array{items: array<int, array>, total: int, returned: int}
@@ -95,6 +100,24 @@ final class ContentReader
         $out['truncated']    = $truncated;
         unset($out['excerpt']);
 
+        // Everything else an agent may propose, read back through the same
+        // resolver that hashes and diffs it — so what it reads here is exactly
+        // what a staleness check will compare against.
+        $seo = $this->applier->seo();
+        $out['seo_plugin'] = $seo->id();
+        if ($seo->can_write()) {
+            foreach (SeoAdapterFactory::FIELDS as $field) {
+                $out[$field] = $this->applier->current_value($id, $field);
+            }
+        }
+        foreach (array_keys(PostApplier::TERM_FIELDS) as $field) {
+            $value = $this->applier->current_value($id, $field);
+            $out[$field] = $value === '' ? [] : array_map('trim', explode(',', $value));
+        }
+        $thumb = (int) get_post_thumbnail_id($id);
+        $out['featured_media'] = $thumb;
+        $out['featured_media_url'] = $thumb ? (string) wp_get_attachment_image_url($thumb, 'medium') : null;
+
         // Anything already queued against this post — proposing a second edit
         // on top of a pending one is how you get a stale rejection later.
         $out['pending_changes'] = $this->pending_for($id);
@@ -113,6 +136,64 @@ final class ContentReader
         }
 
         return $ids;
+    }
+
+    /**
+     * Terms an agent may assign. Accesslink refuses to create new ones, so
+     * without this the only way to discover valid slugs is to guess and read
+     * the error.
+     */
+    public function taxonomies(): array
+    {
+        $out = [];
+        foreach (PostApplier::TERM_FIELDS as $field => $taxonomy) {
+            $terms = get_terms(['taxonomy' => $taxonomy, 'hide_empty' => false, 'number' => 200]);
+            $out[$field] = is_wp_error($terms) ? [] : array_map(
+                static fn (\WP_Term $t): array => [
+                    'slug'  => $t->slug,
+                    'name'  => $t->name,
+                    'count' => (int) $t->count,
+                ],
+                $terms,
+            );
+        }
+
+        return $out;
+    }
+
+    /**
+     * Images available for `featured_media`. Uploading is not possible through
+     * Accesslink, so this is the whole of what an agent may choose from.
+     */
+    public function media(array $args): array
+    {
+        $limit = max(1, min(self::LIST_MAX, (int) ($args['limit'] ?? self::LIST_DEFAULT)));
+
+        $query = new \WP_Query([
+            'post_type'      => 'attachment',
+            'post_status'    => 'inherit',
+            'post_mime_type' => 'image',
+            'posts_per_page' => $limit,
+            's'              => isset($args['search']) ? sanitize_text_field((string) $args['search']) : '',
+            'orderby'        => 'date',
+            'order'          => 'DESC',
+        ]);
+
+        $items = array_map(static function (\WP_Post $a): array {
+            $meta = wp_get_attachment_metadata($a->ID);
+
+            return [
+                'id'     => $a->ID,
+                'title'  => (string) $a->post_title,
+                'alt'    => (string) get_post_meta($a->ID, '_wp_attachment_image_alt', true),
+                'mime'   => (string) $a->post_mime_type,
+                'width'  => isset($meta['width']) ? (int) $meta['width'] : null,
+                'height' => isset($meta['height']) ? (int) $meta['height'] : null,
+                'url'    => (string) wp_get_attachment_image_url($a->ID, 'medium'),
+            ];
+        }, $query->posts);
+
+        return ['items' => $items, 'total' => (int) $query->found_posts, 'returned' => count($items)];
     }
 
     private function summarize(\WP_Post $post): array

@@ -169,6 +169,21 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        // Lookups for the two fields whose valid values an agent cannot guess:
+        // term slugs (creating terms is refused) and attachment ids (uploading
+        // is not possible).
+        register_rest_route(self::REST_NAMESPACE, '/taxonomies', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_taxonomies'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
+        register_rest_route(self::REST_NAMESPACE, '/media', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_media'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
         // Writing a note respects the kill switch: "writes off" should mean
         // nothing lands in the database, not just no content changes. Deleting
         // is deliberately absent — curating what agents tell each other is the
@@ -227,7 +242,8 @@ final class AccesslinkModule implements Module
             'chars'              => mb_strlen($markdown),
             'writes_enabled'     => (new AccesslinkAuth($this->settings))->writes_enabled(),
             'allowed_post_types' => $service->allowed_post_types(),
-            'allowed_fields'     => PostApplier::ALLOWED_FIELDS,
+            'allowed_fields'     => (new PostApplier())->allowed_fields(),
+            'seo_plugin'         => (new PostApplier())->seo()->id(),
             'allowed_statuses'   => PostApplier::ALLOWED_STATUSES,
             'limits'             => [
                 'content_list_max'     => ContentReader::LIST_MAX,
@@ -240,7 +256,7 @@ final class AccesslinkModule implements Module
 
     public function handle_content_list(\WP_REST_Request $request): \WP_REST_Response
     {
-        $reader = new ContentReader($this->service());
+        $reader = new ContentReader($this->service(), new PostApplier());
 
         return new \WP_REST_Response($reader->list([
             'search'    => $request->get_param('search'),
@@ -252,9 +268,26 @@ final class AccesslinkModule implements Module
 
     public function handle_content_get(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
-        $result = (new ContentReader($this->service()))->get((int) $request['id']);
+        $result = (new ContentReader($this->service(), new PostApplier()))->get((int) $request['id']);
 
         return is_wp_error($result) ? $result : new \WP_REST_Response($result);
+    }
+
+    public function handle_taxonomies(): \WP_REST_Response
+    {
+        return new \WP_REST_Response(
+            (new ContentReader($this->service(), new PostApplier()))->taxonomies(),
+        );
+    }
+
+    public function handle_media(\WP_REST_Request $request): \WP_REST_Response
+    {
+        return new \WP_REST_Response(
+            (new ContentReader($this->service(), new PostApplier()))->media([
+                'search' => $request->get_param('search'),
+                'limit'  => $request->get_param('limit'),
+            ]),
+        );
     }
 
     public function handle_notes_list(): \WP_REST_Response
@@ -519,7 +552,10 @@ final class AccesslinkModule implements Module
         // what this loop renders should show the proposal.
         $preview = clone $posts[0];
         foreach (($change['payload']['fields'] ?? []) as $field => $value) {
-            if (in_array($field, PostApplier::ALLOWED_FIELDS, true)) {
+            // Only the post columns are worth swapping for a preview — they
+            // are what the theme renders from the post object. A proposed
+            // category or SEO title changes nothing on the rendered page.
+            if (in_array($field, PostApplier::POST_FIELDS, true)) {
                 $preview->{$field} = (string) $value;
             }
         }

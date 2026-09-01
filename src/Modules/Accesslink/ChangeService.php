@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\Accesslink;
 
+use Valolink\Plugin\Modules\Accesslink\Seo\SeoAdapterFactory;
 use Valolink\Plugin\Modules\Logging\EventLogger;
 use Valolink\Plugin\Settings;
 
@@ -66,7 +67,7 @@ final class ChangeService
         if ($fields === []) {
             return new \WP_Error(
                 'no_fields',
-                'fields must contain at least one of: ' . implode(', ', PostApplier::ALLOWED_FIELDS),
+                'fields must contain at least one of: ' . implode(', ', $this->applier->allowed_fields()),
                 ['status' => 400],
             );
         }
@@ -93,6 +94,11 @@ final class ChangeService
         $requested_status = sanitize_key((string) ($input['status'] ?? 'publish'));
         if (!in_array($requested_status, PostApplier::ALLOWED_STATUSES, true)) {
             return new \WP_Error('bad_status', 'Unsupported target status.', ['status' => 400]);
+        }
+
+        $invalid = $this->applier->validate($post_type, $fields);
+        if (is_wp_error($invalid)) {
+            return $invalid;
         }
 
         $draft_id = $this->applier->create_draft($fields, $post_type);
@@ -140,6 +146,11 @@ final class ChangeService
 
         if (!in_array($post->post_type, $this->allowed_post_types(), true)) {
             return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 400]);
+        }
+
+        $invalid = $this->applier->validate($post->post_type, $fields);
+        if (is_wp_error($invalid)) {
+            return $invalid;
         }
 
         $id = $this->repo->insert([
@@ -268,22 +279,58 @@ final class ChangeService
     // Helpers
     // -------------------------------------------------------------------------
 
-    /** Keep only the fields an agent may set, sanitising each per its kind. */
+    /**
+     * Keep only the fields an agent may set on this site, sanitising each by
+     * its kind. Four kinds now live side by side — post columns, SEO strings,
+     * taxonomy slug lists and an attachment id — so the switch is explicit
+     * rather than a single cast.
+     */
     private function sanitize_fields(mixed $raw): array
     {
         if (!is_array($raw)) {
             return [];
         }
 
+        $allowed = $this->applier->allowed_fields();
         $out = [];
-        foreach (PostApplier::ALLOWED_FIELDS as $field) {
+
+        foreach ($allowed as $field) {
             if (!array_key_exists($field, $raw)) {
                 continue;
             }
-            $value = (string) $raw[$field];
-            // post_content keeps its markup — PostApplier decides how far to
-            // filter it at apply time, mirroring WP's own unfiltered_html rule.
-            $out[$field] = $field === 'post_content' ? $value : sanitize_text_field($value);
+            $value = $raw[$field];
+
+            if ($field === 'post_content') {
+                // Markup is kept — PostApplier decides how far to filter it at
+                // apply time, mirroring WP's own unfiltered_html rule.
+                $out[$field] = (string) $value;
+                continue;
+            }
+
+            if (in_array($field, SeoAdapterFactory::FIELDS, true)) {
+                $clean = sanitize_text_field((string) $value);
+                $max = SeoAdapterFactory::MAX[$field] ?? 500;
+                $out[$field] = mb_substr($clean, 0, $max);
+                continue;
+            }
+
+            if (isset(PostApplier::TERM_FIELDS[$field])) {
+                // Accepts slugs or names; PostApplier resolves them and refuses
+                // anything that doesn't already exist.
+                $terms = is_array($value) ? $value : [$value];
+                $out[$field] = array_values(array_filter(array_map(
+                    static fn ($t): string => sanitize_text_field((string) $t),
+                    $terms,
+                )));
+                continue;
+            }
+
+            if ($field === PostApplier::MEDIA_FIELD) {
+                $out[$field] = (int) $value;
+                continue;
+            }
+
+            $out[$field] = sanitize_text_field((string) $value);
         }
 
         return $out;

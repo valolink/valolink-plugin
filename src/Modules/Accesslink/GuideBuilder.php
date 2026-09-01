@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\Accesslink;
 
+use Valolink\Plugin\Modules\Accesslink\Seo\SeoAdapterFactory;
 use Valolink\Plugin\Settings;
 
 /**
@@ -46,7 +47,8 @@ final class GuideBuilder
         $base  = rtrim($base, '/');
         $site  = get_bloginfo('name');
         $types = implode(', ', $this->service->allowed_post_types());
-        $fields = implode(', ', PostApplier::ALLOWED_FIELDS);
+        $applier = new PostApplier();
+        $fields = implode(', ', $applier->allowed_fields());
         $statuses = implode(', ', PostApplier::ALLOWED_STATUSES);
 
         $md = [];
@@ -88,6 +90,9 @@ final class GuideBuilder
         $md[] = '  `pending_changes`: ids of proposals already queued against it. If that list is';
         $md[] = '  not empty, someone has already proposed an edit here — read those before adding another.';
         $md[] = '';
+        $md[] = "- `GET {$base}/taxonomies` — category and tag slugs you may assign.";
+        $md[] = "- `GET {$base}/media` — images available for `featured_media`. Query: `search`, `limit`.";
+        $md[] = '';
         $md[] = 'Read the post before you propose an update. You need its current content to';
         $md[] = 'write a sensible replacement, and the staleness check below compares against it.';
         $md[] = '';
@@ -119,6 +124,37 @@ final class GuideBuilder
         $md[] = '  "idempotency_key": "unique-string-per-proposal"';
         $md[] = '}';
         $md[] = '```';
+        $md[] = '';
+        $md[] = '### Fields beyond the post body';
+        $md[] = '';
+        $seo = $applier->seo();
+        if ($seo->can_write()) {
+            $md[] = sprintf('SEO is handled by **%s** on this site, but you do not need to care —', $seo->label());
+            $md[] = 'use the normalised names and Accesslink maps them:';
+            $md[] = '';
+            $md[] = '- `seo_title` — aim for about ' . (SeoAdapterFactory::RECOMMENDED['seo_title'] ?? 60)
+                . ' characters; longer gets truncated in results.';
+            $md[] = '- `seo_description` — aim for about ' . (SeoAdapterFactory::RECOMMENDED['seo_description'] ?? 155)
+                . ' characters.';
+            $md[] = '- `focus_keyword`';
+            $md[] = '';
+            $md[] = 'Sending an empty string clears the value and lets the plugin fall back to its';
+            $md[] = 'global template, which is usually what you want rather than a blank tag.';
+            $md[] = '';
+            $md[] = 'Existing values often contain the plugin\'s own template variables, like';
+            $md[] = '`%sep%` or `%sitename%`, which expand when the page renders. Preserve them';
+            $md[] = 'unless you have a reason not to — replacing them with literal text hardcodes';
+            $md[] = 'something the site owner configured globally.';
+        } else {
+            $md[] = sprintf('SEO fields are **not available** on this site (%s).', $seo->label());
+        }
+        $md[] = '';
+        $md[] = '- `categories`, `tags` — arrays of existing term slugs, e.g. `["palvelut"]`.';
+        $md[] = "  Read what exists from `GET {$base}/taxonomies`. Accesslink will **not** create new";
+        $md[] = '  terms; an unknown slug is refused with the list of valid ones. This is on purpose —';
+        $md[] = '  inventing near-duplicate terms quietly wrecks a taxonomy.';
+        $md[] = "- `featured_media` — an attachment id. Browse with `GET {$base}/media`. Send `0` to clear.";
+        $md[] = '  Uploading is not possible; you can only pick an image already in the library.';
         $md[] = '';
         $md[] = 'A `create` is drafted immediately so a human can preview it in the real theme.';
         $md[] = 'The draft is not publicly reachable; approving is what publishes it. An `update`';
