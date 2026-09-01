@@ -30,6 +30,8 @@ final class AccesslinkModule implements Module
     public const SETTINGS_NONCE  = 'valolink_accesslink_settings';
     public const REGEN_ACTION    = 'valolink_accesslink_regen';
     public const REGEN_NONCE     = 'valolink_accesslink_regen';
+    public const NOTE_ACTION     = 'valolink_accesslink_note';
+    public const NOTE_NONCE      = 'valolink_accesslink_note';
 
     public const PRUNE_HOOK    = 'valolink_accesslink_prune';
     public const PREVIEW_PARAM = 'accesslink_preview';
@@ -68,6 +70,7 @@ final class AccesslinkModule implements Module
         add_action('admin_post_' . self::REVIEW_ACTION, [$this, 'handle_review']);
         add_action('admin_post_' . self::SETTINGS_ACTION, [$this, 'handle_settings']);
         add_action('admin_post_' . self::REGEN_ACTION, [$this, 'handle_regen_key']);
+        add_action('admin_post_' . self::NOTE_ACTION, [$this, 'handle_note_admin']);
         add_action('rest_api_init', [$this, 'register_routes']);
 
         add_action(self::PRUNE_HOOK, [$this, 'handle_prune']);
@@ -146,6 +149,43 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        // Self-description. Auth-gated too — no reason to advertise the write
+        // surface of a client site to anonymous callers.
+        register_rest_route(self::REST_NAMESPACE, '/guide', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_guide'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
+        register_rest_route(self::REST_NAMESPACE, '/content', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_content_list'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
+        register_rest_route(self::REST_NAMESPACE, '/content/(?P<id>\d+)', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_content_get'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
+        // Writing a note respects the kill switch: "writes off" should mean
+        // nothing lands in the database, not just no content changes. Deleting
+        // is deliberately absent — curating what agents tell each other is the
+        // operator's job, done in wp-admin, not something an agent can undo.
+        register_rest_route(self::REST_NAMESPACE, '/notes', [
+            [
+                'methods'             => \WP_REST_Server::READABLE,
+                'callback'            => [$this, 'handle_notes_list'],
+                'permission_callback' => [$auth, 'check_read'],
+            ],
+            [
+                'methods'             => \WP_REST_Server::CREATABLE,
+                'callback'            => [$this, 'handle_notes_add'],
+                'permission_callback' => [$auth, 'check'],
+            ],
+        ]);
+
         // Approve/reject are capability-gated, NOT key-gated: the propose key
         // must never be able to wave its own changes through. With no logged-in
         // user these 403, which is the intended behaviour — remote approval
@@ -164,6 +204,79 @@ final class AccesslinkModule implements Module
             'callback'            => [$this, 'handle_reject'],
             'permission_callback' => $can_approve,
         ]);
+    }
+
+    /**
+     * Prose for the model, structure for the code calling on its behalf. An
+     * agent that only reads `guide` has everything; one that wants to branch on
+     * capabilities without parsing English has `limits` and the allowlists.
+     */
+    public function handle_guide(): \WP_REST_Response
+    {
+        $service = $this->service();
+        $guide = new GuideBuilder(
+            $this->settings,
+            $service,
+            new AgentNotes($this->settings),
+            new AccesslinkAuth($this->settings),
+        );
+        $markdown = $guide->build();
+
+        return new \WP_REST_Response([
+            'guide'              => $markdown,
+            'chars'              => mb_strlen($markdown),
+            'writes_enabled'     => (new AccesslinkAuth($this->settings))->writes_enabled(),
+            'allowed_post_types' => $service->allowed_post_types(),
+            'allowed_fields'     => PostApplier::ALLOWED_FIELDS,
+            'allowed_statuses'   => PostApplier::ALLOWED_STATUSES,
+            'limits'             => [
+                'content_list_max'     => ContentReader::LIST_MAX,
+                'content_max_chars'    => ContentReader::CONTENT_MAX_CHARS,
+                'note_max_chars'       => AgentNotes::MAX_CHARS,
+                'notes_kept'           => AgentNotes::MAX_NOTES,
+            ],
+        ]);
+    }
+
+    public function handle_content_list(\WP_REST_Request $request): \WP_REST_Response
+    {
+        $reader = new ContentReader($this->service());
+
+        return new \WP_REST_Response($reader->list([
+            'search'    => $request->get_param('search'),
+            'post_type' => $request->get_param('post_type'),
+            'status'    => $request->get_param('status'),
+            'limit'     => $request->get_param('limit'),
+        ]));
+    }
+
+    public function handle_content_get(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $result = (new ContentReader($this->service()))->get((int) $request['id']);
+
+        return is_wp_error($result) ? $result : new \WP_REST_Response($result);
+    }
+
+    public function handle_notes_list(): \WP_REST_Response
+    {
+        return new \WP_REST_Response([
+            'notes' => (new AgentNotes($this->settings))->all(),
+            'limits' => [
+                'max_chars' => AgentNotes::MAX_CHARS,
+                'kept'      => AgentNotes::MAX_NOTES,
+            ],
+        ]);
+    }
+
+    public function handle_notes_add(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $body = $request->get_json_params();
+        $text = is_array($body) ? (string) ($body['text'] ?? '') : '';
+        $agent = sanitize_text_field((string) $request->get_header('x-accesslink-agent'));
+
+        $note = (new AgentNotes($this->settings))->add($text, $agent !== '' ? $agent : null);
+
+        return is_wp_error($note) ? $note : new \WP_REST_Response($note, 201);
     }
 
     public function handle_propose(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
@@ -287,12 +400,41 @@ final class AccesslinkModule implements Module
             explode(',', $raw_types),
         )));
 
+        $instructions = isset($_POST['instructions'])
+            ? sanitize_textarea_field(wp_unslash($_POST['instructions']))
+            : '';
+        // Truncated rather than rejected: the guide has a fixed character
+        // budget and silently shipping a half-sentence is worse than a visibly
+        // clipped one, but losing the operator's whole edit would be worse still.
+        $instructions = mb_substr($instructions, 0, GuideBuilder::INSTRUCTIONS_MAX_CHARS);
+
         $this->settings->set_module_settings(self::MODULE_ID, [
             'writes_enabled'     => !empty($_POST['writes_enabled']),
             'allowed_post_types' => $types !== [] ? $types : ['post', 'page'],
+            'instructions'       => $instructions,
         ]);
 
         $this->redirect_back('saved');
+    }
+
+    public function handle_note_admin(): void
+    {
+        check_admin_referer(self::NOTE_NONCE);
+        if (!current_user_can(ChangeService::APPROVE_CAP)) {
+            wp_die(esc_html__('You do not have permission to manage agent notes.', 'valolink-plugin'));
+        }
+
+        $notes = new AgentNotes($this->settings);
+
+        if (isset($_POST['delete_note'])) {
+            $notes->delete(sanitize_text_field(wp_unslash($_POST['delete_note'])));
+        } elseif (isset($_POST['clear_notes'])) {
+            $notes->clear();
+        } elseif (isset($_POST['new_note'])) {
+            $notes->add(sanitize_textarea_field(wp_unslash($_POST['new_note'])), 'operator');
+        }
+
+        $this->redirect_back('notes');
     }
 
     public function handle_regen_key(): void

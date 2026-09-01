@@ -49,6 +49,48 @@ Note that create therefore *does* write to the database before any human sees it
 
 Base: `/wp-json/accesslink/v1`
 
+### GET /guide
+
+**Start here.** An agent holding only the base URL and a key needs nothing else. Returns a generated markdown briefing plus the machine-readable limits — prose for the model, structure for the code calling on its behalf.
+
+```json
+{
+  "guide": "# Accesslink — Valolink\n\n…",
+  "chars": 4385,
+  "writes_enabled": true,
+  "allowed_post_types": ["post", "page"],
+  "allowed_fields": ["post_title", "post_content", "post_excerpt"],
+  "allowed_statuses": ["draft", "pending", "publish", "private"],
+  "limits": { "content_list_max": 50, "content_max_chars": 60000, "note_max_chars": 800, "notes_kept": 40 }
+}
+```
+
+Generated rather than static, so it reports the site's *actual* configuration — a hand-written doc would drift and an agent would confidently do the wrong thing. It states the propose-then-approve model first, includes the operator's site instructions, tells the agent when writes are switched off, and appends notes left by previous agents.
+
+Budget: base is ~3.5 kB; site instructions cap at 4000 characters and the notes section at 3000, so the worst case is roughly 10 kB (~2.6k tokens).
+
+### GET /content · GET /content/{id}
+
+The read half. Core's `/wp/v2` can't be reached with an Accesslink key, can't see drafts, and returns far more per post than an agent wants to pay for.
+
+`GET /content` — query `search`, `post_type`, `status`, `limit` (max 50, default 20). Returns `id`, `post_type`, `status`, `title`, `slug`, `modified_gmt`, `link`, `content_chars` and a 280-character plain-text excerpt.
+
+`GET /content/{id}` — adds full `post_content`, `post_excerpt`, a `truncated` flag past 60000 characters, and `pending_changes`: ids of proposals already queued against that post. A non-empty list means someone has already proposed an edit; stacking another is how you earn a `stale` rejection.
+
+Scope is the same `allowed_post_types` list that governs proposing, so a CPT outside it returns `403` on read as well as on write. Password-protected posts are never exposed. Visible statuses are `publish`, `draft`, `pending`, `private`, `future` — trash and auto-drafts never appear.
+
+Note this widens the key beyond propose-only: it can read unpublished content. That is required for the workflow (an agent must be able to see the draft it proposed) but it is a real broadening of what a leaked key exposes.
+
+### GET /notes · POST /notes
+
+A scratchpad agents leave for whoever works the site next — terminology a client insists on, sections to avoid, conventions worked out the hard way. Not session state.
+
+`POST` takes `{"text": "…"}`, capped at 800 characters, newest 40 kept, oldest evicted. Notes are not queued for approval: they are invisible to visitors and bounded, so gating them would only make the memory useless. They are visible and deletable in wp-admin, because a wrong note quietly steers every future agent.
+
+There is deliberately **no delete over the API**. Curating what agents tell each other is the operator's job.
+
+Writing a note respects the kill switch (`503` when writes are off); reading does not.
+
 ### POST /changes
 
 Files a proposal. Returns `201` with the created row.
@@ -145,6 +187,8 @@ Be aware that kses strips HTML comments, and block markup *is* HTML comments —
 Named here so nobody assumes otherwise:
 
 - **WooCommerce products.** Products are a CPT, but price/stock/SKU live in postmeta *and* in Woo's `wp_wc_product_meta_lookup` table. Writing them through `wp_update_post` desynchronises the two. A `ProductApplier` going through `wc_get_product()` setters and `save()` slots in beside `PostApplier`; the queue, auth, staleness and review UI all work unchanged.
-- **Taxonomy, featured images, custom fields.** `PostApplier::ALLOWED_FIELDS` is three fields on purpose.
+- **Taxonomy, featured images, custom fields.** `PostApplier::ALLOWED_FIELDS` is three fields on purpose. This is the most-missed gap in practice: "write a new post" realistically means categories and an image, and approving currently yields an uncategorised, image-less post that needs finishing by hand.
+- **Reading back a proposal's payload.** `GET /changes/{id}` returns metadata, not the proposed content, so an agent cannot inspect what a *different* agent queued — only that something is queued.
+- **Per-key scoping.** One key per site; the only granularity is the site-wide `allowed_post_types` list.
 - **Remote approval from EngineLink.** The service layer is already the single implementation behind both entry points, so aggregating queues across sites is additive — but it needs an approver credential that is not the propose key.
 - **Per-key scoping.** One key per site, all-or-nothing across the allowed post types.

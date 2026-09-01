@@ -80,6 +80,9 @@ final class QueuePage
                 </table>
             <?php endif; ?>
 
+            <hr>
+            <?php $this->render_notes(); ?>
+
             <?php if (current_user_can('manage_options')) : ?>
                 <hr>
                 <?php $this->render_settings(); ?>
@@ -226,6 +229,7 @@ final class QueuePage
             'stale'    => [__('The post changed after that was proposed — it was parked as stale, nothing was overwritten.', 'valolink-plugin'), 'warning'],
             'failed'   => [__('Applying that change failed. See the row below for the error.', 'valolink-plugin'), 'error'],
             'saved'    => [__('Settings saved.', 'valolink-plugin'), 'success'],
+            'notes'    => [__('Agent notes updated.', 'valolink-plugin'), 'success'],
             'keyregen' => [__('API key regenerated.', 'valolink-plugin'), 'success'],
         ];
 
@@ -239,6 +243,72 @@ final class QueuePage
             esc_attr($type),
             esc_html($text),
         );
+    }
+
+    /**
+     * What agents have told each other about this site. Shown to reviewers,
+     * not just admins — a wrong note quietly steers every future agent, so the
+     * people reviewing the output are exactly the ones who should see it.
+     */
+    private function render_notes(): void
+    {
+        $notes = new AgentNotes($this->settings);
+        $all = $notes->all();
+        $post_url = admin_url('admin-post.php');
+        ?>
+        <h2><?php
+            /* translators: 1: number of notes, 2: maximum kept */
+            printf(esc_html__('Agent notes (%1$d / %2$d)', 'valolink-plugin'), count($all), AgentNotes::MAX_NOTES);
+        ?></h2>
+        <p class="description">
+            <?php esc_html_e('Durable facts agents leave for whoever works on this site next. Handed to every agent as part of its instructions, so a wrong one is worth deleting.', 'valolink-plugin'); ?>
+        </p>
+
+        <?php if ($all === []) : ?>
+            <p><?php esc_html_e('No notes yet.', 'valolink-plugin'); ?></p>
+        <?php else : ?>
+            <table class="widefat striped">
+                <tbody>
+                <?php foreach ($all as $note) : ?>
+                    <tr>
+                        <td style="width:14em;">
+                            <strong><?php echo esc_html((string) ($note['author'] ?? 'unknown')); ?></strong><br>
+                            <small><?php echo esc_html((string) $note['created_at']); ?> UTC</small>
+                        </td>
+                        <td><?php echo esc_html((string) $note['text']); ?></td>
+                        <td style="width:6em;">
+                            <form method="post" action="<?php echo esc_url($post_url); ?>">
+                                <?php wp_nonce_field(AccesslinkModule::NOTE_NONCE); ?>
+                                <input type="hidden" name="action" value="<?php echo esc_attr(AccesslinkModule::NOTE_ACTION); ?>">
+                                <button class="button-link delete" name="delete_note"
+                                        value="<?php echo esc_attr((string) $note['id']); ?>">
+                                    <?php esc_html_e('Delete', 'valolink-plugin'); ?>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        <?php endif; ?>
+
+        <form method="post" action="<?php echo esc_url($post_url); ?>" style="margin-top:1em;">
+            <?php wp_nonce_field(AccesslinkModule::NOTE_NONCE); ?>
+            <input type="hidden" name="action" value="<?php echo esc_attr(AccesslinkModule::NOTE_ACTION); ?>">
+            <textarea name="new_note" rows="2" class="large-text"
+                      maxlength="<?php echo esc_attr((string) AgentNotes::MAX_CHARS); ?>"
+                      placeholder="<?php esc_attr_e('Add a note agents should know about this site…', 'valolink-plugin'); ?>"></textarea>
+            <p>
+                <button class="button"><?php esc_html_e('Add note', 'valolink-plugin'); ?></button>
+                <?php if ($all !== []) : ?>
+                    <button class="button-link delete" name="clear_notes" value="1"
+                            style="margin-left:1em;">
+                        <?php esc_html_e('Delete all notes', 'valolink-plugin'); ?>
+                    </button>
+                <?php endif; ?>
+            </p>
+        </form>
+        <?php
     }
 
     /**
@@ -297,7 +367,32 @@ final class QueuePage
                         <input type="text" class="regular-text" name="allowed_post_types"
                                value="<?php echo esc_attr($types); ?>">
                         <p class="description">
-                            <?php esc_html_e('Comma-separated. Anything not listed here is refused at the API boundary.', 'valolink-plugin'); ?>
+                            <?php esc_html_e('Comma-separated. Governs both what agents may read and what they may propose.', 'valolink-plugin'); ?>
+                        </p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><?php esc_html_e('Instructions for agents', 'valolink-plugin'); ?></th>
+                    <td>
+                        <?php
+                        $instructions = (string) $this->settings->get_module_setting(
+                            AccesslinkModule::MODULE_ID,
+                            'instructions',
+                            '',
+                        );
+                        ?>
+                        <textarea name="instructions" rows="10" class="large-text code"
+                                  maxlength="<?php echo esc_attr((string) GuideBuilder::INSTRUCTIONS_MAX_CHARS); ?>"
+                        ><?php echo esc_textarea($instructions); ?></textarea>
+                        <p class="description">
+                            <?php
+                            printf(
+                                /* translators: 1: current character count, 2: maximum */
+                                esc_html__('Site-specific rules handed to every agent before it does anything — house style, terminology, sections to leave alone. %1$d / %2$d characters.', 'valolink-plugin'),
+                                (int) mb_strlen($instructions),
+                                (int) GuideBuilder::INSTRUCTIONS_MAX_CHARS,
+                            );
+                            ?>
                         </p>
                     </td>
                 </tr>
