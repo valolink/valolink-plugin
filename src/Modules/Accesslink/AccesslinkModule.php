@@ -38,7 +38,11 @@ final class AccesslinkModule implements Module
     public function should_load(Context $context): bool
     {
         // Admin covers both the review screen and the admin-post handlers.
-        return $context->is_admin || $context->is_rest || $context->is_cron;
+        // CLI is included so the queue can be inspected and the table installed
+        // from wp-cli — without it `wp eval` sees the classes (they autoload)
+        // but never the schema, which makes the module untestable and
+        // unadministrable from a shell. Neither CLI nor cron is a hot path.
+        return $context->is_admin || $context->is_rest || $context->is_cron || $context->is_cli;
     }
 
     public function register(): void
