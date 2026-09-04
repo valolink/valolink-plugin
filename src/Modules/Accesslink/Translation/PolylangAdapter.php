@@ -75,6 +75,17 @@ final class PolylangAdapter implements TranslationAdapter
         return is_string($lang) ? $lang : '';
     }
 
+    public function language_of_term(int $term_id): string
+    {
+        if (!$this->available() || !function_exists('pll_get_term_language')) {
+            return '';
+        }
+
+        $lang = pll_get_term_language($term_id, 'slug');
+
+        return is_string($lang) ? $lang : '';
+    }
+
     public function translations(int $post_id): array
     {
         if (!$this->available()) {

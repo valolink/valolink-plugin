@@ -89,6 +89,12 @@ final class ChangeService
             );
         }
 
+        if ($action === ChangeRepository::ACTION_UPDATE_MENU) {
+            return $this->announce(
+                $this->propose_update_menu($input, $note_early, $requested_by, $idempotency_key),
+            );
+        }
+
         if ($action === ChangeRepository::ACTION_SET_LANGUAGE) {
             return $this->announce(
                 $this->propose_set_language($input, $note_early, $requested_by, $idempotency_key),
@@ -384,6 +390,93 @@ final class ChangeService
             'action'    => $action,
             'post_id'   => $target_id,
             'path'      => $path,
+            'by'        => $requested_by,
+        ]);
+
+        return $this->repo->find($id) ?? [];
+    }
+
+    /** Menus are site structure rather than content, so they are opt-in per site. */
+    public function menus_enabled(): bool
+    {
+        return (bool) $this->settings->get_module_setting(
+            AccesslinkModule::MODULE_ID,
+            'allow_menu_edits',
+            false,
+        );
+    }
+
+    /**
+     * Replace a menu's whole item tree.
+     *
+     * Whole-tree rather than per-item because that is the only form in which a
+     * menu is reviewable: "relabel two, repoint one, nest the last" is several
+     * proposals to hold in your head, where one tree is a single before-and-
+     * after to read. It also makes staleness honest — the thing being replaced
+     * is the menu, so the thing hashed is the menu.
+     */
+    private function propose_update_menu(
+        array $input,
+        ?string $note,
+        ?string $requested_by,
+        ?string $idempotency_key,
+    ): array|\WP_Error {
+        if (!$this->menus_enabled()) {
+            return new \WP_Error(
+                'menus_disabled',
+                'Menu editing is switched off for this site. An operator can enable it under '
+                    . 'Valolink → Accesslink.',
+                ['status' => 403],
+            );
+        }
+
+        $menu_id = (int) ($input['menu_id'] ?? 0);
+        $menu = $menu_id > 0 ? wp_get_nav_menu_object($menu_id) : false;
+        if (!$menu) {
+            return new \WP_Error('not_found', 'No menu with that id — see GET /menus.', ['status' => 404]);
+        }
+
+        $items = $input['items'] ?? null;
+        if (!is_array($items)) {
+            return new \WP_Error(
+                'no_items',
+                'items must be the menu\'s full item tree. Read GET /menus/{id}, change what you need, '
+                    . 'and send the whole thing back — anything you leave out is removed.',
+                ['status' => 400],
+            );
+        }
+        if ($items === []) {
+            return new \WP_Error(
+                'empty_menu',
+                'That would remove every item. Emptying a menu through this API is not supported; '
+                    . 'if it is really intended, a human can do it in wp-admin.',
+                ['status' => 400],
+            );
+        }
+
+        $valid = (new MenuApplier())->validate($menu_id, $items, $this->allowed_post_types());
+        if (is_wp_error($valid)) {
+            return $valid;
+        }
+
+        $reader = new MenuReader();
+        $id = $this->repo->insert([
+            'action'          => ChangeRepository::ACTION_UPDATE_MENU,
+            'entity_type'     => 'menu',
+            'target_id'       => $menu_id,
+            'post_type'       => 'nav_menu',
+            'base_hash'       => $reader->hash($menu_id),
+            'payload'         => ['items' => $items, 'menu_name' => $menu->name],
+            'summary'         => $this->summarize(sprintf('Menu: %s', $menu->name)),
+            'note'            => $note,
+            'requested_by'    => $requested_by,
+            'idempotency_key' => $idempotency_key,
+        ]);
+
+        $this->audit('accesslink_proposed', [
+            'change_id' => $id,
+            'action'    => ChangeRepository::ACTION_UPDATE_MENU,
+            'menu_id'   => $menu_id,
             'by'        => $requested_by,
         ]);
 
@@ -845,6 +938,31 @@ final class ChangeService
             }
 
             $result = $this->applier->apply_update($target_id, $fields);
+        } elseif ($change['action'] === ChangeRepository::ACTION_UPDATE_MENU) {
+            if (!$this->menus_enabled()) {
+                return $this->fail($id, 'Menu editing was switched off after this was proposed.');
+            }
+            if (!wp_get_nav_menu_object($target_id)) {
+                return $this->fail($id, 'That menu no longer exists.');
+            }
+
+            $reader = new MenuReader();
+            if (!hash_equals((string) $change['base_hash'], $reader->hash($target_id))) {
+                return $this->mark_stale(
+                    $id,
+                    $target_id,
+                    'The menu changed after this was proposed, so applying it would undo that. '
+                        . 'Re-read the menu and propose again.',
+                );
+            }
+
+            $applier = new MenuApplier();
+            $valid = $applier->validate($target_id, (array) ($change['payload']['items'] ?? []), $this->allowed_post_types());
+            if (is_wp_error($valid)) {
+                return $this->fail($id, $valid->get_error_message());
+            }
+
+            $result = $applier->apply($target_id, (array) ($change['payload']['items'] ?? []));
         } elseif ($change['action'] === ChangeRepository::ACTION_SET_LANGUAGE) {
             $tr = TranslationAdapterFactory::detect();
             if (!get_post($target_id) instanceof \WP_Post) {

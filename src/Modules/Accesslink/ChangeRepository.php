@@ -24,6 +24,7 @@ final class ChangeRepository
     public const ACTION_MOVE_BLOCK   = 'move_block';
     public const ACTION_CREATE_TRANSLATION = 'create_translation';
     public const ACTION_SET_LANGUAGE       = 'set_language';
+    public const ACTION_UPDATE_MENU        = 'update_menu';
 
     /**
      * Every action `propose()` accepts.
@@ -43,6 +44,7 @@ final class ChangeRepository
         self::ACTION_MOVE_BLOCK,
         self::ACTION_CREATE_TRANSLATION,
         self::ACTION_SET_LANGUAGE,
+        self::ACTION_UPDATE_MENU,
     ];
 
     /** Actions that exist only where a multilingual plugin does. */

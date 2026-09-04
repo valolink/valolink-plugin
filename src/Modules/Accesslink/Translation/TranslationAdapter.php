@@ -53,4 +53,7 @@ interface TranslationAdapter
 
     /** Assign a language to a post that has none. */
     public function set_language(int $post_id, string $lang): bool|\WP_Error;
+
+    /** Language slug of a taxonomy term (a menu, for instance), '' when none. */
+    public function language_of_term(int $term_id): string;
 }

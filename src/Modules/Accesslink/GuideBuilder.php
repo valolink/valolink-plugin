@@ -80,6 +80,11 @@ final class GuideBuilder
                 'summary' => 'Site furniture — headers, footers, injected scripts — and how they differ from pages.',
                 'when'    => $this->uses_elements(),
             ],
+            'menus' => [
+                'label'   => 'Navigation menus',
+                'summary' => 'Reading a menu as a tree and proposing a new one.',
+                'when'    => $this->service->menus_enabled(),
+            ],
             'queue' => [
                 'label'   => 'Checking on your proposals',
                 'summary' => 'Statuses, and reading why something was rejected.',
@@ -115,6 +120,7 @@ final class GuideBuilder
             'blocks'       => $this->section_blocks(),
             'translations' => $this->section_translations(),
             'elements'     => $this->section_elements(),
+            'menus'        => $this->section_menus(),
             'queue'        => $this->section_queue(),
             'notes'        => $this->section_notes(),
             default        => [],
@@ -547,6 +553,61 @@ final class GuideBuilder
     }
 
     /** @return array<int, string> */
+    private function section_menus(): array
+    {
+        $base = $this->base();
+
+        $md = [];
+        $md[] = '## Navigation menus';
+        $md[] = '';
+        $md[] = "- `GET {$base}/menus` — every menu, the theme locations it occupies and, on a";
+        $md[] = '  multilingual site, its language.';
+        $md[] = "- `GET {$base}/menus/{id}` — one menu as a nested tree.";
+        $md[] = '';
+        $md[] = 'A menu item is not a page. It has its own `label`, which overrides the target\'s';
+        $md[] = 'title, and a target that is either a post (`type: post_type` with an `object_id`)';
+        $md[] = 'or a plain link (`type: custom` with a `url`).';
+        $md[] = '';
+        $md[] = 'Propose by sending the **whole tree back**, changed:';
+        $md[] = '';
+        $md[] = '```json';
+        $md[] = '{';
+        $md[] = '  "action": "update_menu",';
+        $md[] = '  "menu_id": 29,';
+        $md[] = '  "items": [';
+        $md[] = '    { "id": 310, "label": "Websites", "type": "post_type", "object": "page", "object_id": 4345 },';
+        $md[] = '    { "label": "Contact", "type": "custom", "url": "https://example.fi/contact/" }';
+        $md[] = '  ],';
+        $md[] = '  "note": "Why."';
+        $md[] = '}';
+        $md[] = '```';
+        $md[] = '';
+        $md[] = 'Read the menu, change what you need, send all of it back. **Anything you leave';
+        $md[] = 'out is deleted** — that is what makes the whole thing reviewable as one';
+        $md[] = 'before-and-after, but it does mean a partial payload quietly empties a menu.';
+        $md[] = 'Keep `id` on items that already exist so they are updated rather than replaced;';
+        $md[] = 'omit it to add one. Nest with `children`.';
+        $md[] = '';
+        $md[] = 'If anyone touches the menu between your proposal and approval, the change is';
+        $md[] = 'parked as `stale` rather than reverting their work.';
+        $md[] = '';
+
+        if (TranslationAdapterFactory::detect()->available()) {
+            $md[] = 'On this site menus are per-language, and a language\'s menu is a separate menu';
+            $md[] = 'assigned to the same theme location. The common job is repointing: when a page';
+            $md[] = 'gains a translation, the corresponding item in that language\'s menu should stop';
+            $md[] = 'being a `custom` link to the original and become a `post_type` item pointing at';
+            $md[] = 'the translated post.';
+            $md[] = '';
+            $md[] = 'Creating a menu, and assigning one to a theme location, are not possible here —';
+            $md[] = 'ask the operator.';
+            $md[] = '';
+        }
+
+        return $md;
+    }
+
+    /** @return array<int, string> */
     private function section_queue(): array
     {
         $base = $this->base();
@@ -641,7 +702,10 @@ final class GuideBuilder
         if (!TranslationAdapterFactory::detect()->available()) {
             $out[] = 'Translations — no multilingual plugin Accesslink can drive';
         }
-        $out[] = 'Navigation menus, media uploads, and deleting anything';
+        if (!$this->service->menus_enabled()) {
+            $out[] = 'Navigation menus — editing them is switched off for this site';
+        }
+        $out[] = 'Creating menus, assigning theme locations, media uploads, and deleting anything';
 
         return $out;
     }

@@ -111,11 +111,17 @@ translate a site cannot finish the job on its own.
   it out of its translation group, which is a data decision rather than a content
   one. Verified on staging that `set_language` → `create_translation` now
   completes a chain that previously required wp-admin.
-- [ ] **Navigation menus.** The entire English menu was built by hand: create the
-  menu, set its language, link it to its counterpart, add nine items, and write
-  Polylang's per-theme, per-location, per-language map in the `polylang` option.
-  None of it is reachable through Accesslink, and it is the single largest
-  remaining hole in "translate this site".
+- [~] **Navigation menus** — first slice shipped. `GET /menus`, `GET /menus/{id}`
+  and an `update_menu` action taking the whole item tree, behind an *Allow menu
+  edits* toggle that is off by default. The blocker was never the write but the
+  review: the queue now renders both sides as an indented `label → target` tree,
+  which is the same tree diff the block outline uses. Verified on staging by
+  adding a Home entry to the English menu, and by racing a wp-admin edit against
+  a pending proposal — the human's edit survived and the proposal went `stale`.
+  Still by hand: **creating** a menu, setting its language, and assigning it to a
+  theme location, including Polylang's per-language location map. Those are
+  one-time structural decisions; repointing items is the repetitive part and is
+  now covered.
 - [ ] **Repairing an existing translation's postmeta.** New translations copy it;
   ones created earlier cannot be fixed except by calling `copy_meta` directly.
 - [ ] **Purging the page cache after a non-content change.** Approving a post

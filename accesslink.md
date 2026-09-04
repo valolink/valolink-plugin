@@ -197,6 +197,20 @@ The draft is created and linked immediately, as `create` does; approval sets its
 
 Not covered, and worth saying plainly because a translated page is not a translated site: **menus** are per-language in Polylang and are not touched, **theme and plugin strings** are not touched, and **internal links keep pointing at source-language pages**. Term translations (`pll_save_term_translations`) are not wired up either, so a translated post cannot yet be categorised.
 
+### GET /menus · GET /menus/{id} · action `update_menu`
+
+`GET /menus` lists every menu with the theme locations it occupies and, on a multilingual site, its language. Locations are read from both the theme mod and Polylang's own per-theme/per-location/per-language map, so a menu assigned to *primary* for English only reports as `primary [en]` — reading the filtered theme mod would report just the current language and quietly mislead.
+
+`GET /menus/{id}` returns the menu as a nested tree. A menu item is not a page: it has its own `label`, which overrides the target's title, and points either at a post (`type: post_type` with `object_id`) or at a plain URL (`type: custom`).
+
+`update_menu` takes `menu_id` and the **whole item tree**. Read it, change what you need, send all of it back; items keep their `id` to be updated in place, an item without one is created, and an item you leave out is deleted.
+
+Whole-tree rather than per-item because that is the only form in which a menu is reviewable. "Relabel two, repoint one, nest the last" is several proposals a reviewer has to hold in their head at once; one tree is a single before-and-after they can read. It also makes staleness honest — the thing being replaced is the menu, so the thing hashed is the menu, and a proposal filed before someone edited it in wp-admin is parked rather than silently reverting their work.
+
+This is what the menu work was actually waiting on. The write was never the hard part; approving a menu change was, because a menu diffed as JSON is unreadable and diffed as prose says nothing. The queue renders both sides as an indented `label → target` tree, which makes the edit a translation produces — same label, different destination — visible at a glance.
+
+**Menus ship switched off.** They are site structure rather than content, so a separate *Allow menu edits* toggle gates the action, `capabilities.menus` reports it, and `update_menu` drops out of the advertised `actions` when it is off. Creating a menu and assigning it to a theme location are deliberately still outside the API; those are one-time structural decisions, where repointing items is the repetitive work an agent should do.
+
 ### GET /elements
 
 GeneratePress Elements are ordinary posts of the `gp_elements` type, so once an operator adds that type to *Allowed post types* every existing read and write applies to them unchanged. What is not ordinary is what they mean: an Element is site furniture — a hero, a footer, a script injected into `wp_head` — and its behaviour lives in `_generate_*` postmeta, not in its content.

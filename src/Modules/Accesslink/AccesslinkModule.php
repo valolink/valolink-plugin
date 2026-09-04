@@ -240,6 +240,20 @@ final class AccesslinkModule implements Module
         // GeneratePress Elements are readable and editable as an ordinary post
         // type once the operator allows it; this exposes the `_generate_*` meta
         // that says what each one actually does and where it appears.
+        // Menus are site structure rather than content, so they read freely but
+        // only become proposable when the operator switches it on.
+        register_rest_route(self::REST_NAMESPACE, '/menus', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_menus'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
+        register_rest_route(self::REST_NAMESPACE, '/menus/(?P<id>\d+)', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_menu'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
         register_rest_route(self::REST_NAMESPACE, '/elements', [
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => [$this, 'handle_elements'],
@@ -361,8 +375,16 @@ final class AccesslinkModule implements Module
             // on it unable to discover create_translation at all.
             'actions'            => array_values(array_filter(
                 ChangeRepository::ACTIONS,
-                static fn (string $action): bool => !in_array($action, ChangeRepository::TRANSLATION_ACTIONS, true)
-                    || TranslationAdapterFactory::detect()->available(),
+                static function (string $action) use ($service): bool {
+                    if (in_array($action, ChangeRepository::TRANSLATION_ACTIONS, true)) {
+                        return TranslationAdapterFactory::detect()->available();
+                    }
+                    if ($action === ChangeRepository::ACTION_UPDATE_MENU) {
+                        return $service->menus_enabled();
+                    }
+
+                    return true;
+                },
             )),
             // What this particular install supports, so an agent can branch on
             // it rather than discovering absence through a failed proposal.
@@ -372,7 +394,7 @@ final class AccesslinkModule implements Module
                 'taxonomy'       => true,
                 'featured_image' => true,
                 'blocks'         => true,
-                'menus'          => false,
+                'menus'          => $service->menus_enabled(),
                 'elements'       => ElementReader::available()
                     && in_array(ElementReader::POST_TYPE, $service->allowed_post_types(), true),
                 'translations'   => TranslationAdapterFactory::detect()->available(),
@@ -484,6 +506,25 @@ final class AccesslinkModule implements Module
         return new \WP_REST_Response(
             (new ContentReader($this->service(), new PostApplier()))->taxonomies(),
         );
+    }
+
+    public function handle_menus(): \WP_REST_Response
+    {
+        $result = (new MenuReader())->list();
+        $result['editable'] = $this->service()->menus_enabled();
+
+        return new \WP_REST_Response($result);
+    }
+
+    public function handle_menu(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $result = (new MenuReader())->get((int) $request['id']);
+        if (is_wp_error($result)) {
+            return $result;
+        }
+        $result['editable'] = $this->service()->menus_enabled();
+
+        return new \WP_REST_Response($result);
     }
 
     public function handle_elements(): \WP_REST_Response
@@ -759,6 +800,7 @@ final class AccesslinkModule implements Module
                 ? sanitize_text_field(wp_unslash($_POST['notify_emails']))
                 : '',
             'writes_enabled'     => !empty($_POST['writes_enabled']),
+            'allow_menu_edits'   => !empty($_POST['allow_menu_edits']),
             'allowed_post_types' => $types !== [] ? $types : ['post', 'page'],
             'instructions'       => $instructions,
         ]);

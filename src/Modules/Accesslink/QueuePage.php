@@ -103,6 +103,7 @@ final class QueuePage
         $is_create = in_array($change['action'], ChangeRepository::DRAFT_ACTIONS, true);
         $is_translation = $change['action'] === ChangeRepository::ACTION_CREATE_TRANSLATION;
         $is_set_language = $change['action'] === ChangeRepository::ACTION_SET_LANGUAGE;
+        $is_menu = $change['action'] === ChangeRepository::ACTION_UPDATE_MENU;
         ?>
         <div class="card" style="max-width:none;margin-bottom:1em;padding:1em;">
             <h3 style="margin-top:0;">
@@ -171,6 +172,8 @@ final class QueuePage
                         </a>
                     <?php endif; ?>
                 </p>
+            <?php elseif ($is_menu) : ?>
+                <?php $this->render_menu_diff($change); ?>
             <?php elseif ($is_set_language) : ?>
                 <p>
                     <?php
@@ -191,7 +194,12 @@ final class QueuePage
             <?php endif; ?>
 
             <p>
-                <?php if ($target_id > 0) : ?>
+                <?php if ($is_menu) : ?>
+                    <a class="button" target="_blank" rel="noopener"
+                       href="<?php echo esc_url(admin_url('nav-menus.php?menu=' . $target_id)); ?>">
+                        <?php esc_html_e('Open this menu in the editor', 'valolink-plugin'); ?>
+                    </a>
+                <?php elseif ($target_id > 0) : ?>
                     <?php if ($is_create) : ?>
                         <a class="button" target="_blank" rel="noopener"
                            href="<?php echo esc_url((string) get_preview_post_link($target_id)); ?>">
@@ -300,6 +308,75 @@ final class QueuePage
             echo '<h4>' . esc_html($field) . '</h4>';
             $this->render_field_diff($current, (string) $proposed);
         }
+    }
+
+    /**
+     * A menu, before and after, as an indented tree.
+     *
+     * This is what the menu work was waiting on rather than the write: a menu
+     * diffed as JSON is unreadable and diffed as prose says nothing, so
+     * approving one would have been a rubber stamp. Indented label plus target
+     * is the form a person actually pictures when they say "the menu", and it
+     * makes a repointed item — same label, different destination — visible,
+     * which is exactly the edit a translation produces.
+     */
+    private function render_menu_diff(array $change): void
+    {
+        $menu_id = (int) $change['target_id'];
+        $reader  = new MenuReader();
+
+        if (!wp_get_nav_menu_object($menu_id)) {
+            echo '<p><strong>' . esc_html__('That menu no longer exists.', 'valolink-plugin') . '</strong></p>';
+
+            return;
+        }
+
+        $current  = $reader->outline($menu_id);
+        $proposed = implode("\n", $this->proposed_menu_lines((array) ($change['payload']['items'] ?? []), 0));
+
+        echo '<h4>' . esc_html__('Menu', 'valolink-plugin') . ' <code>'
+            . esc_html((string) ($change['payload']['menu_name'] ?? $menu_id)) . '</code></h4>';
+        $this->render_field_diff($current, $proposed);
+    }
+
+    /**
+     * The proposed tree in the same shape MenuReader::outline() produces, so the
+     * two sides of the diff are comparable line for line.
+     *
+     * @return array<int, string>
+     */
+    private function proposed_menu_lines(array $items, int $depth): array
+    {
+        $lines = [];
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $type = (string) ($item['type'] ?? 'custom');
+            $object_id = (int) ($item['object_id'] ?? 0);
+            $target = match ($type) {
+                'post_type' => sprintf(
+                    '%s #%d (%s)',
+                    (string) ($item['object'] ?? 'post'),
+                    $object_id,
+                    (string) (get_permalink($object_id) ?: ''),
+                ),
+                'taxonomy'          => sprintf('%s #%d', (string) ($item['object'] ?? ''), $object_id),
+                'post_type_archive' => sprintf('archive: %s', (string) ($item['object'] ?? '')),
+                default             => (string) ($item['url'] ?? ''),
+            };
+
+            // Same separator MenuReader::outline() uses, so both sides of the
+            // diff line up character for character.
+            $lines[] = str_repeat('    ', $depth) . (string) ($item['label'] ?? '') . '  →  ' . $target;
+
+            if (!empty($item['children']) && is_array($item['children'])) {
+                $lines = array_merge($lines, $this->proposed_menu_lines($item['children'], $depth + 1));
+            }
+        }
+
+        return $lines;
     }
 
     /**
@@ -571,6 +648,23 @@ final class QueuePage
                         </label>
                         <p class="description">
                             <?php esc_html_e('Kill switch. Unchecking stops all incoming proposals immediately; the queue stays readable.', 'valolink-plugin'); ?>
+                        </p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><?php esc_html_e('Allow menu edits', 'valolink-plugin'); ?></th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="allow_menu_edits" value="1"
+                                <?php checked((bool) $this->settings->get_module_setting(
+                                    AccesslinkModule::MODULE_ID,
+                                    'allow_menu_edits',
+                                    false,
+                                )); ?>>
+                            <?php esc_html_e('Let agents propose changes to navigation menus', 'valolink-plugin'); ?>
+                        </label>
+                        <p class="description">
+                            <?php esc_html_e('Off by default. A menu is site structure rather than content, and a proposal replaces the whole item tree — read the before-and-after in the queue before approving one.', 'valolink-plugin'); ?>
                         </p>
                     </td>
                 </tr>

@@ -40,6 +40,11 @@ final class UnsupportedTranslationAdapter implements TranslationAdapter
         return '';
     }
 
+    public function language_of_term(int $term_id): string
+    {
+        return '';
+    }
+
     public function translations(int $post_id): array
     {
         return [];
