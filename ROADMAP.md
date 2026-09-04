@@ -77,16 +77,138 @@ Deliberately deferred until v1 inventory push is solid. The threat surface flips
 Do not start this before Phase 2 ships.
 
 ### Accesslink follow-ups
-**Objective:** widen the agent change queue past posts and pages.
+**Objective:** widen what an agent can actually do through the change queue.
 
-The module shipped with a `PostApplier` covering `post_title` / `post_content` / `post_excerpt`. Deferred, in rough order of usefulness:
+Spec and current wire shapes: `accesslink.md`. Ordered by value × cheapness × fit
+with what already exists, not by ambition. Tier 0 is a defect in shipped code, and
+everything below it assumes the review gate is honest — so it goes first.
 
-- **WooCommerce products.** A `ProductApplier` beside `PostApplier`, going through `wc_get_product()` setters and `save()` — price/stock/SKU live in postmeta *and* Woo's `wp_wc_product_meta_lookup`, so `wp_update_post` desynchronises them. Queue, auth, staleness gate and review UI need no changes.
-- **Taxonomy terms, featured image, custom fields** on the existing post applier.
-- **Remote approval from EngineLink.** `ChangeService` is already the single implementation behind both the REST routes and the admin screen, so aggregating every site's queue into one Nuxt page is additive — but it needs an approver credential distinct from the propose key, since the whole design rests on those not being the same secret.
-- **Per-key scoping** (which post types, which categories) rather than one all-or-nothing site key.
+Test site: `staging.valolink.fi` (Polylang 3.8.7, GenerateBlocks, Rank Math,
+Redirection). Deployed as a plain file copy under `valolink-web`, no git checkout —
+rsync `src/` to test, and remember the live `valolink.fi` sits under the same user.
 
-Spec and current wire shapes: `accesslink.md`.
+#### Tier 0 — the review gate
+
+- [x] **Structural changes were approved blind** — fixed. `update_text`,
+  `insert_block`, `delete_block` and `move_block` all rendered an empty diff and a
+  preview showing the *unchanged* page, because `QueuePage::render_diff()` and
+  `AccesslinkModule::filter_preview_posts()` both special-cased `update_block` and
+  then looped over `payload['fields']`, which those five actions do not carry. Five
+  of seven actions were unreviewable, including `update_text` — the one the guide
+  tells agents to prefer. All three call sites now resolve through
+  `ChangeService::proposed_content()`, structural changes get a block-outline tree
+  diff, and a preview that cannot be built fails loudly instead of rendering the
+  current page. Verified end to end on staging across all four actions.
+
+#### Tier 1 — cheap, and the existing machinery already fits
+
+- [ ] **`post_name` and `post_date`.** An agent cannot currently rename or schedule
+  anything. Two entries in `PostApplier::POST_FIELDS`. Ship slug together with
+  redirects — a silent rename is worse than no rename.
+- [ ] **Attachment alt text / title / caption.** New `entity_type` (the column
+  exists and defaults to `post`), small applier, trivial diff, near-zero blast
+  radius. Unlocks an accessibility + SEO sweep across a whole media library:
+  high-volume, billable, and miserable by hand.
+- [ ] **`wp_block` (synced patterns).** Just a post type — but editing one changes
+  every page using it, so the queue has to show "used on N pages" or approval is
+  blind.
+- [ ] **Revert an applied change.** `wp_update_post` already wrote a revision at
+  apply time, so a Revert button on applied rows is nearly free. Moves how risky
+  approving *feels* more than anything else on this list.
+
+#### Tier 2 — real work, real payoff
+
+- [ ] **Polylang translations.** Own subsection below.
+- [ ] **Content audit reads.** `GET /audit/content`: missing meta descriptions,
+  images without alt text, thin content, orphan pages, broken internal links. No
+  new write surface — only reads that already exist. Aims at the top friction in
+  the root `CLAUDE.md` (employees inventing work when the queue is empty) by
+  turning Accesslink into a source of concrete claimable work rather than only a
+  way to apply edits.
+- [ ] **ACF / custom fields.** CPT UI is on much of the fleet, so custom post types
+  exist that are only half-readable now. Needs discovery first — `GET /field-groups`
+  and `GET /content/{id}/fields` — because an agent cannot guess field keys. v1 is
+  scalars only (text, textarea, wysiwyg, number, url, image id, select, true/false);
+  repeaters and flexible content are where the cost lives, and they wait.
+- [ ] **Media upload by URL, sideloaded at approval.** Without it every created page
+  is imageless. Fetch happens only on approve, behind a host allowlist with MIME
+  and size limits.
+- [ ] **Redirects.** Adapter for the Redirection plugin, degrading to unavailable.
+  Pairs with slug changes, which needs the next item.
+- [ ] **Batched proposals.** A `batch_id` with all-or-nothing apply. Today every
+  change stands alone, so a translation plus its menu entry plus its redirect can
+  be approved piecemeal and leave the site half-done. Architectural, and the unlock
+  for every multi-entity item here.
+
+#### Tier 3 — deferred, with the reason
+
+- [ ] **WooCommerce products.** A `ProductApplier` beside `PostApplier` going through
+  `wc_get_product()` setters and `save()` — price/stock/SKU live in postmeta *and*
+  Woo's `wp_wc_product_meta_lookup`, so `wp_update_post` desynchronises them. Queue,
+  auth, staleness gate and review UI need no changes. Build it when a Woo client asks.
+- [ ] **Menus.** `nav_menu_item` posts as a tree. Blocked on review, not on the write:
+  a text diff of a menu is meaningless.
+- [ ] **GeneratePress Elements.** Read first (type, hook, display conditions resolved
+  to which posts they apply to) so an agent can tell the footer CTA is an Element and
+  not a page. Writing a global template is a much later conversation.
+- [ ] **Contact Form 7.** Read-only value only — knowing what a form collects is
+  useful; rewriting a form template risks lead capture.
+- [ ] **Remote approval from EngineLink.** `ChangeService` is already the single
+  implementation behind both the REST routes and the admin screen, so aggregating
+  every site's queue into one Nuxt page is additive — but it needs an approver
+  credential distinct from the propose key, since the whole design rests on those
+  not being the same secret.
+- [ ] **Per-key scoping** (which post types, which categories) and **reading back a
+  proposal's payload**. Both are prerequisites for multiple agents or an EngineLink
+  reviewer; neither matters while one operator reviews in wp-admin.
+
+**Not worth doing:** theme or plugin file edits, options and customizer, user
+management, plugin install/activate (that is `hestiascripts`' job), comment
+moderation.
+
+#### Polylang translations — design
+
+The hard part already exists. A translation of a GenerateBlocks page is a structural
+clone with translated leaf text, and `BlockReader` already flattens a document to
+addressable paths with `editable` leaves.
+
+Reads:
+- `GET /languages` — configured languages plus the resolved adapter, mirroring the
+  SEO adapter pattern. WPML would be detected-but-unwritable.
+- `GET /content/{id}/translations` — per language: id, status, link, modified,
+  missing and stale flags.
+- `GET /translations/status?post_type=page` — the matrix. "17 pages, 12 in en, 3
+  outdated, 2 missing." Nothing in WordPress gives you this cheaply and it is a
+  report worth putting in front of a customer.
+
+Writes, queued like everything else:
+- `create_translation` — draft in the target language, linked into the translation
+  group. Same semantics as the existing `create`: draft written immediately,
+  approval flips status.
+- `sync_translation` — source changed, so mirror the structural change into the
+  translation and leave translated leaves alone except where the matching source
+  leaf moved. This is the one that earns its keep; manual translation drift is
+  exactly what nobody catches.
+
+Plain `update` on an existing translation already works today if the translated post
+is in `allowed_post_types`, so the minimum viable version is the reads plus linking.
+
+Four things to settle:
+1. **Staleness needs a new marker.** Polylang does not track "translated at source
+   version". Accesslink would write its own postmeta (`_accesslink_source_hash`) at
+   apply time — a new persistent footprint, so `uninstall()` has to clear it.
+2. **The reviewer usually cannot judge the target language.** Approving an English
+   page means "structurally sound and plausible", not "correct English". The queue
+   screen should show source and translation side by side and assert block-name
+   equivalence, and the honest limit should be stated rather than implied away.
+3. **Term translations** (`pll_save_term_translations`) — without them a translated
+   post cannot be categorised.
+4. **Verify against the installed version before building.** The `pll_*` helpers and
+   the `post_translations` hidden-taxonomy internals are not a public contract, and
+   free and Pro differ.
+
+Out of scope for translation v1, so nobody expects a fully translated site from it:
+menu translations and theme/plugin string translations (Loco).
 
 ### Module K — Isolated Shortcode Lazy Loader
 **Objective:** Last-resort optimization for genuinely unfixable heavy shortcodes/plugins.

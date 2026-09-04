@@ -185,21 +185,28 @@ final class QueuePage
             return;
         }
 
-        // A block edit diffs just that block, which is the whole point of
-        // addressing one — a whole-post diff of a nested GenerateBlocks page is
-        // unreadable and a reviewer cannot judge it.
-        if ($change['action'] === ChangeRepository::ACTION_UPDATE_BLOCK) {
-            $path = (string) ($change['payload']['path'] ?? '');
-            $current = (new BlockReader())->get_at((string) $post->post_content, $path);
+        // Resolved through the same ChangeService method approval and the
+        // front-end preview use, so all three describe one change. Null means
+        // this action does not rewrite post_content and the field diff below
+        // is the right view.
+        $proposed = (new ChangeService($this->settings, $this->repo, new PostApplier()))
+            ->proposed_content($change, $post);
+
+        if (is_wp_error($proposed)) {
             printf(
-                '<h4>%s <code>%s</code></h4>',
-                esc_html__('Block', 'valolink-plugin'),
-                esc_html(($change['payload']['block_name'] ?? '?') . ' @ ' . $path),
+                '<p><strong>%s</strong></p>',
+                esc_html(sprintf(
+                    /* translators: %s: why the proposed version could not be built. */
+                    __('This change can no longer be shown against the current page: %s', 'valolink-plugin'),
+                    $proposed->get_error_message(),
+                )),
             );
-            $this->render_field_diff(
-                $current['html'] ?? '',
-                (string) ($change['payload']['html'] ?? ''),
-            );
+
+            return;
+        }
+
+        if (is_string($proposed)) {
+            $this->render_block_diff($change, (string) $post->post_content, $proposed);
 
             return;
         }
@@ -220,6 +227,103 @@ final class QueuePage
             echo '<h4>' . esc_html($field) . '</h4>';
             $this->render_field_diff($current, (string) $proposed);
         }
+    }
+
+    /**
+     * Block-level and structural changes.
+     *
+     * A whole-document diff of a nested GenerateBlocks page is unreadable —
+     * that is the whole reason blocks are addressable — so each action is shown
+     * at the scope it actually operates on. The two structural actions a text
+     * diff cannot express get the block outline before and after as well, which
+     * is the same tree-diff the deferred menu work is waiting on.
+     */
+    private function render_block_diff(array $change, string $current, string $proposed): void
+    {
+        $reader = new BlockReader();
+        $path   = (string) ($change['payload']['path'] ?? '');
+        $anchor = $reader->get_at($current, $path);
+        $name   = (string) ($change['payload']['block_name'] ?? ($anchor['name'] ?? '?'));
+
+        switch ((string) $change['action']) {
+            case ChangeRepository::ACTION_UPDATE_TEXT:
+            case ChangeRepository::ACTION_UPDATE_BLOCK:
+                // Diff the block as it will actually end up rather than the
+                // payload. update_text carries only the inner text, so showing
+                // that would hide the wrapper the reviewer is being asked to
+                // trust is untouched.
+                printf(
+                    '<h4>%s <code>%s</code></h4>',
+                    esc_html__('Block', 'valolink-plugin'),
+                    esc_html($name . ' @ ' . $path),
+                );
+                $this->render_field_diff(
+                    (string) ($anchor['html'] ?? ''),
+                    (string) ($reader->get_at($proposed, $path)['html'] ?? ''),
+                );
+
+                return;
+
+            case ChangeRepository::ACTION_INSERT_BLOCK:
+                printf(
+                    '<h4>%s</h4>',
+                    esc_html(sprintf(
+                        /* translators: 1: before or after, 2: block name, 3: block path. */
+                        __('Insert a block %1$s %2$s @ %3$s', 'valolink-plugin'),
+                        (string) ($change['payload']['position'] ?? 'after'),
+                        $name,
+                        $path,
+                    )),
+                );
+                $this->render_field_diff('', (string) ($change['payload']['markup'] ?? ''));
+                break;
+
+            case ChangeRepository::ACTION_DELETE_BLOCK:
+                printf(
+                    '<h4>%s <code>%s</code></h4>',
+                    esc_html__('Delete block', 'valolink-plugin'),
+                    esc_html($name . ' @ ' . $path),
+                );
+                $this->render_field_diff((string) ($anchor['html'] ?? ''), '');
+                break;
+
+            default:
+                printf(
+                    '<h4>%s</h4>',
+                    esc_html(sprintf(
+                        /* translators: 1: block name, 2: source path, 3: before or after, 4: destination path. */
+                        __('Move %1$s from %2$s to %3$s %4$s', 'valolink-plugin'),
+                        $name,
+                        $path,
+                        (string) ($change['payload']['position'] ?? 'after'),
+                        (string) ($change['payload']['target_path'] ?? '?'),
+                    )),
+                );
+                break;
+        }
+
+        echo '<h4>' . esc_html__('Block outline', 'valolink-plugin') . '</h4>';
+        $this->render_field_diff($this->outline($reader, $current), $this->outline($reader, $proposed));
+    }
+
+    /**
+     * The block tree as indented plain text, for diffing.
+     *
+     * Deliberately without paths: an insert or delete renumbers every later
+     * sibling, so including them would mark the whole rest of the document as
+     * changed and bury the one line that actually moved.
+     */
+    private function outline(BlockReader $reader, string $content): string
+    {
+        $lines = [];
+        foreach (($reader->flatten($content)['blocks'] ?? []) as $block) {
+            $text = trim((string) ($block['text'] ?? ''));
+            $lines[] = str_repeat('    ', (int) ($block['depth'] ?? 0))
+                . (string) ($block['name'] ?? '?')
+                . ($text !== '' ? ' — ' . wp_trim_words($text, 8, '…') : '');
+        }
+
+        return implode("\n", $lines);
     }
 
     private function render_field_diff(string $current, string $proposed): void

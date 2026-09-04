@@ -510,7 +510,14 @@ final class AccesslinkModule implements Module
             // Why a human turned it down. The agent's only feedback channel —
             // without it a rejection teaches nothing.
             'review_note'  => $change['review_note'] ?? null,
-            'edit_link'    => $change['target_id'] ? get_edit_post_link((int) $change['target_id'], 'raw') : null,
+            // Built directly rather than via get_edit_post_link(), which is
+            // capability-gated and so returns null for every request
+            // authenticated by an Accesslink key — there is no WP user behind
+            // one. The link is for whichever human the agent hands it to, so it
+            // has to exist regardless of who asked.
+            'edit_link'    => $change['target_id']
+                ? admin_url('post.php?post=' . (int) $change['target_id'] . '&action=edit')
+                : null,
         ];
     }
 
@@ -690,17 +697,32 @@ final class AccesslinkModule implements Module
         // what this loop renders should show the proposal.
         $preview = clone $posts[0];
 
-        if ($change['action'] === ChangeRepository::ACTION_UPDATE_BLOCK) {
-            $replaced = (new BlockReader())->replace_at(
-                (string) $preview->post_content,
-                (string) ($change['payload']['path'] ?? ''),
-                (string) ($change['payload']['html'] ?? ''),
+        // Every action that rewrites post_content resolves through the same
+        // ChangeService method approval uses, so the page rendered here is the
+        // page approving would produce. Deriving it separately is how a preview
+        // starts quietly disagreeing with what gets applied.
+        $content = $this->service()->proposed_content($change, $posts[0]);
+
+        if (is_wp_error($content)) {
+            // Failing loudly matters more than degrading gracefully here: the
+            // only other option is rendering the current page under a button
+            // that says "proposed version", which invites approving something
+            // nobody has seen.
+            wp_die(
+                esc_html(sprintf(
+                    /* translators: %s: reason the proposed version could not be built. */
+                    __('This proposal can no longer be previewed: %s', 'valolink-plugin'),
+                    $content->get_error_message(),
+                )),
+                esc_html__('Accesslink preview', 'valolink-plugin'),
+                ['back_link' => true, 'response' => 200],
             );
-            if (!is_wp_error($replaced)) {
-                $preview->post_content = $replaced;
-                $posts[0] = $preview;
-                nocache_headers();
-            }
+        }
+
+        if (is_string($content)) {
+            $preview->post_content = $content;
+            $posts[0] = $preview;
+            nocache_headers();
 
             return $posts;
         }

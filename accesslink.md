@@ -49,6 +49,27 @@ Note that create therefore *does* write to the database before any human sees it
 
 ---
 
+## What the reviewer sees
+
+Approval is the only gate, so every action has to be reviewable at the scope it operates on. A whole-document diff of a nested GenerateBlocks page is unreadable, which is the reason blocks are addressable in the first place.
+
+| Action | Diff | Preview |
+|---|---|---|
+| `create` | — (draft exists; preview it in the real theme) | WordPress draft preview |
+| `update` | field by field, resolved through `PostApplier::current_value()` | proposed post columns swapped into the main query |
+| `update_text`, `update_block` | that block's HTML, before and after | proposed page |
+| `insert_block` | the markup being added, plus the block outline | proposed page |
+| `delete_block` | the block being removed, plus the block outline | proposed page |
+| `move_block` | the block outline, before and after | proposed page |
+
+The **block outline** is the tree as indented `name — first words` lines. Paths are deliberately left out: an insert or delete renumbers every later sibling, so including them would mark the rest of the document as changed and bury the line that actually moved.
+
+For `update_text` the diff shows the block as it will *end up*, not the submitted `text`. The wrapper appearing byte-identical on both sides is the reviewer's evidence that the edit cannot invalidate the block, and showing the payload alone would hide exactly that.
+
+One implementation note, because getting it wrong is silent: approval, the review diff and the front-end preview all resolve through `ChangeService::proposed_content()`. Three call sites deriving the proposed document separately is how a reviewer ends up approving something other than what they were shown.
+
+---
+
 ## Endpoints
 
 Base: `/wp-json/accesslink/v1`

@@ -455,31 +455,12 @@ final class ChangeService
                 );
             }
 
-            $reader = new BlockReader();
-            $p = $change['payload'];
-            $content = match ($change['action']) {
-                ChangeRepository::ACTION_INSERT_BLOCK => $reader->insert_block(
-                    (string) $post->post_content,
-                    (string) ($p['path'] ?? ''),
-                    (string) ($p['position'] ?? 'after'),
-                    (string) ($p['markup'] ?? ''),
-                ),
-                ChangeRepository::ACTION_DELETE_BLOCK => $reader->delete_block(
-                    (string) $post->post_content,
-                    (string) ($p['path'] ?? ''),
-                ),
-                default => $reader->move_block(
-                    (string) $post->post_content,
-                    (string) ($p['path'] ?? ''),
-                    (string) ($p['target_path'] ?? ''),
-                    (string) ($p['position'] ?? 'after'),
-                ),
-            };
+            $content = $this->proposed_content($change, $post);
             if (is_wp_error($content)) {
                 return $this->fail($id, $content->get_error_message());
             }
 
-            $result = $this->applier->apply_raw_content($target_id, $content);
+            $result = $this->applier->apply_raw_content($target_id, (string) $content);
         } elseif (in_array($change['action'], [ChangeRepository::ACTION_UPDATE_BLOCK, ChangeRepository::ACTION_UPDATE_TEXT], true)) {
             $post = get_post($target_id);
             if (!$post instanceof \WP_Post) {
@@ -499,15 +480,12 @@ final class ChangeService
                 return $this->repo->find($id) ?? [];
             }
 
-            $reader = new BlockReader();
-            $content = $change['action'] === ChangeRepository::ACTION_UPDATE_TEXT
-                ? $reader->replace_text_at((string) $post->post_content, $path, (string) ($change['payload']['html'] ?? ''))
-                : $reader->replace_at((string) $post->post_content, $path, (string) ($change['payload']['html'] ?? ''));
+            $content = $this->proposed_content($change, $post);
             if (is_wp_error($content)) {
                 return $this->fail($id, $content->get_error_message());
             }
 
-            $result = $this->applier->apply_raw_content($target_id, $content);
+            $result = $this->applier->apply_raw_content($target_id, (string) $content);
         } elseif ($change['action'] === ChangeRepository::ACTION_UPDATE) {
             // Staleness gate. Someone editing the post between proposal and
             // approval must not have their work silently overwritten.
@@ -551,6 +529,59 @@ final class ChangeService
         ]);
 
         return $this->repo->find($id) ?? [];
+    }
+
+    /**
+     * The whole `post_content` a block-level or structural change would produce,
+     * computed against the post exactly as it stands right now.
+     *
+     * Single implementation behind approval, the review diff and the front-end
+     * preview. Those three disagreeing is precisely how a reviewer ends up
+     * approving something other than what they were shown, so they share this
+     * instead of each re-deriving it — the same reason the field diff resolves
+     * through PostApplier::current_value().
+     *
+     * Returns null for actions that never rewrite post_content (`create`,
+     * `update`), and a WP_Error when the document has moved far enough that the
+     * change no longer addresses anything.
+     */
+    public function proposed_content(array $change, \WP_Post $post): string|\WP_Error|null
+    {
+        $reader  = new BlockReader();
+        $payload = $change['payload'] ?? [];
+        $content = (string) $post->post_content;
+        $path    = (string) ($payload['path'] ?? '');
+
+        return match ($change['action']) {
+            // For update_text the payload's `html` is the block's *inner* text,
+            // not its markup — so it has to go through replace_text_at, which
+            // leaves the wrapper element byte-identical. Sending it to
+            // replace_at would swallow the wrapper and invalidate the block.
+            ChangeRepository::ACTION_UPDATE_TEXT => $reader->replace_text_at(
+                $content,
+                $path,
+                (string) ($payload['html'] ?? ''),
+            ),
+            ChangeRepository::ACTION_UPDATE_BLOCK => $reader->replace_at(
+                $content,
+                $path,
+                (string) ($payload['html'] ?? ''),
+            ),
+            ChangeRepository::ACTION_INSERT_BLOCK => $reader->insert_block(
+                $content,
+                $path,
+                (string) ($payload['position'] ?? 'after'),
+                (string) ($payload['markup'] ?? ''),
+            ),
+            ChangeRepository::ACTION_DELETE_BLOCK => $reader->delete_block($content, $path),
+            ChangeRepository::ACTION_MOVE_BLOCK => $reader->move_block(
+                $content,
+                $path,
+                (string) ($payload['target_path'] ?? ''),
+                (string) ($payload['position'] ?? 'after'),
+            ),
+            default => null,
+        };
     }
 
     private function mark_stale(int $id, int $target_id, string $message): array
