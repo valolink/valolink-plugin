@@ -6,6 +6,7 @@ namespace Valolink\Plugin;
 
 use Valolink\Plugin\Admin\SettingsPage;
 use Valolink\Plugin\Modules\Accesslink\AccesslinkModule;
+use Valolink\Plugin\Modules\AssetVersion\AssetVersionModule;
 use Valolink\Plugin\Modules\Branding\BrandingModule;
 use Valolink\Plugin\Modules\Email\EmailModule;
 use Valolink\Plugin\Modules\EngineLink\EngineLinkModule;
@@ -121,6 +122,15 @@ final class Plugin
             label: static fn (): string => __('Scripts', 'valolink-plugin'),
             description: static fn (): string => __('Manage JavaScript snippets and external script URLs with per-snippet loading strategy (head/async/defer/footer/on-interaction/on-scroll) and frontend/admin/logged-in/logged-out placement. Configure under Valolink → Scripts.', 'valolink-plugin'),
             class: ScriptsModule::class,
+            default_enabled: false,
+            constructor_args: [$settings],
+        ));
+
+        $registry->register(new ModuleManifest(
+            id: AssetVersionModule::MODULE_ID,
+            label: static fn (): string => __('Asset Versioning', 'valolink-plugin'),
+            description: static fn (): string => __('Stamps every local script and style URL with the file\'s modification time, front end and wp-admin. Our servers cache assets for ten years, which is only safe when the URL changes as the file does — and WordPress\'s default version does not change when a plugin updates, so visitors keep running the old file until they hard-refresh. Also hides the WordPress version from asset URLs without breaking cache busting. Configure under Valolink → Asset Versioning.', 'valolink-plugin'),
+            class: AssetVersionModule::class,
             default_enabled: false,
             constructor_args: [$settings],
         ));

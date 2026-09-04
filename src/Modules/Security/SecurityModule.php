@@ -80,10 +80,30 @@ final class SecurityModule implements Module
         }
 
         if ($this->is_enabled('hide_wp_version')) {
-            remove_action('wp_head',             'wp_generator');
-            add_filter('the_generator',          '__return_empty_string');
-            add_filter('style_loader_src',       [$this, 'strip_version_query'], 9999);
-            add_filter('script_loader_src',      [$this, 'strip_version_query'], 9999);
+            remove_action('wp_head',    'wp_generator');
+            add_filter('the_generator', '__return_empty_string');
+
+            // This used to also strip ?ver= from script/style URLs (two
+            // *_loader_src filters at priority 9999). Removed 2026-09-02: the
+            // cost was far higher than the benefit.
+            //
+            // An asset URL with no version can never be busted. Our nginx
+            // templates serve static assets with a long max-age, so stripping
+            // the query string froze every script and style in visitors'
+            // browsers at an address that never changed — a plugin update
+            // swapped the bytes on disk and returning visitors kept running the
+            // old file until they hard-refreshed. That is what broke the
+            // energiatuote.fi cart on 2026-09-02: WooCommerce ships a content
+            // hash for wc-blocks-middleware.js and WC_VERSION for the frontend
+            // scripts, and this filter was throwing both away.
+            //
+            // Hiding the version is only worth doing if it does not disable
+            // cache busting, which means REPLACING the value rather than
+            // deleting it. The Asset Versioning module does exactly that: it
+            // substitutes the file's modification time, so ?ver= no longer
+            // discloses the WordPress version and the URL still changes when
+            // the file does. Enable that module if you want this toggle's
+            // original intent in full.
         }
 
         if ($this->is_enabled('remove_wlw_rsd')) {
@@ -174,7 +194,7 @@ final class SecurityModule implements Module
                     <?php $this->checkbox_row(
                         'hide_wp_version',
                         __('Hide WordPress version', 'valolink-plugin'),
-                        __('Removes the generator meta tag, RSS feed generator, and the ?ver=… query string from front-end script/style URLs.', 'valolink-plugin'),
+                        __('Removes the generator meta tag and the RSS feed generator. It deliberately no longer strips ?ver= from script and style URLs: an asset URL with no version cannot be cache-busted, so that left visitors running old files after every plugin update until they hard-refreshed. To hide the version in asset URLs as well, enable the Asset Versioning module — it replaces ?ver= with the file\'s modification time, which discloses nothing and still busts correctly.', 'valolink-plugin'),
                     ); ?>
                     <?php $this->checkbox_row(
                         'block_author_enum',
@@ -316,12 +336,6 @@ final class SecurityModule implements Module
             }
         }
         return $endpoints;
-    }
-
-    /** Strip `?ver=…` (and only that param) from asset URLs to reduce version disclosure. */
-    public function strip_version_query(string $src): string
-    {
-        return $src !== '' ? remove_query_arg('ver', $src) : $src;
     }
 
     public function generic_login_error(string $error): string
