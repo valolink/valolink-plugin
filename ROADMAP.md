@@ -100,6 +100,30 @@ rsync `src/` to test, and remember the live `valolink.fi` sits under the same us
   diff, and a preview that cannot be built fails loudly instead of rendering the
   current page. Verified end to end on staging across all four actions.
 
+#### Gaps the front-page translation exposed
+
+Everything below had to be done over SSH or in wp-admin, so an agent asked to
+translate a site cannot finish the job on its own.
+
+- [ ] **Assigning a language to a post that has none.** `create_translation`
+  refuses with `source_has_no_language` and there is no way to fix it through the
+  API, so the whole flow dead-ends on any site where content predates the
+  multilingual plugin. A `set_language` action — queued and reviewed like
+  anything else — would close it.
+- [ ] **Navigation menus.** The entire English menu was built by hand: create the
+  menu, set its language, link it to its counterpart, add nine items, and write
+  Polylang's per-theme, per-location, per-language map in the `polylang` option.
+  None of it is reachable through Accesslink, and it is the single largest
+  remaining hole in "translate this site".
+- [ ] **Repairing an existing translation's postmeta.** New translations copy it;
+  ones created earlier cannot be fixed except by calling `copy_meta` directly.
+- [ ] **Purging the page cache after a non-content change.** Approving a post
+  edit is visible to visitors immediately — WP Rocket hooks the save, verified by
+  probe. Menu and option changes are not post saves and needed a manual purge, so
+  anything that grows beyond post edits needs an explicit purge step.
+- [ ] **Permanently deleting a draft.** Rejection trashes; clearing up a mangled
+  draft needed `wp_delete_post`.
+
 #### For the main branch, not this one
 
 - [ ] **Restrict the Valolink admin screens to administrators.** Every module's

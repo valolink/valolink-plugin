@@ -25,6 +25,25 @@ final class ChangeRepository
     public const ACTION_CREATE_TRANSLATION = 'create_translation';
 
     /**
+     * Every action `propose()` accepts.
+     *
+     * The single source of truth for both the validator and what `GET /guide`
+     * advertises. They were separate lists once and immediately disagreed —
+     * create_translation shipped while the guide still advertised seven
+     * actions, so an agent branching on that field could not have found it.
+     */
+    public const ACTIONS = [
+        self::ACTION_CREATE,
+        self::ACTION_UPDATE,
+        self::ACTION_UPDATE_TEXT,
+        self::ACTION_UPDATE_BLOCK,
+        self::ACTION_INSERT_BLOCK,
+        self::ACTION_DELETE_BLOCK,
+        self::ACTION_MOVE_BLOCK,
+        self::ACTION_CREATE_TRANSLATION,
+    ];
+
+    /**
      * Actions whose row targets a post this module created rather than one it
      * edits, so approval flips a status and rejection trashes the draft.
      */

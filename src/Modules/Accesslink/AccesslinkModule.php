@@ -307,19 +307,26 @@ final class AccesslinkModule implements Module
             'allowed_fields'     => (new PostApplier())->allowed_fields(),
             'seo_plugin'         => (new PostApplier())->seo()->id(),
             'allowed_statuses'   => PostApplier::ALLOWED_STATUSES,
-            'actions'            => [
-                'create', 'update', 'update_text', 'update_block',
-                ...ChangeRepository::STRUCTURAL_ACTIONS,
-            ],
+            // Derived, never hand-listed: this field and the validator drifted
+            // apart the moment a new action shipped, leaving an agent branching
+            // on it unable to discover create_translation at all.
+            'actions'            => array_values(array_filter(
+                ChangeRepository::ACTIONS,
+                static fn (string $action): bool => $action !== ChangeRepository::ACTION_CREATE_TRANSLATION
+                    || TranslationAdapterFactory::detect()->available(),
+            )),
             // What this particular install supports, so an agent can branch on
             // it rather than discovering absence through a failed proposal.
+            // Every entry is resolved from the site, for the same reason.
             'capabilities'       => [
                 'seo'            => (new PostApplier())->seo()->can_write(),
                 'taxonomy'       => true,
                 'featured_image' => true,
                 'blocks'         => true,
                 'menus'          => false,
-                'elements'       => false,
+                'elements'       => ElementReader::available()
+                    && in_array(ElementReader::POST_TYPE, $service->allowed_post_types(), true),
+                'translations'   => TranslationAdapterFactory::detect()->available(),
                 'delete_post'    => false,
                 'media_upload'   => false,
             ],

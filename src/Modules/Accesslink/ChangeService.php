@@ -47,19 +47,10 @@ final class ChangeService
     public function propose(array $input, ?string $requested_by): array|\WP_Error
     {
         $action = (string) ($input['action'] ?? '');
-        $actions = [
-            ChangeRepository::ACTION_CREATE,
-            ChangeRepository::ACTION_UPDATE,
-            ChangeRepository::ACTION_UPDATE_BLOCK,
-            ChangeRepository::ACTION_UPDATE_TEXT,
-            ChangeRepository::ACTION_CREATE_TRANSLATION,
-            ...ChangeRepository::STRUCTURAL_ACTIONS,
-        ];
-        if (!in_array($action, $actions, true)) {
+        if (!in_array($action, ChangeRepository::ACTIONS, true)) {
             return new \WP_Error(
                 'bad_action',
-                'action must be one of: create, update, update_text, update_block, create_translation, '
-                    . implode(', ', ChangeRepository::STRUCTURAL_ACTIONS) . '.',
+                'action must be one of: ' . implode(', ', ChangeRepository::ACTIONS) . '.',
                 ['status' => 400],
             );
         }

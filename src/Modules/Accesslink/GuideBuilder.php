@@ -134,12 +134,60 @@ final class GuideBuilder
             $md[] = 'The page is cloned from the source and only those leaves are replaced, so the';
             $md[] = 'translation keeps the original layout exactly. **Change words only.** Every tag,';
             $md[] = 'attribute and inline SVG must come back exactly as you received it; a proposal';
-            $md[] = 'whose markup differs from the source is refused. Blocks you leave out keep the';
-            $md[] = 'source language — send every editable block you want translated. The draft is';
-            $md[] = 'created and linked immediately; approving it sets its status. If the source';
-            $md[] = 'page changes before a human approves, the proposal goes `stale` and you should';
-            $md[] = 'read the source again.';
+            $md[] = 'whose markup differs from the source is refused. The reliable way to do that is';
+            $md[] = 'to replace the text nodes and copy everything else through untouched, rather';
+            $md[] = 'than retyping the HTML. Blocks you leave out keep the source language — send';
+            $md[] = 'every editable block you want translated. The draft is created and linked';
+            $md[] = 'immediately; approving it sets its status. If the source page changes before a';
+            $md[] = 'human approves, the proposal goes `stale` and you should read the source again.';
             $md[] = '';
+            $md[] = '`texts` is optional. Leave it out to clone a post verbatim into another';
+            $md[] = 'language — what a page or element with no visible text, such as one that only';
+            $md[] = 'injects CSS or a tracking script, needs in order to exist there at all.';
+            $md[] = '';
+            $md[] = 'Two things to expect:';
+            $md[] = '';
+            $md[] = '- **The source must already have a language.** If it does not, the proposal is';
+            $md[] = '  refused with `source_has_no_language` and you cannot fix it from here — say so';
+            $md[] = '  and let the operator assign one in wp-admin.';
+            $md[] = '- **Postmeta is copied from the source**, which is what makes the translation';
+            $md[] = '  behave like the original — but it means SEO fields arrive still holding the';
+            $md[] = '  source language\'s title and description. Propose an `update` with';
+            $md[] = '  `seo_title` / `seo_description` against the new post to correct them.';
+            $md[] = '';
+            $md[] = 'A translated page is not a translated site. Navigation menus are not editable';
+            $md[] = 'through this API at all, and internal links keep pointing at source-language';
+            $md[] = 'pages until those pages are themselves translated. Say so rather than implying';
+            $md[] = 'the job is finished.';
+            $md[] = '';
+        }
+
+        if (ElementReader::available()
+            && in_array(ElementReader::POST_TYPE, $this->service->allowed_post_types(), true)) {
+            $md[] = '## GeneratePress Elements';
+            $md[] = '';
+            $md[] = "- `GET {$base}/elements` — every Element with what it actually does:";
+            $md[] = '  `element_type` (block, hook, layout), the `hook` it runs on, and its display,';
+            $md[] = '  exclude and user conditions.';
+            $md[] = '';
+            $md[] = 'Elements are site furniture, not pages — a hero, a footer, a script injected';
+            $md[] = 'into the head. They are `' . ElementReader::POST_TYPE . '` posts, so you read and';
+            $md[] = 'propose against them exactly as you would a page. Check this list before';
+            $md[] = 'concluding that something appearing on every page has to be edited on every';
+            $md[] = 'page: if it is an Element, one proposal changes it everywhere.';
+            $md[] = '';
+            $md[] = 'That cuts both ways — editing one affects every page it renders on, so say in';
+            $md[] = 'your `note` what you expect it to affect. The reviewer is shown the same warning.';
+            $md[] = '';
+
+            if (TranslationAdapterFactory::detect()->is_translated_type(ElementReader::POST_TYPE)) {
+                $md[] = 'Elements are per-language on this site: one belongs to a single language and';
+                $md[] = 'runs only on pages of that language. A page translated without its Elements';
+                $md[] = 'renders with no header, no footer and none of the CSS they inject. Translate';
+                $md[] = 'the ones carrying text, and clone the rest with `create_translation` and no';
+                $md[] = '`texts` so they run in the other language too.';
+                $md[] = '';
+            }
         }
 
         $md[] = '## Proposing a change';

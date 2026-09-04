@@ -92,7 +92,9 @@ Base: `/wp-json/accesslink/v1`
 
 Generated rather than static, so it reports the site's *actual* configuration — a hand-written doc would drift and an agent would confidently do the wrong thing. It states the propose-then-approve model first, includes the operator's site instructions, tells the agent when writes are switched off, and appends notes left by previous agents.
 
-Budget: base is ~3.5 kB, or ~5 kB on a multilingual site where the translation section appears; site instructions cap at 4000 characters and the notes section at 3000, so the worst case is roughly 12 kB (~3k tokens).
+Budget: base is ~3.5 kB, and each conditional section adds to it — the translation section and the Elements section bring a multilingual GeneratePress site to ~13 kB. Site instructions cap at 4000 characters and the notes section at 3000, so the worst case is now roughly 20 kB (~5k tokens). That is large for something described as "read this first", and it grows every time a capability is added. If it keeps growing, the split to make is a short always-on core plus `GET /guide?section=translations`, rather than trimming the prose that stops agents making expensive mistakes.
+
+Both `actions` and `capabilities` are derived from the code that enforces them, not hand-listed. They were hand-listed once and drifted within a single day: `create_translation` shipped while `actions` still advertised seven, so an agent branching on that field could not discover the feature at all. The rule the module states about the prose — generated, so it cannot disagree with the site — applies to the structured fields or it means nothing.
 
 ### GET /content · GET /content/{id}
 
