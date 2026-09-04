@@ -288,7 +288,7 @@ final class AccesslinkModule implements Module
      * agent that only reads `guide` has everything; one that wants to branch on
      * capabilities without parsing English has `limits` and the allowlists.
      */
-    public function handle_guide(): \WP_REST_Response
+    public function handle_guide(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
         $service = $this->service();
         $guide = new GuideBuilder(
@@ -297,11 +297,60 @@ final class AccesslinkModule implements Module
             new AgentNotes($this->settings),
             new AccesslinkAuth($this->settings),
         );
-        $markdown = $guide->build();
+
+        $sections = $guide->sections();
+
+        // One section, for an agent that has already read the core and knows
+        // which capability it needs.
+        $requested = trim((string) $request->get_param('section'));
+        if ($requested !== '') {
+            if ($requested === 'all') {
+                $everything = $guide->build();
+
+                return new \WP_REST_Response([
+                    'section' => 'all',
+                    'guide'   => $everything,
+                    'chars'   => mb_strlen($everything),
+                ]);
+            }
+
+            $body = $guide->section($requested);
+            if ($body === null) {
+                return new \WP_Error(
+                    'no_such_section',
+                    sprintf(
+                        'No section "%s" on this site. Available: %s.',
+                        $requested,
+                        implode(', ', array_keys($sections)),
+                    ),
+                    ['status' => 404, 'sections' => array_keys($sections)],
+                );
+            }
+
+            return new \WP_REST_Response([
+                'section' => $requested,
+                'guide'   => $body,
+                'chars'   => mb_strlen($body),
+            ]);
+        }
+
+        $markdown = $guide->core();
 
         return new \WP_REST_Response([
             'guide'              => $markdown,
             'chars'              => mb_strlen($markdown),
+            // The index is part of the contract, not just prose: a section that
+            // does not apply to this site is absent, so an agent can branch on
+            // this list instead of reading English and discounting it.
+            'sections'           => array_map(
+                static fn (string $name, array $meta): array => [
+                    'name'    => $name,
+                    'label'   => $meta['label'],
+                    'summary' => $meta['summary'],
+                ],
+                array_keys($sections),
+                array_values($sections),
+            ),
             'writes_enabled'     => (new AccesslinkAuth($this->settings))->writes_enabled(),
             'allowed_post_types' => $service->allowed_post_types(),
             'allowed_fields'     => (new PostApplier())->allowed_fields(),

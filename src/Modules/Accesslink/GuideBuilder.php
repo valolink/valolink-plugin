@@ -16,10 +16,16 @@ use Valolink\Plugin\Settings;
  * the real caps. A hand-written doc would drift from the configuration and an
  * agent would confidently do the wrong thing.
  *
+ * Split into a short always-on core plus sections fetched on demand, because
+ * the single document reached ~13 kB once translations and Elements were
+ * documented, and every future capability would have added to what an agent
+ * pays for on a site that cannot use it. A section that does not apply here is
+ * not merely hidden, it is absent from the index — so "what can I do on this
+ * site" is answered by the shape of the response rather than by prose the agent
+ * has to read and discount.
+ *
  * Markdown rather than JSON because the whole point is that it goes straight
- * into a prompt. Kept to a few kilobytes for the same reason — the site
- * instructions and the notes section are both hard-bounded so it cannot grow
- * without limit as an operator writes more or agents leave more behind.
+ * into a prompt.
  */
 final class GuideBuilder
 {
@@ -42,14 +48,103 @@ final class GuideBuilder
         );
     }
 
+    // -------------------------------------------------------------------------
+    // Sections
+    // -------------------------------------------------------------------------
+
+    /**
+     * The sections available on this site, in reading order.
+     *
+     * @return array<string, array{label: string, summary: string}>
+     */
+    public function sections(): array
+    {
+        $all = [
+            'proposing' => [
+                'label'   => 'Proposing a change',
+                'summary' => 'How to file one, the fields you may set, and what happens next.',
+                'when'    => true,
+            ],
+            'blocks' => [
+                'label'   => 'Editing a block-based page',
+                'summary' => 'Addressing one block instead of rewriting a page, and adding, removing or moving blocks.',
+                'when'    => $this->uses_blocks(),
+            ],
+            'translations' => [
+                'label'   => 'Translations',
+                'summary' => 'Reading what exists in which language, and proposing a translation.',
+                'when'    => TranslationAdapterFactory::detect()->available(),
+            ],
+            'elements' => [
+                'label'   => 'GeneratePress Elements',
+                'summary' => 'Site furniture — headers, footers, injected scripts — and how they differ from pages.',
+                'when'    => $this->uses_elements(),
+            ],
+            'queue' => [
+                'label'   => 'Checking on your proposals',
+                'summary' => 'Statuses, and reading why something was rejected.',
+                'when'    => true,
+            ],
+            'notes' => [
+                'label'   => 'Notes for future agents',
+                'summary' => 'The shared scratchpad on this site.',
+                'when'    => true,
+            ],
+        ];
+
+        $out = [];
+        foreach ($all as $name => $meta) {
+            if ($meta['when']) {
+                unset($meta['when']);
+                $out[$name] = $meta;
+            }
+        }
+
+        return $out;
+    }
+
+    /** Null when the section does not exist or does not apply to this site. */
+    public function section(string $name): ?string
+    {
+        if (!array_key_exists($name, $this->sections())) {
+            return null;
+        }
+
+        $lines = match ($name) {
+            'proposing'    => $this->section_proposing(),
+            'blocks'       => $this->section_blocks(),
+            'translations' => $this->section_translations(),
+            'elements'     => $this->section_elements(),
+            'queue'        => $this->section_queue(),
+            'notes'        => $this->section_notes(),
+            default        => [],
+        };
+
+        return implode("\n", $lines);
+    }
+
+    /** Core plus every applicable section — what `build()` always returned. */
     public function build(): string
     {
-        $base  = rest_url(AccesslinkModule::REST_NAMESPACE);
-        $base  = rtrim($base, '/');
-        $site  = get_bloginfo('name');
-        $types = implode(', ', $this->service->allowed_post_types());
-        $applier = new PostApplier();
-        $fields = implode(', ', $applier->allowed_fields());
+        $parts = [$this->core()];
+        foreach (array_keys($this->sections()) as $name) {
+            $parts[] = (string) $this->section($name);
+        }
+
+        return implode("\n", $parts);
+    }
+
+    // -------------------------------------------------------------------------
+    // Core
+    // -------------------------------------------------------------------------
+
+    public function core(): string
+    {
+        $base     = $this->base();
+        $site     = get_bloginfo('name');
+        $types    = implode(', ', $this->service->allowed_post_types());
+        $applier  = new PostApplier();
+        $fields   = implode(', ', $applier->allowed_fields());
         $statuses = implode(', ', PostApplier::ALLOWED_STATUSES);
 
         $md = [];
@@ -86,110 +181,83 @@ final class GuideBuilder
         $md[] = '';
         $md[] = "- `GET {$base}/content` — list. Query: `search`, `post_type`, `status`, `limit`"
             . ' (max ' . ContentReader::LIST_MAX . ', default ' . ContentReader::LIST_DEFAULT . ').';
-        $md[] = "  Returns id, title, slug, status, modified_gmt, link, content_chars and a short excerpt.";
         $md[] = "- `GET {$base}/content/{id}` — one post with full `post_content`, plus";
         $md[] = '  `pending_changes`: ids of proposals already queued against it. If that list is';
-        $md[] = '  not empty, someone has already proposed an edit here — read those before adding another.';
-        $md[] = '';
+        $md[] = '  not empty, read those before adding another.';
         $md[] = "- `GET {$base}/taxonomies` — category and tag slugs you may assign.";
-        $md[] = "- `GET {$base}/media` — images available for `featured_media`. Query: `search`, `limit`.";
+        $md[] = "- `GET {$base}/media` — images available for `featured_media`.";
         $md[] = '';
-
         $md[] = 'Read the post before you propose an update. You need its current content to';
-        $md[] = 'write a sensible replacement, and the staleness check below compares against it.';
+        $md[] = 'write a sensible replacement, and the staleness check compares against it.';
         $md[] = '';
 
-        $tr = TranslationAdapterFactory::detect();
-        if ($tr->available()) {
-            $langs = [];
-            foreach ($tr->languages() as $language) {
-                $langs[] = $language['slug'] . ($language['is_default'] ? ' (default)' : '');
-            }
+        $md[] = '## Rules';
+        $md[] = '';
+        $md[] = "- Post types you may touch: `{$types}`.";
+        $md[] = "- Fields you may set: `{$fields}`. Anything else is silently dropped.";
+        $md[] = "- A `create` may request status: `{$statuses}`. `post_status` may also be set on";
+        $md[] = '  an update, so you can propose publishing a draft or unpublishing a page.';
+        $md[] = '- You cannot delete or trash anything. There is no such action.';
+        $md[] = '- You cannot approve or reject — those need a logged-in human. Trying returns 401.';
+        $md[] = '- A change records what the post looked like when you proposed. If anyone edits';
+        $md[] = '  it before approval, your change is parked as `stale` and nothing is overwritten.';
+        $md[] = '  Re-read the post and propose again against the current version.';
+        $md[] = '- Always send `idempotency_key`. Retrying with the same key returns your original';
+        $md[] = '  proposal instead of filing a duplicate.';
+        $md[] = '- Identify yourself with an `X-Accesslink-Agent: <name>` header.';
+        $md[] = '- Post content larger than ' . ContentReader::CONTENT_MAX_CHARS
+            . ' characters comes back truncated, flagged with `truncated: true`.';
+        $md[] = '  Do not propose a replacement built from truncated content.';
+        $md[] = '';
 
-            $md[] = '## Translations';
+        $md[] = '## The rest of this guide';
+        $md[] = '';
+        $md[] = 'Fetch a section when you need it: `GET ' . $base . '/guide?section=<name>`.';
+        $md[] = 'Only sections that apply to this site are listed — if something is missing here,';
+        $md[] = 'this site does not support it and you should not propose it.';
+        $md[] = '';
+        foreach ($this->sections() as $name => $meta) {
+            $md[] = sprintf('- `%s` — %s', $name, $meta['summary']);
+        }
+        $md[] = '';
+
+        $unavailable = $this->unavailable();
+        if ($unavailable !== []) {
+            $md[] = '## Not available on this site';
             $md[] = '';
-            $md[] = 'This site is multilingual (' . $tr->plugin() . '). Languages: ' . implode(', ', $langs) . '.';
+            $md[] = 'Not broken, just absent. Do not propose these:';
             $md[] = '';
-            $md[] = "- `GET {$base}/languages` — the list above, with names and locales.";
-            $md[] = "- `GET {$base}/content/{id}/translations` — which languages a post exists in,";
-            $md[] = '  which are `missing`, and which are `outdated` (older than the post they translate).';
-            $md[] = '';
-            $md[] = 'To translate a post, do **not** write `post_content` yourself. Read';
-            $md[] = "`GET {$base}/content/{id}/blocks` and take the `text_html` of each block marked";
-            $md[] = '`editable` — that is the block\'s inner HTML, untruncated, where `text` is only a';
-            $md[] = 'short preview. Replace the words in it and send it back keyed by `path`:';
-            $md[] = '';
-            $md[] = '```json';
-            $md[] = '{';
-            $md[] = '  "action": "create_translation",';
-            $md[] = '  "target_id": 123,';
-            $md[] = '  "lang": "' . ($tr->languages()[1]['slug'] ?? 'en') . '",';
-            $md[] = '  "title": "Translated title",';
-            $md[] = '  "slug": "translated-title",';
-            $md[] = '  "texts": { "0.0.1": "Translated heading", "0.0.2": "Translated paragraph." },';
-            $md[] = '  "note": "Why you are proposing this."';
-            $md[] = '}';
-            $md[] = '```';
-            $md[] = '';
-            $md[] = 'The page is cloned from the source and only those leaves are replaced, so the';
-            $md[] = 'translation keeps the original layout exactly. **Change words only.** Every tag,';
-            $md[] = 'attribute and inline SVG must come back exactly as you received it; a proposal';
-            $md[] = 'whose markup differs from the source is refused. The reliable way to do that is';
-            $md[] = 'to replace the text nodes and copy everything else through untouched, rather';
-            $md[] = 'than retyping the HTML. Blocks you leave out keep the source language — send';
-            $md[] = 'every editable block you want translated. The draft is created and linked';
-            $md[] = 'immediately; approving it sets its status. If the source page changes before a';
-            $md[] = 'human approves, the proposal goes `stale` and you should read the source again.';
-            $md[] = '';
-            $md[] = '`texts` is optional. Leave it out to clone a post verbatim into another';
-            $md[] = 'language — what a page or element with no visible text, such as one that only';
-            $md[] = 'injects CSS or a tracking script, needs in order to exist there at all.';
-            $md[] = '';
-            $md[] = 'Two things to expect:';
-            $md[] = '';
-            $md[] = '- **The source must already have a language.** If it does not, the proposal is';
-            $md[] = '  refused with `source_has_no_language` and you cannot fix it from here — say so';
-            $md[] = '  and let the operator assign one in wp-admin.';
-            $md[] = '- **Postmeta is copied from the source**, which is what makes the translation';
-            $md[] = '  behave like the original — but it means SEO fields arrive still holding the';
-            $md[] = '  source language\'s title and description. Propose an `update` with';
-            $md[] = '  `seo_title` / `seo_description` against the new post to correct them.';
-            $md[] = '';
-            $md[] = 'A translated page is not a translated site. Navigation menus are not editable';
-            $md[] = 'through this API at all, and internal links keep pointing at source-language';
-            $md[] = 'pages until those pages are themselves translated. Say so rather than implying';
-            $md[] = 'the job is finished.';
+            foreach ($unavailable as $line) {
+                $md[] = '- ' . $line;
+            }
             $md[] = '';
         }
 
-        if (ElementReader::available()
-            && in_array(ElementReader::POST_TYPE, $this->service->allowed_post_types(), true)) {
-            $md[] = '## GeneratePress Elements';
+        $notes = $this->notes->for_guide(self::NOTES_CHAR_BUDGET);
+        if ($notes !== []) {
+            $md[] = '## Notes left by previous agents';
             $md[] = '';
-            $md[] = "- `GET {$base}/elements` — every Element with what it actually does:";
-            $md[] = '  `element_type` (block, hook, layout), the `hook` it runs on, and its display,';
-            $md[] = '  exclude and user conditions.';
-            $md[] = '';
-            $md[] = 'Elements are site furniture, not pages — a hero, a footer, a script injected';
-            $md[] = 'into the head. They are `' . ElementReader::POST_TYPE . '` posts, so you read and';
-            $md[] = 'propose against them exactly as you would a page. Check this list before';
-            $md[] = 'concluding that something appearing on every page has to be edited on every';
-            $md[] = 'page: if it is an Element, one proposal changes it everywhere.';
-            $md[] = '';
-            $md[] = 'That cuts both ways — editing one affects every page it renders on, so say in';
-            $md[] = 'your `note` what you expect it to affect. The reviewer is shown the same warning.';
-            $md[] = '';
-
-            if (TranslationAdapterFactory::detect()->is_translated_type(ElementReader::POST_TYPE)) {
-                $md[] = 'Elements are per-language on this site: one belongs to a single language and';
-                $md[] = 'runs only on pages of that language. A page translated without its Elements';
-                $md[] = 'renders with no header, no footer and none of the CSS they inject. Translate';
-                $md[] = 'the ones carrying text, and clone the rest with `create_translation` and no';
-                $md[] = '`texts` so they run in the other language too.';
-                $md[] = '';
+            foreach ($notes as $note) {
+                $who = $note['author'] !== null ? $note['author'] : 'unknown';
+                $md[] = sprintf('- *(%s, %s)* %s', $note['created_at'], $who, $note['text']);
             }
+            $md[] = '';
         }
 
+        return implode("\n", $md);
+    }
+
+    // -------------------------------------------------------------------------
+    // Section bodies
+    // -------------------------------------------------------------------------
+
+    /** @return array<int, string> */
+    private function section_proposing(): array
+    {
+        $base    = $this->base();
+        $applier = new PostApplier();
+
+        $md = [];
         $md[] = '## Proposing a change';
         $md[] = '';
         $md[] = "`POST {$base}/changes`";
@@ -221,6 +289,7 @@ final class GuideBuilder
         $md[] = '';
         $md[] = '### Fields beyond the post body';
         $md[] = '';
+
         $seo = $applier->seo();
         if ($seo->can_write()) {
             $md[] = sprintf('SEO is handled by **%s** on this site, but you do not need to care —', $seo->label());
@@ -242,6 +311,7 @@ final class GuideBuilder
         } else {
             $md[] = sprintf('SEO fields are **not available** on this site (%s).', $seo->label());
         }
+
         $md[] = '';
         $md[] = '- `categories`, `tags` — arrays of existing term slugs, e.g. `["palvelut"]`.';
         $md[] = "  Read what exists from `GET {$base}/taxonomies`. Accesslink will **not** create new";
@@ -254,6 +324,16 @@ final class GuideBuilder
         $md[] = 'The draft is not publicly reachable; approving is what publishes it. An `update`';
         $md[] = 'does not touch the live post at all until approved.';
         $md[] = '';
+
+        return $md;
+    }
+
+    /** @return array<int, string> */
+    private function section_blocks(): array
+    {
+        $base = $this->base();
+
+        $md = [];
         $md[] = '## Editing a block-based page';
         $md[] = '';
         $md[] = "- `GET {$base}/content/{id}/blocks` — the block tree, flattened into addressable paths.";
@@ -300,6 +380,23 @@ final class GuideBuilder
             . implode('`, `', array_slice(BlockValidator::INLINE_TAGS, 0, 12)) . '`…';
         $md[] = 'No `<div>`, no `<svg>`, no block-level elements — those make the block invalid.';
         $md[] = '';
+
+        if ($this->uses_generateblocks()) {
+            $md[] = '### GenerateBlocks on this site';
+            $md[] = '';
+            $md[] = 'This site builds pages with GenerateBlocks, which nests deeply: the text you';
+            $md[] = 'want is often four or five containers down, and every wrapper carries';
+            $md[] = '`gb-`-prefixed classes tying it to styles stored elsewhere. Two consequences:';
+            $md[] = '';
+            $md[] = '- `update_text` is not merely preferred here, it is close to mandatory. Losing';
+            $md[] = '  a `gb-text` or `gb-headline` class strips the block\'s styling even though';
+            $md[] = '  the markup still looks reasonable.';
+            $md[] = '- Some blocks mark their editable region by class rather than by element. The';
+            $md[] = '  inline-formatting check is skipped for those, so `POST /validate` will not';
+            $md[] = '  catch as much as it does elsewhere — read the block back after proposing.';
+            $md[] = '';
+        }
+
         $md[] = "- `POST {$base}/validate` with `{target_id, path, text}` dry-runs an edit and";
         $md[] = '  reports what it would break, without queueing anything. Use it when unsure.';
         $md[] = '  It separates `issues` (what your edit introduces) from `pre_existing`';
@@ -307,11 +404,9 @@ final class GuideBuilder
         $md[] = '';
         $md[] = 'Only blocks marked `editable` — leaves with their own HTML — can be changed.';
         $md[] = 'Editing a block that contains other blocks is refused; go to the leaf holding';
-        $md[] = 'the text. Keep the existing wrapper element and its classes in your replacement';
-        $md[] = 'HTML: they carry the block\'s styling, and dropping them is the usual way a';
-        $md[] = 'block edit comes out looking broken.';
+        $md[] = 'the text.';
         $md[] = '';
-        $md[] = '## Adding, removing and moving blocks';
+        $md[] = '### Adding, removing and moving blocks';
         $md[] = '';
         $md[] = 'Editing text is not enough to write a page. Three more actions, all taking';
         $md[] = 'a `path` from the block listing:';
@@ -328,6 +423,126 @@ final class GuideBuilder
         $md[] = 'one block: if anything moves before approval, "after the second paragraph" no';
         $md[] = 'longer means what you meant, and the change is parked as `stale`.';
         $md[] = '';
+
+        return $md;
+    }
+
+    /** @return array<int, string> */
+    private function section_translations(): array
+    {
+        $base = $this->base();
+        $tr   = TranslationAdapterFactory::detect();
+
+        $langs = [];
+        foreach ($tr->languages() as $language) {
+            $langs[] = $language['slug'] . ($language['is_default'] ? ' (default)' : '');
+        }
+
+        $md = [];
+        $md[] = '## Translations';
+        $md[] = '';
+        $md[] = 'This site is multilingual (' . $tr->plugin() . '). Languages: ' . implode(', ', $langs) . '.';
+        $md[] = '';
+        $md[] = "- `GET {$base}/languages` — the list above, with names and locales.";
+        $md[] = "- `GET {$base}/content/{id}/translations` — which languages a post exists in,";
+        $md[] = '  which are `missing`, and which are `outdated` (older than the post they translate).';
+        $md[] = '';
+        $md[] = 'To translate a post, do **not** write `post_content` yourself. Read';
+        $md[] = "`GET {$base}/content/{id}/blocks` and take the `text_html` of each block marked";
+        $md[] = '`editable` — that is the block\'s inner HTML, untruncated, where `text` is only a';
+        $md[] = 'short preview. Replace the words in it and send it back keyed by `path`:';
+        $md[] = '';
+        $md[] = '```json';
+        $md[] = '{';
+        $md[] = '  "action": "create_translation",';
+        $md[] = '  "target_id": 123,';
+        $md[] = '  "lang": "' . ($tr->languages()[1]['slug'] ?? 'en') . '",';
+        $md[] = '  "title": "Translated title",';
+        $md[] = '  "slug": "translated-title",';
+        $md[] = '  "texts": { "0.0.1": "Translated heading", "0.0.2": "Translated paragraph." },';
+        $md[] = '  "note": "Why you are proposing this."';
+        $md[] = '}';
+        $md[] = '```';
+        $md[] = '';
+        $md[] = 'The page is cloned from the source and only those leaves are replaced, so the';
+        $md[] = 'translation keeps the original layout exactly. **Change words only.** Every tag,';
+        $md[] = 'attribute and inline SVG must come back exactly as you received it; a proposal';
+        $md[] = 'whose markup differs from the source is refused. The reliable way to do that is';
+        $md[] = 'to replace the text nodes and copy everything else through untouched, rather';
+        $md[] = 'than retyping the HTML. Blocks you leave out keep the source language — send';
+        $md[] = 'every editable block you want translated. The draft is created and linked';
+        $md[] = 'immediately; approving it sets its status. If the source page changes before a';
+        $md[] = 'human approves, the proposal goes `stale` and you should read the source again.';
+        $md[] = '';
+        $md[] = '`texts` is optional. Leave it out to clone a post verbatim into another';
+        $md[] = 'language — what a page or element with no visible text, such as one that only';
+        $md[] = 'injects CSS or a tracking script, needs in order to exist there at all.';
+        $md[] = '';
+        $md[] = 'Two things to expect:';
+        $md[] = '';
+        $md[] = '- **The source must already have a language.** If it does not, the proposal is';
+        $md[] = '  refused with `source_has_no_language` and you cannot fix it from here — say so';
+        $md[] = '  and let the operator assign one in wp-admin.';
+        $md[] = '- **Postmeta is copied from the source**, which is what makes the translation';
+        $md[] = '  behave like the original — but it means SEO fields arrive still holding the';
+        $md[] = '  source language\'s title and description. Propose an `update` with';
+        $md[] = '  `seo_title` / `seo_description` against the new post to correct them.';
+        $md[] = '';
+        $md[] = 'A translated page is not a translated site. Navigation menus are not editable';
+        $md[] = 'through this API at all, and internal links keep pointing at source-language';
+        $md[] = 'pages until those pages are themselves translated. Say so rather than implying';
+        $md[] = 'the job is finished.';
+        $md[] = '';
+
+        if ($this->uses_elements() && $tr->is_translated_type(ElementReader::POST_TYPE)) {
+            $md[] = 'Elements are per-language here too — see the `elements` section, because a';
+            $md[] = 'page translated without them renders with no header and no footer.';
+            $md[] = '';
+        }
+
+        return $md;
+    }
+
+    /** @return array<int, string> */
+    private function section_elements(): array
+    {
+        $base = $this->base();
+
+        $md = [];
+        $md[] = '## GeneratePress Elements';
+        $md[] = '';
+        $md[] = "- `GET {$base}/elements` — every Element with what it actually does:";
+        $md[] = '  `element_type` (block, hook, layout), the `hook` it runs on, and its display,';
+        $md[] = '  exclude and user conditions.';
+        $md[] = '';
+        $md[] = 'Elements are site furniture, not pages — a hero, a footer, a script injected';
+        $md[] = 'into the head. They are `' . ElementReader::POST_TYPE . '` posts, so you read and';
+        $md[] = 'propose against them exactly as you would a page. Check this list before';
+        $md[] = 'concluding that something appearing on every page has to be edited on every';
+        $md[] = 'page: if it is an Element, one proposal changes it everywhere.';
+        $md[] = '';
+        $md[] = 'That cuts both ways — editing one affects every page it renders on, so say in';
+        $md[] = 'your `note` what you expect it to affect. The reviewer is shown the same warning.';
+        $md[] = '';
+
+        if (TranslationAdapterFactory::detect()->is_translated_type(ElementReader::POST_TYPE)) {
+            $md[] = 'Elements are per-language on this site: one belongs to a single language and';
+            $md[] = 'runs only on pages of that language. A page translated without its Elements';
+            $md[] = 'renders with no header, no footer and none of the CSS they inject. Translate';
+            $md[] = 'the ones carrying text, and clone the rest with `create_translation` and no';
+            $md[] = '`texts` so they run in the other language too.';
+            $md[] = '';
+        }
+
+        return $md;
+    }
+
+    /** @return array<int, string> */
+    private function section_queue(): array
+    {
+        $base = $this->base();
+
+        $md = [];
         $md[] = '## Checking on your proposals';
         $md[] = '';
         $md[] = "- `GET {$base}/changes?status=pending` — the queue. Also `applied`, `rejected`, `stale`, `failed`.";
@@ -341,6 +556,16 @@ final class GuideBuilder
         $md[] = 'before proposing anything similar; re-filing the same idea after it has been';
         $md[] = 'turned down wastes their attention, which is the scarce resource here.';
         $md[] = '';
+
+        return $md;
+    }
+
+    /** @return array<int, string> */
+    private function section_notes(): array
+    {
+        $base = $this->base();
+
+        $md = [];
         $md[] = '## Notes for future agents';
         $md[] = '';
         $md[] = "- `GET {$base}/notes` — read what previous agents left.";
@@ -351,54 +576,69 @@ final class GuideBuilder
         $md[] = 'session state or task lists. Notes are capped at ' . AgentNotes::MAX_CHARS
             . ' characters and the newest ' . AgentNotes::MAX_NOTES . ' are kept.';
         $md[] = '';
-        $md[] = '## Rules';
-        $md[] = '';
-        $md[] = "- Post types you may touch: `{$types}`.";
-        $md[] = '- `post_status` may be set on an update as well as a create, so you can propose';
-        $md[] = '  publishing a draft or unpublishing a page.';
-        $md[] = "- Fields you may set: `{$fields}`. Anything else is silently dropped.";
-        $md[] = "- A `create` may request status: `{$statuses}`.";
-        $md[] = '- You cannot delete or trash anything. There is no such action.';
-        $md[] = '- You cannot approve or reject — those need a logged-in human. Trying returns 401.';
-        $md[] = '- An update records what the post looked like when you proposed. If anyone edits';
-        $md[] = '  it before approval, your change is parked as `stale` and nothing is overwritten.';
-        $md[] = '  Re-read the post and propose again against the current version.';
-        $md[] = '- Always send `idempotency_key`. Retrying with the same key returns your original';
-        $md[] = '  proposal instead of filing a duplicate.';
-        $md[] = '- Identify yourself with an `X-Accesslink-Agent: <name>` header.';
-        $md[] = '- Post content larger than ' . ContentReader::CONTENT_MAX_CHARS
-            . ' characters comes back truncated, flagged with `truncated: true`.';
-        $md[] = '  Do not propose a replacement built from truncated content.';
+        $md[] = 'The notes themselves are in the core guide, so you have already read them.';
         $md[] = '';
 
-        $unavailable = [];
-        $seo_adapter = $applier->seo();
-        if (!$seo_adapter->can_write()) {
-            $unavailable[] = sprintf('SEO fields (%s)', $seo_adapter->label());
-        }
-        if ($unavailable !== []) {
-            $md[] = '## Not available on this site';
-            $md[] = '';
-            $md[] = 'Sites differ in what they have installed. Here, these are off the table —';
-            $md[] = 'not broken, just absent, so do not propose them:';
-            $md[] = '';
-            foreach ($unavailable as $line) {
-                $md[] = '- ' . $line;
-            }
-            $md[] = '';
+        return $md;
+    }
+
+    // -------------------------------------------------------------------------
+    // Site detection
+    // -------------------------------------------------------------------------
+
+    /**
+     * Whether block advice is worth sending at all.
+     *
+     * A site pinned to the classic editor has no block tree to address, and the
+     * whole section would be noise an agent still pays for.
+     */
+    private function uses_blocks(): bool
+    {
+        if (!function_exists('use_block_editor_for_post_type')) {
+            return true;
         }
 
-        $notes = $this->notes->for_guide(self::NOTES_CHAR_BUDGET);
-        if ($notes !== []) {
-            $md[] = '## Notes left by previous agents';
-            $md[] = '';
-            foreach ($notes as $note) {
-                $who = $note['author'] !== null ? $note['author'] : 'unknown';
-                $md[] = sprintf('- *(%s, %s)* %s', $note['created_at'], $who, $note['text']);
+        foreach ($this->service->allowed_post_types() as $type) {
+            if (use_block_editor_for_post_type($type)) {
+                return true;
             }
-            $md[] = '';
         }
 
-        return implode("\n", $md);
+        return false;
+    }
+
+    private function uses_generateblocks(): bool
+    {
+        return defined('GENERATEBLOCKS_VERSION')
+            || class_exists('GenerateBlocks_Block')
+            || \WP_Block_Type_Registry::get_instance()->is_registered('generateblocks/container');
+    }
+
+    private function uses_elements(): bool
+    {
+        return ElementReader::available()
+            && in_array(ElementReader::POST_TYPE, $this->service->allowed_post_types(), true);
+    }
+
+    /** @return array<int, string> */
+    private function unavailable(): array
+    {
+        $out = [];
+
+        $seo = (new PostApplier())->seo();
+        if (!$seo->can_write()) {
+            $out[] = sprintf('SEO fields (%s)', $seo->label());
+        }
+        if (!TranslationAdapterFactory::detect()->available()) {
+            $out[] = 'Translations — no multilingual plugin Accesslink can drive';
+        }
+        $out[] = 'Navigation menus, media uploads, and deleting anything';
+
+        return $out;
+    }
+
+    private function base(): string
+    {
+        return rtrim(rest_url(AccesslinkModule::REST_NAMESPACE), '/');
     }
 }

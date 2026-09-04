@@ -78,6 +78,12 @@ Base: `/wp-json/accesslink/v1`
 
 **Start here.** An agent holding only the base URL and a key needs nothing else. Returns a generated markdown briefing plus the machine-readable limits — prose for the model, structure for the code calling on its behalf.
 
+The briefing is a short **core** — the propose-then-approve model, the operator's site instructions, reading content, the rules, and notes left by previous agents — plus an index of **sections** fetched on demand with `GET /guide?section=<name>`. `?section=all` returns everything, as the single document used to.
+
+Sections appear only when they apply: `translations` needs a multilingual plugin Accesslink can drive, `elements` needs GeneratePress Elements *and* the operator to have allowed the post type, `blocks` disappears on a site pinned to the classic editor, and the GenerateBlocks-specific advice inside `blocks` appears only where GenerateBlocks is active. That is the point of the split as much as the size is: a section that cannot apply is *absent from the index*, so "what can I do here" is answered by the shape of the response rather than by prose the agent has to read and then discount.
+
+Sizes on this project's own site: core 3.9 kB, sections 0.5–3.7 kB. The single document it replaced had reached 13.6 kB and would have grown with every capability, including on sites that could not use them.
+
 ```json
 {
   "guide": "# Accesslink — Valolink\n\n…",
@@ -92,7 +98,7 @@ Base: `/wp-json/accesslink/v1`
 
 Generated rather than static, so it reports the site's *actual* configuration — a hand-written doc would drift and an agent would confidently do the wrong thing. It states the propose-then-approve model first, includes the operator's site instructions, tells the agent when writes are switched off, and appends notes left by previous agents.
 
-Budget: base is ~3.5 kB, and each conditional section adds to it — the translation section and the Elements section bring a multilingual GeneratePress site to ~13 kB. Site instructions cap at 4000 characters and the notes section at 3000, so the worst case is now roughly 20 kB (~5k tokens). That is large for something described as "read this first", and it grows every time a capability is added. If it keeps growing, the split to make is a short always-on core plus `GET /guide?section=translations`, rather than trimming the prose that stops agents making expensive mistakes.
+Budget: the core is ~1 kB of fixed prose plus the operator's site instructions (capped at 4000 characters) and the agent notes (capped at 3000), so ~8 kB worst case. Sections are fetched only when needed and none exceeds 4 kB.
 
 Both `actions` and `capabilities` are derived from the code that enforces them, not hand-listed. They were hand-listed once and drifted within a single day: `create_translation` shipped while `actions` still advertised seven, so an agent branching on that field could not discover the feature at all. The rule the module states about the prose — generated, so it cannot disagree with the site — applies to the structured fields or it means nothing.
 
