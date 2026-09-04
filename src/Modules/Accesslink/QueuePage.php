@@ -102,6 +102,7 @@ final class QueuePage
         // a page that does not exist yet.
         $is_create = in_array($change['action'], ChangeRepository::DRAFT_ACTIONS, true);
         $is_translation = $change['action'] === ChangeRepository::ACTION_CREATE_TRANSLATION;
+        $is_set_language = $change['action'] === ChangeRepository::ACTION_SET_LANGUAGE;
         ?>
         <div class="card" style="max-width:none;margin-bottom:1em;padding:1em;">
             <h3 style="margin-top:0;">
@@ -170,6 +171,19 @@ final class QueuePage
                         </a>
                     <?php endif; ?>
                 </p>
+            <?php elseif ($is_set_language) : ?>
+                <p>
+                    <?php
+                    printf(
+                        /* translators: %s: language slug. */
+                        esc_html__(
+                            'Assigns the language %s to this post. Nothing about the content changes; it only becomes translatable, and can then be linked to versions in other languages.',
+                            'valolink-plugin',
+                        ),
+                        '<strong>' . esc_html((string) ($change['payload']['lang'] ?? '?')) . '</strong>',
+                    );
+                    ?>
+                </p>
             <?php elseif ($is_create) : ?>
                 <p><?php esc_html_e('Drafted and ready to preview. Approving publishes it.', 'valolink-plugin'); ?></p>
             <?php else : ?>
@@ -184,10 +198,14 @@ final class QueuePage
                             <?php esc_html_e('Preview draft', 'valolink-plugin'); ?>
                         </a>
                     <?php else : ?>
-                        <a class="button button-secondary" target="_blank" rel="noopener"
-                           href="<?php echo esc_url(AccesslinkModule::preview_url((int) $change['id'], $target_id)); ?>">
-                            <?php esc_html_e('Preview proposed version', 'valolink-plugin'); ?>
-                        </a>
+                        <?php if (!$is_set_language) : ?>
+                            <?php // set_language changes no content, so a "proposed version" would
+                                  // render the page exactly as it already is. ?>
+                            <a class="button button-secondary" target="_blank" rel="noopener"
+                               href="<?php echo esc_url(AccesslinkModule::preview_url((int) $change['id'], $target_id)); ?>">
+                                <?php esc_html_e('Preview proposed version', 'valolink-plugin'); ?>
+                            </a>
+                        <?php endif; ?>
                         <a class="button" target="_blank" rel="noopener"
                            href="<?php echo esc_url((string) get_permalink($target_id)); ?>">
                             <?php esc_html_e('View current version', 'valolink-plugin'); ?>

@@ -481,8 +481,17 @@ final class GuideBuilder
         $md[] = 'Two things to expect:';
         $md[] = '';
         $md[] = '- **The source must already have a language.** If it does not, the proposal is';
-        $md[] = '  refused with `source_has_no_language` and you cannot fix it from here — say so';
-        $md[] = '  and let the operator assign one in wp-admin.';
+        $md[] = '  refused with `source_has_no_language`. Propose `set_language` first — content';
+        $md[] = '  predating the multilingual plugin often has none:';
+        $md[] = '';
+        $md[] = '  ```json';
+        $md[] = '  { "action": "set_language", "target_id": 123, "lang": "'
+            . ($tr->default_language() ?: 'fi') . '", "note": "Why." }';
+        $md[] = '  ```';
+        $md[] = '';
+        $md[] = '  It only fills a gap. A post that already has a language is refused, because';
+        $md[] = '  changing one would pull it out of its translation group — a data decision, not';
+        $md[] = '  a content one, so it stays with a human.';
         $md[] = '- **Postmeta is copied from the source**, which is what makes the translation';
         $md[] = '  behave like the original — but it means SEO fields arrive still holding the';
         $md[] = '  source language\'s title and description. Propose an `update` with';

@@ -50,4 +50,7 @@ interface TranslationAdapter
      * @param array<string, int>   $translations existing group members
      */
     public function insert(array $postarr, string $lang, array $translations): int|\WP_Error;
+
+    /** Assign a language to a post that has none. */
+    public function set_language(int $post_id, string $lang): bool|\WP_Error;
 }

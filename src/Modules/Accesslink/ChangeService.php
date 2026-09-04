@@ -89,6 +89,12 @@ final class ChangeService
             );
         }
 
+        if ($action === ChangeRepository::ACTION_SET_LANGUAGE) {
+            return $this->announce(
+                $this->propose_set_language($input, $note_early, $requested_by, $idempotency_key),
+            );
+        }
+
         $fields = $this->sanitize_fields($input['fields'] ?? []);
         if ($fields === []) {
             return new \WP_Error(
@@ -378,6 +384,97 @@ final class ChangeService
             'action'    => $action,
             'post_id'   => $target_id,
             'path'      => $path,
+            'by'        => $requested_by,
+        ]);
+
+        return $this->repo->find($id) ?? [];
+    }
+
+    /**
+     * Give a post a language it does not have.
+     *
+     * Exists because without it the translation flow dead-ends: content that
+     * predates the multilingual plugin has no language, `create_translation`
+     * refuses it, and there was no way to fix that except in wp-admin — so an
+     * agent asked to translate such a site could not even start.
+     *
+     * Deliberately only fills a gap. Changing a language a post already has
+     * would silently tear it out of its translation group, which is a data
+     * decision rather than a content one and belongs with a human.
+     */
+    private function propose_set_language(
+        array $input,
+        ?string $note,
+        ?string $requested_by,
+        ?string $idempotency_key,
+    ): array|\WP_Error {
+        $tr = TranslationAdapterFactory::detect();
+        if (!$tr->available()) {
+            return new \WP_Error(
+                'translation_unavailable',
+                sprintf('No writable multilingual plugin on this site (detected: %s).', $tr->plugin()),
+                ['status' => 400],
+            );
+        }
+
+        $target_id = (int) ($input['target_id'] ?? 0);
+        $post = $target_id > 0 ? get_post($target_id) : null;
+        if (!$post instanceof \WP_Post) {
+            return new \WP_Error('not_found', 'No post with that id.', ['status' => 404]);
+        }
+        if (!in_array($post->post_type, $this->allowed_post_types(), true)) {
+            return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 400]);
+        }
+        if (!$tr->is_translated_type($post->post_type)) {
+            return new \WP_Error(
+                'type_not_translated',
+                sprintf('%s is not a translated post type on this site.', $post->post_type),
+                ['status' => 400],
+            );
+        }
+
+        $languages = array_column($tr->languages(), 'slug');
+        $lang = sanitize_key((string) ($input['lang'] ?? ''));
+        if ($lang === '' || !in_array($lang, $languages, true)) {
+            return new \WP_Error(
+                'bad_language',
+                sprintf('lang must be one of: %s.', implode(', ', $languages)),
+                ['status' => 400],
+            );
+        }
+
+        $current = $tr->language_of($target_id);
+        if ($current !== '') {
+            return new \WP_Error(
+                'already_has_language',
+                sprintf(
+                    'That post is already in %s. Changing an assigned language would remove it from its '
+                        . 'translation group, so it is left to a human.',
+                    $current,
+                ),
+                ['status' => 409],
+            );
+        }
+
+        $id = $this->repo->insert([
+            'action'          => ChangeRepository::ACTION_SET_LANGUAGE,
+            'target_id'       => $target_id,
+            'post_type'       => $post->post_type,
+            // Nothing about the content matters here, only that the post still
+            // has no language when a human gets to it.
+            'base_hash'       => hash('sha256', ''),
+            'payload'         => ['lang' => $lang],
+            'summary'         => $this->summarize(sprintf('%s → language %s', $post->post_title, $lang)),
+            'note'            => $note,
+            'requested_by'    => $requested_by,
+            'idempotency_key' => $idempotency_key,
+        ]);
+
+        $this->audit('accesslink_proposed', [
+            'change_id' => $id,
+            'action'    => ChangeRepository::ACTION_SET_LANGUAGE,
+            'post_id'   => $target_id,
+            'lang'      => $lang,
             'by'        => $requested_by,
         ]);
 
@@ -748,6 +845,23 @@ final class ChangeService
             }
 
             $result = $this->applier->apply_update($target_id, $fields);
+        } elseif ($change['action'] === ChangeRepository::ACTION_SET_LANGUAGE) {
+            $tr = TranslationAdapterFactory::detect();
+            if (!get_post($target_id) instanceof \WP_Post) {
+                return $this->fail($id, 'Target post no longer exists.');
+            }
+            // Someone may have assigned one in wp-admin in the meantime; that is
+            // the whole staleness question for this action.
+            $current = $tr->language_of($target_id);
+            if ($current !== '') {
+                return $this->mark_stale(
+                    $id,
+                    $target_id,
+                    sprintf('That post was given the language %s after this was proposed.', $current),
+                );
+            }
+
+            $result = $tr->set_language($target_id, (string) ($change['payload']['lang'] ?? ''));
         } elseif ($change['action'] === ChangeRepository::ACTION_CREATE_TRANSLATION) {
             // The staleness gate points at the *source*, not the draft: the
             // draft is inert and nobody else edits it, but if the original moved

@@ -361,7 +361,7 @@ final class AccesslinkModule implements Module
             // on it unable to discover create_translation at all.
             'actions'            => array_values(array_filter(
                 ChangeRepository::ACTIONS,
-                static fn (string $action): bool => $action !== ChangeRepository::ACTION_CREATE_TRANSLATION
+                static fn (string $action): bool => !in_array($action, ChangeRepository::TRANSLATION_ACTIONS, true)
                     || TranslationAdapterFactory::detect()->available(),
             )),
             // What this particular install supports, so an agent can branch on

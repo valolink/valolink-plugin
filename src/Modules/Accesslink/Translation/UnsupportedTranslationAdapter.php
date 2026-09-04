@@ -50,6 +50,14 @@ final class UnsupportedTranslationAdapter implements TranslationAdapter
         return false;
     }
 
+    public function set_language(int $post_id, string $lang): bool|\WP_Error
+    {
+        return new \WP_Error(
+            'translation_unavailable',
+            sprintf('Languages are not writable on this site (detected: %s).', $this->detected),
+        );
+    }
+
     public function insert(array $postarr, string $lang, array $translations): int|\WP_Error
     {
         return new \WP_Error(

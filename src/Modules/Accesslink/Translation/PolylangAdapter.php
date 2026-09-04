@@ -96,6 +96,22 @@ final class PolylangAdapter implements TranslationAdapter
             && (bool) pll_is_translated_post_type($post_type);
     }
 
+    public function set_language(int $post_id, string $lang): bool|\WP_Error
+    {
+        if (!$this->available()) {
+            return new \WP_Error('no_translation_plugin', 'No usable multilingual plugin on this site.');
+        }
+
+        // Returns false both when the language is already assigned and when the
+        // assignment fails, so the caller checks the result rather than the
+        // return value — see ChangeService, which re-reads the language.
+        pll_set_post_language($post_id, $lang);
+
+        return $this->language_of($post_id) === $lang
+            ? true
+            : new \WP_Error('set_language_failed', 'Polylang did not accept that language for this post.');
+    }
+
     public function insert(array $postarr, string $lang, array $translations): int|\WP_Error
     {
         if (!$this->available()) {

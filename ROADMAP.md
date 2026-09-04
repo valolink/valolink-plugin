@@ -105,11 +105,12 @@ rsync `src/` to test, and remember the live `valolink.fi` sits under the same us
 Everything below had to be done over SSH or in wp-admin, so an agent asked to
 translate a site cannot finish the job on its own.
 
-- [ ] **Assigning a language to a post that has none.** `create_translation`
-  refuses with `source_has_no_language` and there is no way to fix it through the
-  API, so the whole flow dead-ends on any site where content predates the
-  multilingual plugin. A `set_language` action — queued and reviewed like
-  anything else — would close it.
+- [x] **Assigning a language to a post that has none** — shipped as the
+  `set_language` action, queued and reviewed like anything else. It only fills a
+  gap: a post that already has a language is refused, because changing one pulls
+  it out of its translation group, which is a data decision rather than a content
+  one. Verified on staging that `set_language` → `create_translation` now
+  completes a chain that previously required wp-admin.
 - [ ] **Navigation menus.** The entire English menu was built by hand: create the
   menu, set its language, link it to its counterpart, add nine items, and write
   Polylang's per-theme, per-location, per-language map in the `polylang` option.

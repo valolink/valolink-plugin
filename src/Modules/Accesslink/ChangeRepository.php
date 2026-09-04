@@ -23,6 +23,7 @@ final class ChangeRepository
     public const ACTION_DELETE_BLOCK = 'delete_block';
     public const ACTION_MOVE_BLOCK   = 'move_block';
     public const ACTION_CREATE_TRANSLATION = 'create_translation';
+    public const ACTION_SET_LANGUAGE       = 'set_language';
 
     /**
      * Every action `propose()` accepts.
@@ -41,6 +42,13 @@ final class ChangeRepository
         self::ACTION_DELETE_BLOCK,
         self::ACTION_MOVE_BLOCK,
         self::ACTION_CREATE_TRANSLATION,
+        self::ACTION_SET_LANGUAGE,
+    ];
+
+    /** Actions that exist only where a multilingual plugin does. */
+    public const TRANSLATION_ACTIONS = [
+        self::ACTION_CREATE_TRANSLATION,
+        self::ACTION_SET_LANGUAGE,
     ];
 
     /**
