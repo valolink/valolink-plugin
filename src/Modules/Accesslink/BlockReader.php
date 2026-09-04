@@ -71,8 +71,20 @@ final class BlockReader
      * disagree about; the only remaining requirement is that the replacement
      * uses inline formatting RichText can actually emit.
      */
-    public function replace_text_at(string $content, string $path, string $inner): string|\WP_Error
-    {
+    /**
+     * @param bool $inline_only Enforce that the replacement is inline formatting
+     *                          RichText could emit. True for update_text, where
+     *                          the text is authored by an agent. False for a
+     *                          translation, where the inner HTML is the source
+     *                          block's own — inline SVG icons and all — and the
+     *                          caller has already proved the markup is unchanged.
+     */
+    public function replace_text_at(
+        string $content,
+        string $path,
+        string $inner,
+        bool $inline_only = true,
+    ): string|\WP_Error {
         $block = $this->get_at($content, $path);
         if ($block === null) {
             return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path));
@@ -95,7 +107,7 @@ final class BlockReader
             );
         }
 
-        foreach ($this->tags_in($inner) as $tag) {
+        foreach ($inline_only ? $this->tags_in($inner) : [] as $tag) {
             if (!in_array($tag, BlockValidator::INLINE_TAGS, true)) {
                 return new \WP_Error(
                     'disallowed_inline_tag',

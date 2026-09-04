@@ -96,7 +96,12 @@ final class QueuePage
     private function render_change(array $change): void
     {
         $target_id = (int) $change['target_id'];
-        $is_create = $change['action'] === ChangeRepository::ACTION_CREATE;
+        // A translation creates a draft exactly as `create` does, so it gets the
+        // same review affordances: preview the draft in the real theme, open it
+        // in the editor. Testing for ACTION_CREATE alone showed it as an edit of
+        // a page that does not exist yet.
+        $is_create = in_array($change['action'], ChangeRepository::DRAFT_ACTIONS, true);
+        $is_translation = $change['action'] === ChangeRepository::ACTION_CREATE_TRANSLATION;
         ?>
         <div class="card" style="max-width:none;margin-bottom:1em;padding:1em;">
             <h3 style="margin-top:0;">
@@ -115,7 +120,31 @@ final class QueuePage
                 <p><em><?php echo esc_html((string) $change['note']); ?></em></p>
             <?php endif; ?>
 
-            <?php if ($is_create) : ?>
+            <?php if ($is_translation) : ?>
+                <?php
+                $source_id = (int) ($change['payload']['source_id'] ?? 0);
+                $source    = $source_id > 0 ? get_post($source_id) : null;
+                ?>
+                <p>
+                    <?php
+                    printf(
+                        /* translators: 1: source post title, 2: source language, 3: target language. */
+                        esc_html__(
+                            'Translation of %1$s (%2$s) into %3$s. The block structure is cloned from the source and only the text differs — check the wording, not the layout.',
+                            'valolink-plugin',
+                        ),
+                        '<strong>' . esc_html($source->post_title ?? (string) $source_id) . '</strong>',
+                        esc_html((string) ($change['payload']['source_lang'] ?? '?')),
+                        '<strong>' . esc_html((string) ($change['payload']['lang'] ?? '?')) . '</strong>',
+                    );
+                    ?>
+                    <?php if ($source instanceof \WP_Post) : ?>
+                        <a target="_blank" rel="noopener" href="<?php echo esc_url((string) get_permalink($source_id)); ?>">
+                            <?php esc_html_e('View the original', 'valolink-plugin'); ?>
+                        </a>
+                    <?php endif; ?>
+                </p>
+            <?php elseif ($is_create) : ?>
                 <p><?php esc_html_e('Drafted and ready to preview. Approving publishes it.', 'valolink-plugin'); ?></p>
             <?php else : ?>
                 <?php $this->render_diff($change); ?>

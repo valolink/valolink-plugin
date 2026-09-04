@@ -141,7 +141,7 @@ final class PostApplier
         ];
 
         // wp_insert_post expects slashed data — it unslashes internally.
-        $id = wp_insert_post(wp_slash($data), true);
+        $id = self::without_kses(static fn () => wp_insert_post(wp_slash($data), true));
         if (is_wp_error($id)) {
             return $id;
         }
@@ -166,7 +166,8 @@ final class PostApplier
         }
 
         if (count($data) > 1) {
-            $result = wp_update_post(wp_slash($data), true);
+            $slashed = wp_slash($data);
+            $result = self::without_kses(static fn () => wp_update_post($slashed, true));
             if (is_wp_error($result)) {
                 return $result;
             }
@@ -377,10 +378,8 @@ final class PostApplier
      */
     public function apply_raw_content(int $post_id, string $content): bool|\WP_Error
     {
-        $result = wp_update_post(
-            wp_slash(['ID' => $post_id, 'post_content' => $this->filter_content($content)]),
-            true,
-        );
+        $data = wp_slash(['ID' => $post_id, 'post_content' => $this->filter_content($content)]);
+        $result = self::without_kses(static fn () => wp_update_post($data, true));
 
         return is_wp_error($result) ? $result : true;
     }
@@ -391,7 +390,8 @@ final class PostApplier
             return new \WP_Error('bad_status', 'Unsupported post status.');
         }
 
-        $result = wp_update_post(wp_slash(['ID' => $post_id, 'post_status' => $status]), true);
+        $data = wp_slash(['ID' => $post_id, 'post_status' => $status]);
+        $result = self::without_kses(static fn () => wp_update_post($data, true));
 
         return is_wp_error($result) ? $result : true;
     }
@@ -410,5 +410,35 @@ final class PostApplier
     private function filter_content(string $content): string
     {
         return current_user_can('unfiltered_html') ? $content : ContentSanitizer::filter($content);
+    }
+
+    /**
+     * Run a save with WordPress's own kses filters lifted.
+     *
+     * filter_content() has already applied this module's policy by the time
+     * anything reaches a save, and that policy deliberately keeps inline SVG.
+     * WordPress then adds wp_filter_post_kses to content_save_pre whenever the
+     * current user lacks unfiltered_html — and a propose-time request has no
+     * user at all — so it stripped every <svg> straight back out again,
+     * silently, undoing the exact thing ContentSanitizer exists to do.
+     *
+     * Lifting them here is what makes filter_content() the single authority on
+     * what survives, rather than the first of two filters where the second
+     * quietly wins.
+     */
+    private static function without_kses(callable $save): mixed
+    {
+        $was_on = has_filter('content_save_pre', 'wp_filter_post_kses');
+        if ($was_on) {
+            kses_remove_filters();
+        }
+
+        try {
+            return $save();
+        } finally {
+            if ($was_on) {
+                kses_init_filters();
+            }
+        }
     }
 }

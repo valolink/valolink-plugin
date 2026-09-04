@@ -92,7 +92,7 @@ Base: `/wp-json/accesslink/v1`
 
 Generated rather than static, so it reports the site's *actual* configuration — a hand-written doc would drift and an agent would confidently do the wrong thing. It states the propose-then-approve model first, includes the operator's site instructions, tells the agent when writes are switched off, and appends notes left by previous agents.
 
-Budget: base is ~3.5 kB; site instructions cap at 4000 characters and the notes section at 3000, so the worst case is roughly 10 kB (~2.6k tokens).
+Budget: base is ~3.5 kB, or ~5 kB on a multilingual site where the translation section appears; site instructions cap at 4000 characters and the notes section at 3000, so the worst case is roughly 12 kB (~3k tokens).
 
 ### GET /content · GET /content/{id}
 
@@ -155,6 +155,33 @@ Insert places the new block as a **sibling** of the one at `path`. Sibling-only 
 Maintaining `innerContent` is the subtle part. A parent block stores its children as an array of literal HTML interleaved with `null` markers, one per child in order; adding or removing a child without adding or removing the matching `null` renders the children in the wrong places. That bookkeeping is in `BlockReader`.
 
 Staleness for these covers the **whole document**, not one block, because paths are positional: if anything moves before approval, "after the second paragraph" no longer means what the agent meant.
+
+### GET /languages · GET /content/{id}/translations · action `create_translation`
+
+Present when the site runs a multilingual plugin Accesslink can drive. Polylang 3.7+ is supported through its `pll_*` API; WPML is detected and reported unwritable rather than half-supported. `GET /guide` names the resolved adapter.
+
+`GET /languages` returns the configured languages, default first. `GET /content/{id}/translations` returns the post's translation group, the languages it is `missing`, and an `outdated` flag per translation — a timestamp comparison against the source, since Polylang tracks no such thing itself. It flags "worth re-reading", not "definitely wrong".
+
+Translating does **not** mean writing `post_content`. Read `/content/{id}/blocks`, take each editable block's `text_html` (its inner HTML, untruncated — `text` is only a 200-character preview), replace the words, and send them back keyed by path:
+
+```json
+{
+  "action": "create_translation",
+  "target_id": 525,
+  "lang": "en",
+  "title": "Home",
+  "slug": "home",
+  "texts": { "0.0.1": "Websites <mark class=\"…\">that focus on what matters</mark>" }
+}
+```
+
+The document is cloned from the source and only those leaves are replaced, so the translation inherits every wrapper, class and attribute, and its block-name sequence matches by construction. Blocks left out keep the source language.
+
+**Only words may change.** The markup skeleton — every tag and block delimiter with its attributes, text removed — is compared between source and result, and a mismatch is refused. That is a tighter guarantee than sanitising and, unlike sanitising, it does no damage: `ContentSanitizer` is built for content an agent authored, and running it over a clone of the site's own markup stripped the `style` off 13 `<mark>` highlights and parts of 21 inline SVG icons on this project's own front page. Because the skeleton check makes markup injection impossible, `replace_text_at`'s inline-only rule is relaxed for this action alone — the SVG in the replacement is the SVG that was already there.
+
+The draft is created and linked immediately, as `create` does; approval sets its status, defaulting to the source's rather than to `publish`, so translating a draft does not publish it. The staleness gate hashes the **source**: if the original changes before approval the proposal goes `stale`, because it is no longer a translation of what is published.
+
+Not covered, and worth saying plainly because a translated page is not a translated site: **menus** are per-language in Polylang and are not touched, **theme and plugin strings** are not touched, and **internal links keep pointing at source-language pages**. Term translations (`pll_save_term_translations`) are not wired up either, so a translated post cannot yet be categorised.
 
 ### POST /validate
 
@@ -305,6 +332,8 @@ Capability-gated (`publish_posts`), **not** key-gated. With no logged-in user th
 ## Content filtering
 
 `post_content` is stored raw and filtered at apply time, mirroring WordPress's own rule: if the approving user has `unfiltered_html` (an administrator on a single site does), the content is applied as-is, exactly as if they had pasted it into the editor. Otherwise it goes through `wp_kses_post()`.
+
+One subtlety, because it silently defeated the above for a while: WordPress adds `wp_filter_post_kses` to `content_save_pre` whenever the current user lacks `unfiltered_html`, and a propose-time request has **no user at all**. So every `create` had its content filtered a second time on save, by core's kses rather than by `ContentSanitizer` — which stripped every inline `<svg>` back out, exactly what `ContentSanitizer` exists to prevent. Every save path now runs through `PostApplier::without_kses()`, which lifts those filters and restores them, making `filter_content()` the single authority on what survives instead of the first of two filters where the second quietly won. Verified adversarially: `<script>`, `onclick`, `onerror`, `javascript:` URLs and external `<use>` references are all still removed.
 
 Filtering does **not** go through `wp_kses_post()` directly. That call preserves block delimiters fine — they are HTML comments and modern kses keeps them — but it has no allowlist for inline SVG, and on a GeneratePress/GenerateBlocks site SVG icons are everywhere. Measured on this project's own front page, plain `wp_kses_post()` stripped 42 `<svg>`, 82 `<path>` and every `<g>`/`<circle>`/`<defs>`/`<mask>`, costing 14% of the document; across all 16 block posts it lost 7.9%.
 

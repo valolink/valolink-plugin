@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Valolink\Plugin\Modules\Accesslink;
 
 use Valolink\Plugin\Modules\Accesslink\Seo\SeoAdapterFactory;
+use Valolink\Plugin\Modules\Accesslink\Translation\TranslationAdapterFactory;
 use Valolink\Plugin\Settings;
 
 /**
@@ -93,9 +94,54 @@ final class GuideBuilder
         $md[] = "- `GET {$base}/taxonomies` — category and tag slugs you may assign.";
         $md[] = "- `GET {$base}/media` — images available for `featured_media`. Query: `search`, `limit`.";
         $md[] = '';
+
         $md[] = 'Read the post before you propose an update. You need its current content to';
         $md[] = 'write a sensible replacement, and the staleness check below compares against it.';
         $md[] = '';
+
+        $tr = TranslationAdapterFactory::detect();
+        if ($tr->available()) {
+            $langs = [];
+            foreach ($tr->languages() as $language) {
+                $langs[] = $language['slug'] . ($language['is_default'] ? ' (default)' : '');
+            }
+
+            $md[] = '## Translations';
+            $md[] = '';
+            $md[] = 'This site is multilingual (' . $tr->plugin() . '). Languages: ' . implode(', ', $langs) . '.';
+            $md[] = '';
+            $md[] = "- `GET {$base}/languages` — the list above, with names and locales.";
+            $md[] = "- `GET {$base}/content/{id}/translations` — which languages a post exists in,";
+            $md[] = '  which are `missing`, and which are `outdated` (older than the post they translate).';
+            $md[] = '';
+            $md[] = 'To translate a post, do **not** write `post_content` yourself. Read';
+            $md[] = "`GET {$base}/content/{id}/blocks` and take the `text_html` of each block marked";
+            $md[] = '`editable` — that is the block\'s inner HTML, untruncated, where `text` is only a';
+            $md[] = 'short preview. Replace the words in it and send it back keyed by `path`:';
+            $md[] = '';
+            $md[] = '```json';
+            $md[] = '{';
+            $md[] = '  "action": "create_translation",';
+            $md[] = '  "target_id": 123,';
+            $md[] = '  "lang": "' . ($tr->languages()[1]['slug'] ?? 'en') . '",';
+            $md[] = '  "title": "Translated title",';
+            $md[] = '  "slug": "translated-title",';
+            $md[] = '  "texts": { "0.0.1": "Translated heading", "0.0.2": "Translated paragraph." },';
+            $md[] = '  "note": "Why you are proposing this."';
+            $md[] = '}';
+            $md[] = '```';
+            $md[] = '';
+            $md[] = 'The page is cloned from the source and only those leaves are replaced, so the';
+            $md[] = 'translation keeps the original layout exactly. **Change words only.** Every tag,';
+            $md[] = 'attribute and inline SVG must come back exactly as you received it; a proposal';
+            $md[] = 'whose markup differs from the source is refused. Blocks you leave out keep the';
+            $md[] = 'source language — send every editable block you want translated. The draft is';
+            $md[] = 'created and linked immediately; approving it sets its status. If the source';
+            $md[] = 'page changes before a human approves, the proposal goes `stale` and you should';
+            $md[] = 'read the source again.';
+            $md[] = '';
+        }
+
         $md[] = '## Proposing a change';
         $md[] = '';
         $md[] = "`POST {$base}/changes`";

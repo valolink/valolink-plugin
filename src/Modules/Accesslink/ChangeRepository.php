@@ -22,6 +22,16 @@ final class ChangeRepository
     public const ACTION_INSERT_BLOCK = 'insert_block';
     public const ACTION_DELETE_BLOCK = 'delete_block';
     public const ACTION_MOVE_BLOCK   = 'move_block';
+    public const ACTION_CREATE_TRANSLATION = 'create_translation';
+
+    /**
+     * Actions whose row targets a post this module created rather than one it
+     * edits, so approval flips a status and rejection trashes the draft.
+     */
+    public const DRAFT_ACTIONS = [
+        self::ACTION_CREATE,
+        self::ACTION_CREATE_TRANSLATION,
+    ];
 
     /** Actions that rearrange the document, so positional paths may shift. */
     public const STRUCTURAL_ACTIONS = [

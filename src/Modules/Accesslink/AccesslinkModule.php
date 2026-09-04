@@ -7,6 +7,7 @@ namespace Valolink\Plugin\Modules\Accesslink;
 use Valolink\Plugin\Admin\SettingsPage;
 use Valolink\Plugin\Context;
 use Valolink\Plugin\Module;
+use Valolink\Plugin\Modules\Accesslink\Translation\TranslationAdapterFactory;
 use Valolink\Plugin\Settings;
 
 /**
@@ -221,6 +222,21 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        // Multilingual lookups. Both answer on a site with no multilingual
+        // plugin — reporting "unavailable, here is what was detected" is more
+        // useful to an agent than a 404 it has to interpret.
+        register_rest_route(self::REST_NAMESPACE, '/languages', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_languages'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
+        register_rest_route(self::REST_NAMESPACE, '/content/(?P<id>\d+)/translations', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_translations'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
         // Writing a note respects the kill switch: "writes off" should mean
         // nothing lands in the database, not just no content changes. Deleting
         // is deliberately absent — curating what agents tell each other is the
@@ -403,6 +419,80 @@ final class AccesslinkModule implements Module
         return new \WP_REST_Response(
             (new ContentReader($this->service(), new PostApplier()))->taxonomies(),
         );
+    }
+
+    public function handle_languages(): \WP_REST_Response
+    {
+        $tr = TranslationAdapterFactory::detect();
+
+        return new \WP_REST_Response([
+            'available' => $tr->available(),
+            'plugin'    => $tr->plugin(),
+            'default'   => $tr->default_language(),
+            'languages' => $tr->languages(),
+        ]);
+    }
+
+    /**
+     * The translation group of one post, with the languages it is missing named
+     * outright. An agent should not have to diff two lists to work out that the
+     * English version does not exist yet.
+     */
+    public function handle_translations(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $tr = TranslationAdapterFactory::detect();
+        $id = (int) $request['id'];
+
+        $post = get_post($id);
+        if (!$post instanceof \WP_Post
+            || !in_array($post->post_type, $this->service()->allowed_post_types(), true)) {
+            return new \WP_Error('not_found', 'No such post.', ['status' => 404]);
+        }
+
+        if (!$tr->available()) {
+            return new \WP_REST_Response([
+                'id'        => $id,
+                'available' => false,
+                'plugin'    => $tr->plugin(),
+            ]);
+        }
+
+        $group  = $tr->translations($id);
+        $source_modified = get_post_modified_time('Y-m-d H:i:s', true, $post);
+
+        $out = [];
+        foreach ($tr->languages() as $language) {
+            $slug = $language['slug'];
+            $tid  = $group[$slug] ?? 0;
+            if ($tid === 0) {
+                $out[$slug] = null;
+                continue;
+            }
+
+            $t = get_post($tid);
+            $modified = $t instanceof \WP_Post ? get_post_modified_time('Y-m-d H:i:s', true, $t) : null;
+            $out[$slug] = [
+                'id'           => $tid,
+                'is_source'    => $tid === $id,
+                'status'       => $t->post_status ?? null,
+                'title'        => $t->post_title ?? null,
+                'link'         => get_permalink($tid) ?: null,
+                'modified_gmt' => $modified,
+                // Older than the post it translates. Polylang tracks no such
+                // thing, so this is a timestamp comparison and nothing more —
+                // it flags "worth re-reading", not "definitely wrong".
+                'outdated'     => $tid !== $id && $modified !== null && $modified < $source_modified,
+            ];
+        }
+
+        return new \WP_REST_Response([
+            'id'        => $id,
+            'available' => true,
+            'plugin'    => $tr->plugin(),
+            'language'  => $tr->language_of($id),
+            'missing'   => array_keys(array_filter($out, static fn ($v): bool => $v === null)),
+            'translations' => $out,
+        ]);
     }
 
     public function handle_media(\WP_REST_Request $request): \WP_REST_Response

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Valolink\Plugin\Modules\Accesslink;
 
 use Valolink\Plugin\Modules\Accesslink\Seo\SeoAdapterFactory;
+use Valolink\Plugin\Modules\Accesslink\Translation\TranslationAdapterFactory;
 use Valolink\Plugin\Modules\Logging\EventLogger;
 use Valolink\Plugin\Settings;
 
@@ -51,12 +52,13 @@ final class ChangeService
             ChangeRepository::ACTION_UPDATE,
             ChangeRepository::ACTION_UPDATE_BLOCK,
             ChangeRepository::ACTION_UPDATE_TEXT,
+            ChangeRepository::ACTION_CREATE_TRANSLATION,
             ...ChangeRepository::STRUCTURAL_ACTIONS,
         ];
         if (!in_array($action, $actions, true)) {
             return new \WP_Error(
                 'bad_action',
-                'action must be one of: create, update, update_text, update_block, '
+                'action must be one of: create, update, update_text, update_block, create_translation, '
                     . implode(', ', ChangeRepository::STRUCTURAL_ACTIONS) . '.',
                 ['status' => 400],
             );
@@ -87,6 +89,12 @@ final class ChangeService
         if (in_array($action, ChangeRepository::STRUCTURAL_ACTIONS, true)) {
             return $this->announce(
                 $this->propose_structural($action, $input, $note_early, $requested_by, $idempotency_key),
+            );
+        }
+
+        if ($action === ChangeRepository::ACTION_CREATE_TRANSLATION) {
+            return $this->announce(
+                $this->propose_create_translation($input, $note_early, $requested_by, $idempotency_key),
             );
         }
 
@@ -386,6 +394,239 @@ final class ChangeService
     }
 
     /**
+     * A translation of an existing post, as a draft linked into its group.
+     *
+     * The agent never sends `post_content`. It sends a map of block path =>
+     * translated text, and the document is cloned from the source with only
+     * those leaves replaced. That is the whole point: regenerating the markup
+     * of a GenerateBlocks page is how an agent destroys one, and a translation
+     * is the case where it would be most tempting — the structure is supposed
+     * to be identical, so there is no reason to rebuild it. Cloning also means
+     * the translation inherits every wrapper, class and attribute for free, and
+     * the block-name sequence is guaranteed to match by construction.
+     */
+    private function propose_create_translation(
+        array $input,
+        ?string $note,
+        ?string $requested_by,
+        ?string $idempotency_key,
+    ): array|\WP_Error {
+        $tr = TranslationAdapterFactory::detect();
+        if (!$tr->available()) {
+            return new \WP_Error(
+                'translation_unavailable',
+                sprintf('No writable multilingual plugin on this site (detected: %s).', $tr->plugin()),
+                ['status' => 400],
+            );
+        }
+
+        $source_id = (int) ($input['target_id'] ?? 0);
+        $source = $source_id > 0 ? get_post($source_id) : null;
+        if (!$source instanceof \WP_Post) {
+            return new \WP_Error('not_found', 'No post with that id.', ['status' => 404]);
+        }
+        if (!in_array($source->post_type, $this->allowed_post_types(), true)) {
+            return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 400]);
+        }
+        if (!$tr->is_translated_type($source->post_type)) {
+            return new \WP_Error(
+                'type_not_translated',
+                sprintf('%s is not a translated post type on this site.', $source->post_type),
+                ['status' => 400],
+            );
+        }
+
+        $languages = array_column($tr->languages(), 'slug');
+        $lang = sanitize_key((string) ($input['lang'] ?? ''));
+        if ($lang === '' || !in_array($lang, $languages, true)) {
+            return new \WP_Error(
+                'bad_language',
+                sprintf('lang must be one of: %s.', implode(', ', $languages)),
+                ['status' => 400],
+            );
+        }
+
+        $source_lang = $tr->language_of($source_id);
+        if ($source_lang === '') {
+            return new \WP_Error(
+                'source_has_no_language',
+                'The source post has no language assigned, so nothing can be linked to it. '
+                    . 'Assign one in wp-admin first.',
+                ['status' => 409],
+            );
+        }
+        if ($source_lang === $lang) {
+            return new \WP_Error('same_language', 'The source is already in that language.', ['status' => 400]);
+        }
+
+        $group = $tr->translations($source_id);
+        if (isset($group[$lang])) {
+            return new \WP_Error(
+                'already_translated',
+                sprintf(
+                    'Already translated into %s (post %d). Propose an update against that post instead.',
+                    $lang,
+                    $group[$lang],
+                ),
+                ['status' => 409],
+            );
+        }
+
+        $title = trim((string) ($input['title'] ?? ''));
+        if ($title === '') {
+            return new \WP_Error('no_title', 'title is required.', ['status' => 400]);
+        }
+
+        $texts = $input['texts'] ?? [];
+        if (!is_array($texts) || $texts === []) {
+            return new \WP_Error(
+                'no_texts',
+                'texts must map block paths to translated text — see GET /content/{id}/blocks for the paths.',
+                ['status' => 400],
+            );
+        }
+
+        // replace_text_at only ever swaps a wrapper's inner HTML, so the tree
+        // never reshapes and every path stays valid across the whole loop.
+        $reader  = new BlockReader();
+        $content = (string) $source->post_content;
+        foreach ($texts as $path => $text) {
+            $path = (string) $path;
+            if ($reader->get_at($content, $path) === null) {
+                return new \WP_Error(
+                    'block_not_found',
+                    sprintf('No block at path %s.', $path),
+                    ['status' => 404],
+                );
+            }
+
+            // inline_only off: the replacement is the source block's own inner
+            // HTML with the words swapped, so it legitimately carries the icons
+            // and anchors that were already there. The skeleton comparison
+            // below is what proves nothing else changed.
+            $replaced = $reader->replace_text_at($content, $path, (string) $text, false);
+            if (is_wp_error($replaced)) {
+                $replaced->add_data(['status' => 400, 'path' => $path], $replaced->get_error_code());
+
+                return $replaced;
+            }
+            $content = $replaced;
+        }
+
+        // A translation may change words and nothing else. Comparing the markup
+        // skeleton — every tag with its attributes, in order, text removed —
+        // enforces that far more tightly than a sanitiser could, and without a
+        // sanitiser's damage: ContentSanitizer would strip the style attribute
+        // off the <mark> highlights and parts of the inline SVG icons, because
+        // it is built for content an agent authored, not for a clone of the
+        // site's own markup. Anything an agent might inject is a tag or an
+        // attribute, so any injection shows up here as a mismatch.
+        if (self::markup_skeleton((string) $source->post_content) !== self::markup_skeleton($content)) {
+            return new \WP_Error(
+                'markup_changed',
+                'A translation may only change text, not markup. Send the source block\'s own HTML with '
+                    . 'the words replaced — tags, attributes and inline SVG must come back unchanged.',
+                ['status' => 400],
+            );
+        }
+
+        $issues = (new BlockValidator())->check_diff((string) $source->post_content, $content);
+        if ($issues !== []) {
+            return new \WP_Error('invalid_block_markup', implode(' ', $issues), ['status' => 400, 'issues' => $issues]);
+        }
+
+        $postarr = [
+            'post_type'    => $source->post_type,
+            'post_status'  => 'draft',
+            'post_title'   => $title,
+            'post_content' => $content,
+            'post_excerpt' => sanitize_textarea_field((string) ($input['excerpt'] ?? '')),
+        ];
+        if (!empty($input['slug'])) {
+            $postarr['post_name'] = sanitize_title((string) $input['slug']);
+        }
+
+        // WordPress runs post_content through kses on save whenever the current
+        // user lacks unfiltered_html — and an Accesslink request has no user at
+        // all. That strips precisely what ContentSanitizer exists to preserve:
+        // on this site's front page it removed all 21 inline SVG icons and every
+        // <mark> style attribute, silently, after every check above had passed.
+        // The content is provably the site's own markup by the skeleton check,
+        // so the filters come off for the insert and go straight back on.
+        $kses_was_on = has_filter('content_save_pre', 'wp_filter_post_kses');
+        if ($kses_was_on) {
+            kses_remove_filters();
+        }
+
+        $new_id = $tr->insert(wp_slash($postarr), $lang, $group + [$source_lang => $source_id]);
+
+        if ($kses_was_on) {
+            kses_init_filters();
+        }
+
+        if (is_wp_error($new_id)) {
+            $new_id->add_data(['status' => 500], $new_id->get_error_code());
+
+            return $new_id;
+        }
+
+        // Verify rather than trust: anything else hooked into the save path can
+        // rewrite content too, and a half-mangled translation left in the queue
+        // is worse than none. Deleted outright rather than trashed — nobody has
+        // reviewed it, so there is nothing to recover.
+        $stored = get_post((int) $new_id);
+        if (!$stored instanceof \WP_Post
+            || self::markup_skeleton((string) $stored->post_content) !== self::markup_skeleton($content)) {
+            wp_delete_post((int) $new_id, true);
+
+            return new \WP_Error(
+                'content_altered_on_save',
+                'The site altered the translation while saving it, so it no longer matches the source '
+                    . 'markup. The draft was removed rather than queued.',
+                ['status' => 500],
+            );
+        }
+
+        // Status the translation should reach on approval. Defaults to whatever
+        // the source is: a translation of a published page is normally meant to
+        // be published, and defaulting to `publish` regardless would quietly
+        // publish the translation of a draft.
+        $requested_status = (string) ($input['status'] ?? $source->post_status);
+
+        $id = $this->repo->insert([
+            'action'          => ChangeRepository::ACTION_CREATE_TRANSLATION,
+            'target_id'       => (int) $new_id,
+            'post_type'       => $source->post_type,
+            // Hashes the *source*: if the original moves before approval the
+            // translation is answering a stale question, exactly as an update
+            // would be.
+            'base_hash'       => $this->content_hash($source),
+            'payload'         => [
+                'lang'             => $lang,
+                'source_id'        => $source_id,
+                'source_lang'      => $source_lang,
+                'translated_paths' => array_keys($texts),
+                'requested_status' => $requested_status,
+            ],
+            'summary'         => $this->summarize(sprintf('%s → %s: %s', $source->post_title, $lang, $title)),
+            'note'            => $note,
+            'requested_by'    => $requested_by,
+            'idempotency_key' => $idempotency_key,
+        ]);
+
+        $this->audit('accesslink_proposed', [
+            'change_id' => $id,
+            'action'    => ChangeRepository::ACTION_CREATE_TRANSLATION,
+            'post_id'   => (int) $new_id,
+            'source_id' => $source_id,
+            'lang'      => $lang,
+            'by'        => $requested_by,
+        ]);
+
+        return $this->repo->find($id) ?? [];
+    }
+
+    /**
      * Single funnel for "a change was just queued", so a future action type
      * cannot silently skip telling anyone. Never allowed to affect the result:
      * the change is already safely stored by this point.
@@ -506,6 +747,28 @@ final class ChangeService
             }
 
             $result = $this->applier->apply_update($target_id, $fields);
+        } elseif ($change['action'] === ChangeRepository::ACTION_CREATE_TRANSLATION) {
+            // The staleness gate points at the *source*, not the draft: the
+            // draft is inert and nobody else edits it, but if the original moved
+            // the translation is no longer a translation of what is published.
+            $source_id = (int) ($change['payload']['source_id'] ?? 0);
+            $source = $source_id > 0 ? get_post($source_id) : null;
+            if (!$source instanceof \WP_Post) {
+                return $this->fail($id, 'The source post no longer exists.');
+            }
+            if (!hash_equals((string) $change['base_hash'], $this->content_hash($source))) {
+                return $this->mark_stale(
+                    $id,
+                    $target_id,
+                    'The source page changed after this translation was drafted, so the two no longer match. '
+                        . 'Re-read the source and propose again.',
+                );
+            }
+
+            $result = $this->applier->set_status(
+                $target_id,
+                (string) ($change['payload']['requested_status'] ?? 'publish'),
+            );
         } else {
             $status = (string) ($change['payload']['requested_status'] ?? 'publish');
             $result = $this->applier->set_status($target_id, $status);
@@ -584,6 +847,20 @@ final class ChangeService
         };
     }
 
+    /**
+     * Every tag and block delimiter in order, with attributes, text removed.
+     *
+     * Two documents with the same skeleton differ only in their words. Block
+     * delimiters are HTML comments and are captured too, so a change to block
+     * attributes shows up as readily as a changed element.
+     */
+    private static function markup_skeleton(string $html): string
+    {
+        preg_match_all('/<[^>]*>/', $html, $matches);
+
+        return implode('', $matches[0]);
+    }
+
     private function mark_stale(int $id, int $target_id, string $message): array
     {
         $this->repo->update($id, [
@@ -613,7 +890,9 @@ final class ChangeService
 
         // A rejected create leaves an orphan draft behind, so bin it. Trash
         // rather than delete — recoverable if the rejection was a mis-click.
-        if ($change['action'] === ChangeRepository::ACTION_CREATE && $change['target_id']) {
+        // A translation draft is the same shape and leaves a half-linked
+        // translation group if it stays.
+        if (in_array($change['action'], ChangeRepository::DRAFT_ACTIONS, true) && $change['target_id']) {
             wp_trash_post((int) $change['target_id']);
         }
 

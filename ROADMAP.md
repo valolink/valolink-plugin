@@ -100,6 +100,28 @@ rsync `src/` to test, and remember the live `valolink.fi` sits under the same us
   diff, and a preview that cannot be built fails loudly instead of rendering the
   current page. Verified end to end on staging across all four actions.
 
+#### Found while building the translation slice
+
+- [x] **Core kses silently undid ContentSanitizer** — fixed. `wp_insert_post` /
+  `wp_update_post` apply `wp_filter_post_kses` whenever the current user lacks
+  `unfiltered_html`, and a propose-time request has no user, so every created
+  draft lost its inline SVG *after* `ContentSanitizer` had deliberately kept it.
+  All save paths now go through `PostApplier::without_kses()`. Re-verified that
+  script tags, `on*` handlers, `javascript:` URLs and external `<use>` refs are
+  still blocked.
+- [ ] **A non-admin reviewer still degrades content on approval.** `set_status`
+  and `apply_update` now lift kses, but `filter_content()` itself returns
+  `ContentSanitizer::filter()` for a reviewer without `unfiltered_html` — an
+  Editor approving a change to a page full of SVG icons would strip them from
+  the whole document, not just the edited part. Either restrict approval to
+  `unfiltered_html`, or filter only the incoming fragment.
+- [ ] **Menus, GeneratePress Elements and per-language site chrome.** Translating
+  the front page produced a correct English page with no header: the site header
+  is a GP Element whose display conditions do not match the new page, and the
+  English menu is a separate Polylang menu that is effectively empty. A
+  translated *page* is not a translated *site*, and the gap is visible the moment
+  anyone looks at the result.
+
 #### Tier 1 — cheap, and the existing machinery already fits
 
 - [ ] **`post_name` and `post_date`.** An agent cannot currently rename or schedule
@@ -118,7 +140,14 @@ rsync `src/` to test, and remember the live `valolink.fi` sits under the same us
 
 #### Tier 2 — real work, real payoff
 
-- [ ] **Polylang translations.** Own subsection below.
+- [~] **Polylang translations.** First slice shipped: `GET /languages`,
+  `GET /content/{id}/translations` and the `create_translation` action, behind a
+  `Translation/` adapter (Polylang 3.7+ via `pll_*`; WPML detected-unwritable).
+  Proven on staging by translating the 260-block front page into English —
+  markup skeleton identical, all 21 SVG icons and 13 `<mark>` styles intact.
+  Still open: `sync_translation` (mirror a source change into an existing
+  translation), term translations, and the outdated-translation report as a
+  standalone endpoint. See the design subsection below.
 - [ ] **Content audit reads.** `GET /audit/content`: missing meta descriptions,
   images without alt text, thin content, orphan pages, broken internal links. No
   new write surface — only reads that already exist. Aims at the top friction in
