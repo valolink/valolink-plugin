@@ -477,10 +477,13 @@ final class ChangeService
             return new \WP_Error('no_title', 'title is required.', ['status' => 400]);
         }
 
+        // Optional: a language-neutral post — a GeneratePress Element that only
+        // injects CSS or a tracking script, say — needs a counterpart in the
+        // target language to run there at all, but nothing in it to translate.
         $texts = $input['texts'] ?? [];
-        if (!is_array($texts) || $texts === []) {
+        if (!is_array($texts)) {
             return new \WP_Error(
-                'no_texts',
+                'bad_texts',
                 'texts must map block paths to translated text — see GET /content/{id}/blocks for the paths.',
                 ['status' => 400],
             );
@@ -569,6 +572,13 @@ final class ChangeService
 
             return $new_id;
         }
+
+        // Carry the source's postmeta over. Without this a translated
+        // GeneratePress Element is inert: its type, hook, priority and display
+        // conditions all live in _generate_* meta, so the copy would sit there
+        // as an unreferenced draft that never renders anywhere. Polylang's own
+        // admin does the same thing when you create a translation.
+        self::copy_meta($source_id, (int) $new_id);
 
         // Verify rather than trust: anything else hooked into the save path can
         // rewrite content too, and a half-mangled translation left in the queue
@@ -845,6 +855,31 @@ final class ChangeService
             ),
             default => null,
         };
+    }
+
+    /**
+     * Postmeta that must not follow a post into its translation.
+     *
+     * Edit locks belong to a session, and Polylang keys its own state off the
+     * taxonomies rather than meta, so everything else is behaviour the copy
+     * needs in order to act like the original.
+     */
+    private const META_NOT_COPIED = ['_edit_lock', '_edit_last'];
+
+    private static function copy_meta(int $from, int $to): void
+    {
+        foreach (get_post_meta($from) as $key => $values) {
+            if (in_array($key, self::META_NOT_COPIED, true)) {
+                continue;
+            }
+            delete_post_meta($to, $key);
+            foreach ((array) $values as $value) {
+                // get_post_meta returns raw serialised strings; add_post_meta
+                // re-serialises, so a value has to be unserialised once first
+                // or arrays end up double-encoded.
+                add_post_meta($to, $key, maybe_unserialize($value));
+            }
+        }
     }
 
     /**

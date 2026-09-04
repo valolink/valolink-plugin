@@ -237,6 +237,15 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        // GeneratePress Elements are readable and editable as an ordinary post
+        // type once the operator allows it; this exposes the `_generate_*` meta
+        // that says what each one actually does and where it appears.
+        register_rest_route(self::REST_NAMESPACE, '/elements', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_elements'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
         // Writing a note respects the kill switch: "writes off" should mean
         // nothing lands in the database, not just no content changes. Deleting
         // is deliberately absent — curating what agents tell each other is the
@@ -419,6 +428,22 @@ final class AccesslinkModule implements Module
         return new \WP_REST_Response(
             (new ContentReader($this->service(), new PostApplier()))->taxonomies(),
         );
+    }
+
+    public function handle_elements(): \WP_REST_Response
+    {
+        $reader = new ElementReader();
+        $result = $reader->list();
+
+        // Say plainly whether proposing against them is possible, rather than
+        // letting an agent discover it through a rejected proposal.
+        $result['editable'] = in_array(
+            ElementReader::POST_TYPE,
+            $this->service()->allowed_post_types(),
+            true,
+        );
+
+        return new \WP_REST_Response($result);
     }
 
     public function handle_languages(): \WP_REST_Response

@@ -179,9 +179,23 @@ The document is cloned from the source and only those leaves are replaced, so th
 
 **Only words may change.** The markup skeleton — every tag and block delimiter with its attributes, text removed — is compared between source and result, and a mismatch is refused. That is a tighter guarantee than sanitising and, unlike sanitising, it does no damage: `ContentSanitizer` is built for content an agent authored, and running it over a clone of the site's own markup stripped the `style` off 13 `<mark>` highlights and parts of 21 inline SVG icons on this project's own front page. Because the skeleton check makes markup injection impossible, `replace_text_at`'s inline-only rule is relaxed for this action alone — the SVG in the replacement is the SVG that was already there.
 
+`texts` is optional. Omitting it clones the source verbatim, which is what a language-neutral post needs — a GeneratePress Element that only injects CSS has nothing to translate but still needs a counterpart in the target language to run there at all.
+
+The source's postmeta is copied to the translation, minus the edit lock. This is not a nicety: a GeneratePress Element's type, hook and display conditions all live in `_generate_*` meta, so without it a translated Element is an inert draft that never renders. The same applies to per-page layout meta — a translation created without it renders its page title and full-width setting differently from the original. SEO meta is copied too, so a fresh translation starts with the *source language's* title and description; propose an `update` with `seo_title` / `seo_description` against the translation to correct that.
+
 The draft is created and linked immediately, as `create` does; approval sets its status, defaulting to the source's rather than to `publish`, so translating a draft does not publish it. The staleness gate hashes the **source**: if the original changes before approval the proposal goes `stale`, because it is no longer a translation of what is published.
 
 Not covered, and worth saying plainly because a translated page is not a translated site: **menus** are per-language in Polylang and are not touched, **theme and plugin strings** are not touched, and **internal links keep pointing at source-language pages**. Term translations (`pll_save_term_translations`) are not wired up either, so a translated post cannot yet be categorised.
+
+### GET /elements
+
+GeneratePress Elements are ordinary posts of the `gp_elements` type, so once an operator adds that type to *Allowed post types* every existing read and write applies to them unchanged. What is not ordinary is what they mean: an Element is site furniture — a hero, a footer, a script injected into `wp_head` — and its behaviour lives in `_generate_*` postmeta, not in its content.
+
+`GET /elements` surfaces that meta: `element_type` (`block` / `hook` / `layout`), `block_type`, `hook` and priority, and the display, exclude and user conditions. It also reports `editable`, so an agent learns whether proposing against Elements is permitted here without first having a proposal refused. Without this an agent sees a pile of oddly-named pages and cannot tell that the footer CTA is one Element rather than something repeated on forty pages.
+
+The review screen flags any change to a `gp_elements` post, because a diff of an Element looks exactly like a diff of a page while approving it changes every page the Element renders on.
+
+**Elements and languages.** When a multilingual plugin manages `gp_elements` — Polylang does by default — each Element belongs to one language and only runs on pages of that language. A site whose Elements are all in the source language will render a translated page with no header, no footer and none of the CSS or tracking those Elements inject. The fix is an Element per language, which is what `create_translation` is for: text-bearing Elements get translated, and the ones that only inject CSS or a script are created with no `texts` at all, existing purely so they run in the other language too.
 
 ### POST /validate
 
@@ -226,7 +240,7 @@ For a block edit, use `action: "update_block"` with a `path` and replacement `ht
 
 This is the right way to edit a block-based page. Regenerating a whole `post_content` is how an agent destroys one: on a GenerateBlocks site the copy sits four or five levels inside container wrappers whose delimiters carry JSON attributes, and rewriting the raw string reformats that JSON, drops attributes or mis-nests wrappers — after which the editor shows "this block contains unexpected or invalid content" and the diff is too large for a reviewer to catch it.
 
-Only the addressed block's own HTML is replaced; attributes, children and every sibling are re-serialised untouched from the parsed tree. Editing a block that contains other blocks is refused — go to the leaf holding the text. After replacement the document is re-parsed and the block-name sequence compared to before; if it differs the change is refused rather than saved.
+Only the addressed block's own HTML is replaced; attributes, children and every sibling are re-serialised untouched from the parsed tree — with one correction that had to be made explicit. `parse_blocks()` decodes delimiter JSON with `json_decode($json, true)`, which cannot tell an empty object from an empty array, so `serialize_blocks()` wrote `{"styles":{}}` back out as `{"styles":[]}`: an attribute quietly rewritten on blocks the edit never touched. A text or single-block replacement never changes a delimiter, so when the delimiter count is unchanged `BlockReader` restores the originals verbatim. Structural actions do change that count and are still exposed to it. Editing a block that contains other blocks is refused — go to the leaf holding the text. After replacement the document is re-parsed and the block-name sequence compared to before; if it differs the change is refused rather than saved.
 
 Staleness for a block edit hashes that block alone, so unrelated edits elsewhere on the page don't invalidate it while a change to this block does.
 

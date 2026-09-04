@@ -123,6 +123,46 @@ final class BlockReader
         return $this->replace_at($content, $path, $parts[0] . $inner . $parts[2]);
     }
 
+    /**
+     * Put the original block delimiters back after a re-serialisation.
+     *
+     * `parse_blocks()` decodes delimiter JSON with `json_decode($json, true)`,
+     * which turns an empty object into an empty array; `serialize_blocks()`
+     * then writes it back as `[]`. So a GenerateBlocks block carrying
+     * `{"styles":{}}` comes out as `{"styles":[]}` — an attribute rewritten on
+     * a block the edit never touched, on every text edit, silently.
+     *
+     * A text or single-block replacement changes inner HTML only and never a
+     * delimiter, so when the delimiter sequence is the same length the
+     * originals are by definition the correct ones to keep. A differing length
+     * means a structural change, where the sequence legitimately differs and
+     * there is nothing safe to map onto.
+     */
+    private function preserve_delimiters(string $original, string $rebuilt): string
+    {
+        $pattern = '/<!--\s+\/?wp:.*?-->/s';
+
+        if (preg_match_all($pattern, $original, $old) === false) {
+            return $rebuilt;
+        }
+        if (preg_match_all($pattern, $rebuilt, $new) === false) {
+            return $rebuilt;
+        }
+        if (count($old[0]) !== count($new[0])) {
+            return $rebuilt;
+        }
+
+        $i = 0;
+
+        return (string) preg_replace_callback(
+            $pattern,
+            static function () use ($old, &$i): string {
+                return $old[0][$i++];
+            },
+            $rebuilt,
+        );
+    }
+
     /** The editable text of a block: the inner HTML of its wrapper element. */
     public function text_html(string $content, string $path): ?string
     {
@@ -188,7 +228,7 @@ final class BlockReader
             return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path));
         }
 
-        $serialized = serialize_blocks($blocks);
+        $serialized = $this->preserve_delimiters($content, serialize_blocks($blocks));
 
         // Round-trip guard: the edit must not have changed the shape of the
         // document. If re-parsing yields a different set of block names, the

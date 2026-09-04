@@ -100,6 +100,17 @@ rsync `src/` to test, and remember the live `valolink.fi` sits under the same us
   diff, and a preview that cannot be built fails loudly instead of rendering the
   current page. Verified end to end on staging across all four actions.
 
+#### For the main branch, not this one
+
+- [ ] **Restrict the Valolink admin screens to administrators.** Every module's
+  wp-admin page is currently reachable by any role the menu capability lets in,
+  and the Accesslink screen in particular exposes the propose key and the writes
+  kill switch. The menu should be registered for `manage_options` only, and each
+  `admin_post_` handler should capability-check to match rather than relying on
+  the menu being hidden. Deliberately **not** done on the `accesslink` branch —
+  it touches every module's registration, so it belongs in its own change on
+  `main`.
+
 #### Found while building the translation slice
 
 - [x] **Core kses silently undid ContentSanitizer** — fixed. `wp_insert_post` /
@@ -115,12 +126,21 @@ rsync `src/` to test, and remember the live `valolink.fi` sits under the same us
   Editor approving a change to a page full of SVG icons would strip them from
   the whole document, not just the edited part. Either restrict approval to
   `unfiltered_html`, or filter only the incoming fragment.
-- [ ] **Menus, GeneratePress Elements and per-language site chrome.** Translating
-  the front page produced a correct English page with no header: the site header
-  is a GP Element whose display conditions do not match the new page, and the
-  English menu is a separate Polylang menu that is effectively empty. A
-  translated *page* is not a translated *site*, and the gap is visible the moment
-  anyone looks at the result.
+- [x] **Menus, GeneratePress Elements and per-language site chrome** — resolved
+  for this site. The cause was not display conditions: Polylang translates the
+  `gp_elements` post type, so all 17 Elements were `fi` and none ran on an `en`
+  page — including the hook Elements that inject the header's CSS. Nine
+  site-wide Elements now have English counterparts created through Accesslink
+  (four translated, five language-neutral copies), and an English menu is
+  assigned to both theme locations. See the Elements section below.
+- [x] **Empty JSON objects in block delimiters were silently rewritten** —
+  fixed. `parse_blocks()` decodes with `json_decode($json, true)`, so
+  `{"styles":{}}` came back as an empty array and `serialize_blocks()` wrote it
+  out as `{"styles":[]}` — an attribute change on blocks the edit never touched,
+  on every text edit. `BlockReader::preserve_delimiters()` now restores the
+  original delimiters whenever the delimiter count is unchanged. Structural
+  actions legitimately change that count and are still exposed; worth revisiting
+  if a GenerateBlocks page ever comes back invalid after an insert or move.
 
 #### Tier 1 — cheap, and the existing machinery already fits
 

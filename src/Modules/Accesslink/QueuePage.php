@@ -120,6 +120,32 @@ final class QueuePage
                 <p><em><?php echo esc_html((string) $change['note']); ?></em></p>
             <?php endif; ?>
 
+            <?php if ($change['post_type'] === ElementReader::POST_TYPE) : ?>
+                <?php
+                // An Element is site furniture, not a page. A reviewer looking at
+                // a diff of one has no way of telling from the diff alone that
+                // approving it changes every page the Element renders on.
+                $element = (new ElementReader())->get((int) $change['target_id']);
+                ?>
+                <p class="notice notice-warning" style="padding:.5em 1em;margin:0 0 1em;">
+                    <?php esc_html_e('This is a GeneratePress Element — site furniture, not one page. Approving changes it everywhere it displays.', 'valolink-plugin'); ?>
+                    <?php if (!is_wp_error($element)) : ?>
+                        <br>
+                        <code><?php
+                            echo esc_html(trim(sprintf(
+                                '%s%s%s',
+                                (string) ($element['element_type'] ?? '?'),
+                                isset($element['block_type']) ? ' / ' . $element['block_type'] : '',
+                                isset($element['hook']) ? ' @ ' . $element['hook'] : '',
+                            )));
+                        ?></code>
+                        <?php if (!empty($element['display_conditions'])) : ?>
+                            — <?php echo esc_html(wp_json_encode($element['display_conditions'])); ?>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                </p>
+            <?php endif; ?>
+
             <?php if ($is_translation) : ?>
                 <?php
                 $source_id = (int) ($change['payload']['source_id'] ?? 0);
