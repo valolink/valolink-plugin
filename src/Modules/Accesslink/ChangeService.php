@@ -95,6 +95,12 @@ final class ChangeService
             );
         }
 
+        if ($action === ChangeRepository::ACTION_SYNC_TRANSLATION_META) {
+            return $this->announce(
+                $this->propose_sync_meta($input, $note_early, $requested_by, $idempotency_key),
+            );
+        }
+
         if ($action === ChangeRepository::ACTION_SET_LANGUAGE) {
             return $this->announce(
                 $this->propose_set_language($input, $note_early, $requested_by, $idempotency_key),
@@ -484,6 +490,121 @@ final class ChangeService
     }
 
     /**
+     * Copy behaviour postmeta a translation is missing from its source.
+     *
+     * Translations created before meta copying existed are inert in small ways
+     * that are hard to see and easy to misdiagnose: the front page translated
+     * here rendered its page title and lost its full-width layout purely
+     * because `_generate-disable-headline` and `_generate-full-width-content`
+     * never came across.
+     *
+     * Additive only. A key the translation already has is left alone, whatever
+     * its value, because the obvious thing to overwrite is exactly the thing
+     * that should differ — the English SEO title someone corrected after the
+     * Finnish one was copied in.
+     */
+    private function propose_sync_meta(
+        array $input,
+        ?string $note,
+        ?string $requested_by,
+        ?string $idempotency_key,
+    ): array|\WP_Error {
+        $tr = TranslationAdapterFactory::detect();
+        if (!$tr->available()) {
+            return new \WP_Error(
+                'translation_unavailable',
+                sprintf('No writable multilingual plugin on this site (detected: %s).', $tr->plugin()),
+                ['status' => 400],
+            );
+        }
+
+        $target_id = (int) ($input['target_id'] ?? 0);
+        $post = $target_id > 0 ? get_post($target_id) : null;
+        if (!$post instanceof \WP_Post) {
+            return new \WP_Error('not_found', 'No post with that id.', ['status' => 404]);
+        }
+        if (!in_array($post->post_type, $this->allowed_post_types(), true)) {
+            return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 400]);
+        }
+
+        $source_id = $this->translation_source($target_id);
+        if ($source_id === 0) {
+            return new \WP_Error(
+                'no_source',
+                'That post has no other-language original to copy from — it is either the source '
+                    . 'itself or not part of a translation group.',
+                ['status' => 409],
+            );
+        }
+
+        $missing = $this->missing_meta($source_id, $target_id);
+        if ($missing === []) {
+            return new \WP_Error(
+                'nothing_to_sync',
+                'That translation is not missing any postmeta its source has.',
+                ['status' => 409],
+            );
+        }
+
+        $id = $this->repo->insert([
+            'action'          => ChangeRepository::ACTION_SYNC_TRANSLATION_META,
+            'target_id'       => $target_id,
+            'post_type'       => $post->post_type,
+            'base_hash'       => hash('sha256', (string) wp_json_encode(array_keys($missing))),
+            'payload'         => ['source_id' => $source_id, 'keys' => array_keys($missing)],
+            'summary'         => $this->summarize(sprintf('%s — copy %d missing settings', $post->post_title, count($missing))),
+            'note'            => $note,
+            'requested_by'    => $requested_by,
+            'idempotency_key' => $idempotency_key,
+        ]);
+
+        $this->audit('accesslink_proposed', [
+            'change_id' => $id,
+            'action'    => ChangeRepository::ACTION_SYNC_TRANSLATION_META,
+            'post_id'   => $target_id,
+            'source_id' => $source_id,
+            'by'        => $requested_by,
+        ]);
+
+        return $this->repo->find($id) ?? [];
+    }
+
+    /** The default-language member of a post's translation group, 0 if none. */
+    public function translation_source(int $post_id): int
+    {
+        $tr = TranslationAdapterFactory::detect();
+        if (!$tr->available()) {
+            return 0;
+        }
+
+        $group   = $tr->translations($post_id);
+        $default = $tr->default_language();
+        $source  = (int) ($group[$default] ?? 0);
+
+        return $source === $post_id ? 0 : $source;
+    }
+
+    /**
+     * Meta the source has and the translation does not.
+     *
+     * @return array<string, mixed>
+     */
+    public function missing_meta(int $source_id, int $target_id): array
+    {
+        $target = get_post_meta($target_id);
+        $out    = [];
+
+        foreach (get_post_meta($source_id) as $key => $values) {
+            if (in_array($key, self::META_NOT_COPIED, true) || array_key_exists($key, $target)) {
+                continue;
+            }
+            $out[$key] = maybe_unserialize($values[0]);
+        }
+
+        return $out;
+    }
+
+    /**
      * Give a post a language it does not have.
      *
      * Exists because without it the translation flow dead-ends: content that
@@ -640,7 +761,16 @@ final class ChangeService
             return new \WP_Error('same_language', 'The source is already in that language.', ['status' => 400]);
         }
 
-        $group = $tr->translations($source_id);
+        // Members whose post is gone or trashed do not count — otherwise a
+        // translation rejected long ago keeps the language permanently claimed.
+        $group = array_filter(
+            $tr->translations($source_id),
+            static function (int $id): bool {
+                $post = get_post($id);
+
+                return $post instanceof \WP_Post && $post->post_status !== 'trash';
+            },
+        );
         if (isset($group[$lang])) {
             return new \WP_Error(
                 'already_translated',
@@ -824,6 +954,19 @@ final class ChangeService
      */
     private function announce(array|\WP_Error $result): array|\WP_Error
     {
+        // Every propose_* returns `$this->repo->find($id) ?? []`, so a failed
+        // insert arrives here as an empty array and would go out as a 201 with
+        // every field null. Caught in the one place they all pass through.
+        if (is_array($result) && $result === []) {
+            $this->audit('accesslink_queue_write_failed', [], 'error');
+
+            return new \WP_Error(
+                'queue_write_failed',
+                'The change could not be written to the queue.',
+                ['status' => 500],
+            );
+        }
+
         if (!is_wp_error($result) && ($result['status'] ?? '') === ChangeRepository::STATUS_PENDING) {
             (new ChangeNotifier($this->settings))->notify_queued($result);
         }
@@ -963,6 +1106,34 @@ final class ChangeService
             }
 
             $result = $applier->apply($target_id, (array) ($change['payload']['items'] ?? []));
+
+            // A menu is not a post, so no caching plugin hears about this. The
+            // change would be real and invisible until something else cleared
+            // the cache.
+            if (!is_wp_error($result)) {
+                CacheCleaner::purge_site();
+            }
+        } elseif ($change['action'] === ChangeRepository::ACTION_SYNC_TRANSLATION_META) {
+            $source_id = (int) ($change['payload']['source_id'] ?? 0);
+            if (!get_post($target_id) instanceof \WP_Post || !get_post($source_id) instanceof \WP_Post) {
+                return $this->fail($id, 'The translation or its source no longer exists.');
+            }
+
+            // Recomputed rather than replayed from the payload: a key filled in
+            // by hand since the proposal must stay as the human left it.
+            $missing = $this->missing_meta($source_id, $target_id);
+            if ($missing === []) {
+                return $this->mark_stale(
+                    $id,
+                    $target_id,
+                    'Those settings were filled in after this was proposed; there is nothing left to copy.',
+                );
+            }
+
+            foreach ($missing as $key => $value) {
+                add_post_meta($target_id, $key, $value);
+            }
+            $result = true;
         } elseif ($change['action'] === ChangeRepository::ACTION_SET_LANGUAGE) {
             $tr = TranslationAdapterFactory::detect();
             if (!get_post($target_id) instanceof \WP_Post) {
@@ -1148,9 +1319,15 @@ final class ChangeService
 
         // A rejected create leaves an orphan draft behind, so bin it. Trash
         // rather than delete — recoverable if the rejection was a mis-click.
-        // A translation draft is the same shape and leaves a half-linked
-        // translation group if it stays.
         if (in_array($change['action'], ChangeRepository::DRAFT_ACTIONS, true) && $change['target_id']) {
+            // A trashed translation that stays in its group blocks the retry it
+            // exists to allow: proposing the same translation again is refused
+            // as already_translated, pointing the agent at a post in the trash.
+            // Unlink first, so rejecting really does undo the proposal.
+            if ($change['action'] === ChangeRepository::ACTION_CREATE_TRANSLATION) {
+                TranslationAdapterFactory::detect()->unlink((int) $change['target_id']);
+            }
+
             wp_trash_post((int) $change['target_id']);
         }
 

@@ -104,6 +104,7 @@ final class QueuePage
         $is_translation = $change['action'] === ChangeRepository::ACTION_CREATE_TRANSLATION;
         $is_set_language = $change['action'] === ChangeRepository::ACTION_SET_LANGUAGE;
         $is_menu = $change['action'] === ChangeRepository::ACTION_UPDATE_MENU;
+        $is_sync_meta = $change['action'] === ChangeRepository::ACTION_SYNC_TRANSLATION_META;
         ?>
         <div class="card" style="max-width:none;margin-bottom:1em;padding:1em;">
             <h3 style="margin-top:0;">
@@ -174,6 +175,8 @@ final class QueuePage
                 </p>
             <?php elseif ($is_menu) : ?>
                 <?php $this->render_menu_diff($change); ?>
+            <?php elseif ($is_sync_meta) : ?>
+                <?php $this->render_meta_sync($change); ?>
             <?php elseif ($is_set_language) : ?>
                 <p>
                     <?php
@@ -206,7 +209,7 @@ final class QueuePage
                             <?php esc_html_e('Preview draft', 'valolink-plugin'); ?>
                         </a>
                     <?php else : ?>
-                        <?php if (!$is_set_language) : ?>
+                        <?php if (!$is_set_language && !$is_sync_meta) : ?>
                             <?php // set_language changes no content, so a "proposed version" would
                                   // render the page exactly as it already is. ?>
                             <a class="button button-secondary" target="_blank" rel="noopener"
@@ -308,6 +311,46 @@ final class QueuePage
             echo '<h4>' . esc_html($field) . '</h4>';
             $this->render_field_diff($current, (string) $proposed);
         }
+    }
+
+    /**
+     * The settings a translation is missing, listed by name and value.
+     *
+     * No before-and-after, because there is no "before": every key here is
+     * absent on the translation. What a reviewer needs is which settings are
+     * about to appear and what they will say.
+     */
+    private function render_meta_sync(array $change): void
+    {
+        $source_id = (int) ($change['payload']['source_id'] ?? 0);
+        $service = new ChangeService($this->settings, $this->repo, new PostApplier());
+        $missing = $service->missing_meta($source_id, (int) $change['target_id']);
+
+        if ($missing === []) {
+            echo '<p><strong>' . esc_html__('Nothing left to copy — these were filled in after the proposal.', 'valolink-plugin') . '</strong></p>';
+
+            return;
+        }
+
+        printf(
+            '<p>%s</p>',
+            esc_html(sprintf(
+                /* translators: 1: number of settings, 2: source post title. */
+                __('Copies %1$d settings this translation is missing from %2$s. Existing values are never overwritten.', 'valolink-plugin'),
+                count($missing),
+                get_the_title($source_id),
+            )),
+        );
+
+        echo '<table class="widefat striped"><tbody>';
+        foreach ($missing as $key => $value) {
+            printf(
+                '<tr><td style="width:35%%"><code>%s</code></td><td>%s</td></tr>',
+                esc_html($key),
+                esc_html(mb_substr(is_scalar($value) ? (string) $value : (string) wp_json_encode($value), 0, 160)),
+            );
+        }
+        echo '</tbody></table>';
     }
 
     /**

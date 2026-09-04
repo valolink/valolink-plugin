@@ -32,6 +32,10 @@ agent                          site                         human
 
 A change ends in exactly one of: `applied`, `rejected`, `failed`, `stale`.
 
+Rejecting a `create` or `create_translation` trashes the draft it made, and a rejected translation is also **unlinked from its translation group** first. Without that, rejecting was a one-way door: the trashed draft still held the language, so re-proposing the same translation was refused as `already_translated`, pointing the agent at a post in the trash. Proposing now also ignores group members whose post is trashed or gone, so translations rejected before this still do not block a retry.
+
+Changes that are not post saves purge the page cache explicitly (`CacheCleaner`). Post edits need no help — a caching plugin hooks `save_post` and clears the right pages, confirmed by probe against a warmed cache. A menu is not a post, so nothing fires, and the change would be real but invisible until something else happened to clear the cache.
+
 A rejection may carry `review_note` — the reviewer saying why, entered next to the Reject button and returned to the agent on `GET /changes/{id}`. Without it a rejection teaches nothing and the same proposal comes back; it is the only feedback channel the loop has.
 
 **Notification.** Queuing a change emails the addresses configured on the Accesslink screen (the site admin address by default), at most one message per fifteen minutes however many changes arrive, and a wp-admin notice appears regardless in case mail is unreliable. Built on `wp_mail()` alone — the Email module routes it through Resend when enabled, WordPress falls back to PHP mail when it isn't. A failing mailer is logged and swallowed: the change is already stored by then, and losing it because SMTP is down would be far worse than a missed email.
@@ -188,6 +192,8 @@ The document is cloned from the source and only those leaves are replaced, so th
 **Only words may change.** The markup skeleton — every tag and block delimiter with its attributes, text removed — is compared between source and result, and a mismatch is refused. That is a tighter guarantee than sanitising and, unlike sanitising, it does no damage: `ContentSanitizer` is built for content an agent authored, and running it over a clone of the site's own markup stripped the `style` off 13 `<mark>` highlights and parts of 21 inline SVG icons on this project's own front page. Because the skeleton check makes markup injection impossible, `replace_text_at`'s inline-only rule is relaxed for this action alone — the SVG in the replacement is the SVG that was already there.
 
 **`set_language`** exists because without it the whole flow dead-ended: content predating the multilingual plugin has no language, `create_translation` refuses it, and there was no way to fix that except in wp-admin. It takes `{target_id, lang}` and only ever fills a gap — a post that already has a language is refused with `already_has_language`, since changing one pulls the post out of its translation group, which is a data decision rather than a content one. Its staleness question is simply whether the post still has no language when a human gets to it.
+
+**`sync_translation_meta`** repairs a translation made before postmeta copying existed — the kind that renders a page title its original hides, or has lost a full-width layout. It takes `{target_id}` and copies from the translation's source **only the keys that are absent**. Never overwriting is the whole design: the obvious thing to overwrite is exactly the thing that should differ, namely the target-language SEO title someone corrected after the source's was copied in. Refused when nothing is missing.
 
 `texts` is optional. Omitting it clones the source verbatim, which is what a language-neutral post needs — a GeneratePress Element that only injects CSS has nothing to translate but still needs a counterpart in the target language to run there at all.
 

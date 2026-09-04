@@ -10,7 +10,7 @@ namespace Valolink\Plugin\Modules\Accesslink;
  */
 final class ChangeTable
 {
-    public const SCHEMA_VERSION = 2;
+    public const SCHEMA_VERSION = 3;
     public const VERSION_OPTION = 'valolink_changes_schema_version';
 
     public static function table_name(): string
@@ -32,6 +32,11 @@ final class ChangeTable
         $table   = self::table_name();
         $charset = $wpdb->get_charset_collate();
 
+        // Widened from varchar(20) at schema 3: `sync_translation_meta` is 21
+        // characters, and the insert failed with no error surfaced anywhere —
+        // the API answered with a row of nulls. Action names are identifiers an
+        // agent types, so they will keep getting longer.
+        //
         // dbDelta is picky — single CREATE TABLE, two spaces after PRIMARY KEY.
         //
         // base_hash is the staleness guard: a digest of the target's watched
@@ -45,7 +50,7 @@ final class ChangeTable
             updated_at datetime NOT NULL,
             status varchar(20) NOT NULL DEFAULT 'pending',
             entity_type varchar(32) NOT NULL DEFAULT 'post',
-            action varchar(20) NOT NULL,
+            action varchar(32) NOT NULL,
             target_id bigint(20) unsigned DEFAULT NULL,
             post_type varchar(32) NOT NULL DEFAULT 'post',
             base_hash char(64) DEFAULT NULL,

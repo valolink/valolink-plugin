@@ -122,14 +122,34 @@ translate a site cannot finish the job on its own.
   theme location, including Polylang's per-language location map. Those are
   one-time structural decisions; repointing items is the repetitive part and is
   now covered.
-- [ ] **Repairing an existing translation's postmeta.** New translations copy it;
-  ones created earlier cannot be fixed except by calling `copy_meta` directly.
-- [ ] **Purging the page cache after a non-content change.** Approving a post
-  edit is visible to visitors immediately — WP Rocket hooks the save, verified by
-  probe. Menu and option changes are not post saves and needed a manual purge, so
-  anything that grows beyond post edits needs an explicit purge step.
-- [ ] **Permanently deleting a draft.** Rejection trashes; clearing up a mangled
-  draft needed `wp_delete_post`.
+- [x] **Repairing an existing translation's postmeta** — shipped as
+  `sync_translation_meta`, which copies from the source only the keys the
+  translation is *missing*. Additive on purpose: the obvious thing to overwrite
+  is exactly the thing that should differ, the target-language SEO title someone
+  corrected after the source's was copied in. Verified that a stripped
+  `_generate-disable-headline` came back while a hand-edited `rank_math_title`
+  was left alone.
+- [x] **Purging the page cache after a non-content change** — shipped as
+  `CacheCleaner`, called after a menu apply. Post edits still need no help; a
+  menu is not a post, so nothing fires and the change would be real but
+  invisible. Verified by warming the English page as a visitor, approving a
+  relabel, and seeing the new label without any manual purge. Guarded calls for
+  WP Rocket, LiteSpeed, W3TC and WP Super Cache, plus an action for anything
+  else.
+- [x] **Permanently deleting a draft** — closed, but not by adding a delete
+  action. WordPress empties the trash by itself after `EMPTY_TRASH_DAYS`, and a
+  trashed draft is not publicly reachable, so nothing needed deleting; adding a
+  delete verb would have widened the blast radius for no gain. What *was* broken
+  is that a rejected translation stayed in its translation group, so re-proposing
+  it was refused as `already_translated` pointing at a post in the trash —
+  rejection is now an unlink as well as a trash, and proposing ignores trashed
+  group members so older rejections do not block a retry either.
+
+- [x] **The `action` column was too narrow.** `varchar(20)` against a 21-character
+  `sync_translation_meta`: the insert failed, nothing surfaced, and the API
+  answered `201` with a row of nulls. Widened to `varchar(32)` at schema 3, and
+  `announce()` now converts an empty result into a `queue_write_failed` error, so
+  a failed queue write can never again look like a successful proposal.
 
 #### For the main branch, not this one
 

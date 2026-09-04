@@ -63,6 +63,10 @@ final class UnsupportedTranslationAdapter implements TranslationAdapter
         );
     }
 
+    public function unlink(int $post_id): void
+    {
+    }
+
     public function insert(array $postarr, string $lang, array $translations): int|\WP_Error
     {
         return new \WP_Error(

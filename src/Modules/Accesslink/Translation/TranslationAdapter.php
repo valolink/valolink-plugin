@@ -56,4 +56,7 @@ interface TranslationAdapter
 
     /** Language slug of a taxonomy term (a menu, for instance), '' when none. */
     public function language_of_term(int $term_id): string;
+
+    /** Remove a post from its translation group, leaving the others linked. */
+    public function unlink(int $post_id): void;
 }

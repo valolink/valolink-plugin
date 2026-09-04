@@ -123,6 +123,31 @@ final class PolylangAdapter implements TranslationAdapter
             : new \WP_Error('set_language_failed', 'Polylang did not accept that language for this post.');
     }
 
+    public function unlink(int $post_id): void
+    {
+        if (!$this->available() || !function_exists('pll_save_post_translations')) {
+            return;
+        }
+
+        // No pll_* function removes one post from a group: pll_save_post_translations
+        // sets the group for the ids it is given and will not shrink it, and
+        // dropping the post's own term relationship leaves the shared term's map
+        // still naming it — which is what pll_get_post_translations reads. The
+        // model method is what Polylang's own admin calls for this, so it is the
+        // one path that actually updates both sides.
+        $model = function_exists('PLL') ? PLL()->model->post ?? null : null;
+        if ($model !== null && method_exists($model, 'delete_translation')) {
+            $model->delete_translation($post_id);
+
+            return;
+        }
+
+        // Fall back to detaching the post alone. The group will still claim it,
+        // but a trashed member is ignored when proposing, so a retry is not
+        // blocked either way.
+        wp_delete_object_term_relationships($post_id, 'post_translations');
+    }
+
     public function insert(array $postarr, string $lang, array $translations): int|\WP_Error
     {
         if (!$this->available()) {

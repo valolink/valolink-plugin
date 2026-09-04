@@ -503,6 +503,13 @@ final class GuideBuilder
         $md[] = '  source language\'s title and description. Propose an `update` with';
         $md[] = '  `seo_title` / `seo_description` against the new post to correct them.';
         $md[] = '';
+        $md[] = 'A translation made before that copying existed can be missing the settings that';
+        $md[] = 'make it behave like its original — rendering a page title the source hides, or';
+        $md[] = 'losing a full-width layout. `sync_translation_meta` with `{target_id}` copies';
+        $md[] = 'across only what is **absent**; a value already there is never overwritten, so it';
+        $md[] = 'cannot undo the English SEO title you just corrected. It is refused when there is';
+        $md[] = 'nothing missing.';
+        $md[] = '';
         $md[] = 'A translated page is not a translated site. Navigation menus are not editable';
         $md[] = 'through this API at all, and internal links keep pointing at source-language';
         $md[] = 'pages until those pages are themselves translated. Say so rather than implying';

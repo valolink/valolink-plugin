@@ -25,6 +25,7 @@ final class ChangeRepository
     public const ACTION_CREATE_TRANSLATION = 'create_translation';
     public const ACTION_SET_LANGUAGE       = 'set_language';
     public const ACTION_UPDATE_MENU        = 'update_menu';
+    public const ACTION_SYNC_TRANSLATION_META = 'sync_translation_meta';
 
     /**
      * Every action `propose()` accepts.
@@ -45,12 +46,14 @@ final class ChangeRepository
         self::ACTION_CREATE_TRANSLATION,
         self::ACTION_SET_LANGUAGE,
         self::ACTION_UPDATE_MENU,
+        self::ACTION_SYNC_TRANSLATION_META,
     ];
 
     /** Actions that exist only where a multilingual plugin does. */
     public const TRANSLATION_ACTIONS = [
         self::ACTION_CREATE_TRANSLATION,
         self::ACTION_SET_LANGUAGE,
+        self::ACTION_SYNC_TRANSLATION_META,
     ];
 
     /**
