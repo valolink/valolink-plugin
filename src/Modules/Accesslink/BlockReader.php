@@ -29,6 +29,9 @@ final class BlockReader
     public const MAX_BLOCKS   = 400;
     public const TEXT_PREVIEW = 200;
 
+    /** Block delimiters are HTML comments; both opening and closing forms. */
+    private const DELIMITER_PATTERN = '/<!--\s+\/?wp:.*?-->/s';
+
     /**
      * Flatten the tree into an addressable list.
      *
@@ -130,37 +133,65 @@ final class BlockReader
      * which turns an empty object into an empty array; `serialize_blocks()`
      * then writes it back as `[]`. So a GenerateBlocks block carrying
      * `{"styles":{}}` comes out as `{"styles":[]}` — an attribute rewritten on
-     * a block the edit never touched, on every text edit, silently.
+     * a block the edit never touched, silently, on every edit.
      *
-     * A text or single-block replacement changes inner HTML only and never a
-     * delimiter, so when the delimiter sequence is the same length the
-     * originals are by definition the correct ones to keep. A differing length
-     * means a structural change, where the sequence legitimately differs and
-     * there is nothing safe to map onto.
+     * Restored by identity rather than by position, so this works for the
+     * structural actions too. Round-tripping the *original* through the same
+     * parse-and-serialise pair yields, for each delimiter, exactly the mangled
+     * form it would take; pairing those with the originals gives a lookup from
+     * "what serialisation produces" back to "what the document actually said".
+     * Inserting, deleting or moving a block changes which delimiters appear and
+     * in what order, but not what each one serialises to, so every delimiter
+     * that survives the edit is restored and a genuinely new one is left alone.
      */
     private function preserve_delimiters(string $original, string $rebuilt): string
     {
-        $pattern = '/<!--\s+\/?wp:.*?-->/s';
-
-        if (preg_match_all($pattern, $original, $old) === false) {
+        $map = $this->delimiter_map($original);
+        if ($map === []) {
             return $rebuilt;
         }
-        if (preg_match_all($pattern, $rebuilt, $new) === false) {
-            return $rebuilt;
-        }
-        if (count($old[0]) !== count($new[0])) {
-            return $rebuilt;
-        }
-
-        $i = 0;
 
         return (string) preg_replace_callback(
-            $pattern,
-            static function () use ($old, &$i): string {
-                return $old[0][$i++];
-            },
+            self::DELIMITER_PATTERN,
+            static fn (array $m): string => $map[$m[0]] ?? $m[0],
             $rebuilt,
         );
+    }
+
+    /**
+     * Map of serialised delimiter => the original's own text.
+     *
+     * @return array<string, string>
+     */
+    private function delimiter_map(string $original): array
+    {
+        if (preg_match_all(self::DELIMITER_PATTERN, $original, $before) === false) {
+            return [];
+        }
+        if ($before[0] === []) {
+            return [];
+        }
+
+        $roundtripped = serialize_blocks(parse_blocks($original));
+        if (preg_match_all(self::DELIMITER_PATTERN, $roundtripped, $after) === false) {
+            return [];
+        }
+
+        // A count mismatch means the round trip did something more interesting
+        // than reformat JSON, and guessing at the pairing would be worse than
+        // leaving the document as serialised.
+        if (count($before[0]) !== count($after[0])) {
+            return [];
+        }
+
+        $map = [];
+        foreach ($after[0] as $i => $serialised) {
+            if ($serialised !== $before[0][$i]) {
+                $map[$serialised] = $before[0][$i];
+            }
+        }
+
+        return $map;
     }
 
     /** The editable text of a block: the inner HTML of its wrapper element. */
@@ -305,7 +336,7 @@ final class BlockReader
             return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path));
         }
 
-        return serialize_blocks($blocks);
+        return $this->preserve_delimiters($content, serialize_blocks($blocks));
     }
 
     public function delete_block(string $content, string $path): string|\WP_Error
@@ -324,7 +355,7 @@ final class BlockReader
             return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path));
         }
 
-        return serialize_blocks($blocks);
+        return $this->preserve_delimiters($content, serialize_blocks($blocks));
     }
 
     /**
@@ -377,7 +408,17 @@ final class BlockReader
         }
         $adjusted = $tgt_parent === '' ? (string) $tgt_index : $tgt_parent . '.' . $tgt_index;
 
-        return $this->insert_block($removed, $adjusted, $position, $markup);
+        $moved = $this->insert_block($removed, $adjusted, $position, $markup);
+        if (is_wp_error($moved)) {
+            return $moved;
+        }
+
+        // One more restoration, against the *original* document. The steps above
+        // each preserve delimiters relative to what they were given, but the
+        // block being moved is absent from the document insert_block works on,
+        // so its own delimiter has nothing to map back to there. Only the
+        // original still contains it.
+        return $this->preserve_delimiters($content, $moved);
     }
 
     /** Serialize just the block at $path, for re-insertion elsewhere. */
