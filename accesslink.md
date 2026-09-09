@@ -40,7 +40,9 @@ A rejection may carry `review_note` — the reviewer saying why, entered next to
 
 **Notification.** Queuing a change emails the addresses configured on the Accesslink screen (the site admin address by default), at most one message per fifteen minutes however many changes arrive, and a wp-admin notice appears regardless in case mail is unreliable. Built on `wp_mail()` alone — the Email module routes it through Resend when enabled, WordPress falls back to PHP mail when it isn't. A failing mailer is logged and swallowed: the change is already stored by then, and losing it because SMTP is down would be far worse than a missed email.
 
-`stale` is the interesting one. An update proposal records a hash of the fields it intends to touch plus the post's modification time. That hash is recomputed at approval; if it disagrees, somebody edited the post in the meantime and the proposal is answering a stale question. The change is parked rather than applied, and nothing is overwritten. Re-propose against the current version.
+`stale` is the interesting one. An update proposal records a hash of the current values of the fields it intends to touch. That hash is recomputed at approval; if it disagrees, somebody changed one of those values in the meantime and the proposal is answering a stale question. The change is parked rather than applied, and nothing is overwritten. Re-propose against the current version.
+
+The hash deliberately does **not** include the post's modification time any more. It used to, and then two proposals touching disjoint fields on one post could never both apply: approving the first bumped the stamp and parked the second as stale, though nothing it was replacing had changed. Block and structural changes still hash the whole document, because paths are positional.
 
 ## Create vs update
 
@@ -112,9 +114,9 @@ Both `actions` and `capabilities` are derived from the code that enforces them, 
 
 The read half. Core's `/wp/v2` can't be reached with an Accesslink key, can't see drafts, and returns far more per post than an agent wants to pay for.
 
-`GET /content` — query `search`, `post_type`, `status`, `limit` (max 50, default 20). Returns `id`, `post_type`, `status`, `title`, `slug`, `modified_gmt`, `link`, `content_chars` and a 280-character plain-text excerpt.
+`GET /content` — query `search`, `post_type`, `status`, `limit` (max 50, default 20). Returns `id`, `post_type`, `status`, `title`, `slug`, `modified_gmt`, `link`, `content_chars` and a 280-character plain-text excerpt. Add `fields=seo,terms,media,layout` (any subset) to include the SEO fields, category and tag slugs, the featured image, and the page layout per row — an audit of fifty posts is then one call rather than fifty. The default row stays lean on purpose.
 
-`GET /content/{id}` — adds full `post_content`, `post_excerpt`, a `truncated` flag past 60000 characters, and `pending_changes`: ids of proposals already queued against that post. A non-empty list means someone has already proposed an edit; stacking another is how you earn a `stale` rejection.
+`GET /content/{id}` — adds full `post_content`, `post_excerpt`, a `truncated` flag past 60000 characters, and `pending_changes`: ids of proposals already queued against that post. A non-empty list means someone has already proposed an edit on it; read those first. On a GeneratePress site it also carries `layout` (`sidebar_layout`, `content_container`, `hide_title`), and on a `gp_elements` post an `element` object in the same names an update may send back.
 
 Scope is the same `allowed_post_types` list that governs proposing, so a CPT outside it returns `403` on read as well as on write. Password-protected posts are never exposed. Visible statuses are `publish`, `draft`, `pending`, `private`, `future` — trash and auto-drafts never appear.
 
@@ -124,7 +126,7 @@ Note this widens the key beyond propose-only: it can read unpublished content. T
 
 Lookups for the two fields whose valid values an agent cannot guess.
 
-`GET /taxonomies` returns the category and tag slugs it may assign. `GET /media` returns images available for `featured_media` (query `search`, `limit`), with id, title, alt text and dimensions.
+`GET /taxonomies` returns the category and tag slugs it may assign, with their ids — proposals take slugs, but a query-loop block references terms by id. `GET /media` returns images available for `featured_media` (query `search`, `limit`), with id, title, alt text, dimensions and `attached_to`, the post the file was uploaded to, which is the only handle on a library of camera-filename images.
 
 Both exist because Accesslink refuses to create terms and cannot upload files — so without them the only discovery route is to guess and read the error.
 
@@ -162,7 +164,7 @@ Editing text is not enough to write a page, so three structural actions sit alon
 | `delete_block` | `target_id`, `path` |
 | `move_block` | `target_id`, `path`, `target_path`, `position` |
 
-Insert places the new block as a **sibling** of the one at `path`. Sibling-only is deliberate: inserting *inside* an arbitrary block raises the question of where among its children and text it goes, and for a leaf there is no sensible answer. Both `move_block` paths are given as they appear in the current document — removing the source shifts later siblings, and that adjustment is handled internally rather than asked of the agent.
+Insert places the new block as a **sibling** of the one at `path`. Sibling-only is deliberate: inserting *inside* an arbitrary block raises the question of where among its children and text it goes, and for a leaf there is no sensible answer. The one exception is the document itself: `insert_block` with no `path` and `position` `start` or `end` prepends or appends at the top level, which is the usual shape of "add a call-to-action at the end" and used to cost a read of the block tree just to find the last sibling's path. Both `move_block` paths are given as they appear in the current document — removing the source shifts later siblings, and that adjustment is handled internally rather than asked of the agent.
 
 `markup` must parse to exactly one block whose type is **registered on this site**. A block from a plugin that isn't installed is refused by name, which is how plugin differences surface: as a narrower set of possibilities, never as a failure.
 
@@ -174,7 +176,7 @@ Staleness for these covers the **whole document**, not one block, because paths 
 
 Present when the site runs a multilingual plugin Accesslink can drive. Polylang 3.7+ is supported through its `pll_*` API; WPML is detected and reported unwritable rather than half-supported. `GET /guide` names the resolved adapter.
 
-`GET /languages` returns the configured languages, default first. `GET /content/{id}/translations` returns the post's translation group, the languages it is `missing`, and an `outdated` flag per translation — a timestamp comparison against the source, since Polylang tracks no such thing itself. It flags "worth re-reading", not "definitely wrong".
+`GET /languages` returns the configured languages, default first. `GET /content/{id}/translations` returns the post's translation group, its `source_id` (the default-language member when there is one), the languages it is `missing`, and an `outdated` flag per translation — a timestamp comparison against that source, since Polylang tracks no such thing itself. It flags "worth re-reading", not "definitely wrong". The comparison is anchored to the source whichever member is queried: read from the English page, the Finnish original used to be flagged outdated for being older, which was the wrong advice in the wrong direction.
 
 Translating does **not** mean writing `post_content`. Read `/content/{id}/blocks`, take each editable block's `text_html` (its inner HTML, untruncated — `text` is only a 200-character preview), replace the words, and send them back keyed by path:
 
@@ -222,6 +224,8 @@ This is what the menu work was actually waiting on. The write was never the hard
 ### GET /elements
 
 GeneratePress Elements are ordinary posts of the `gp_elements` type, so once an operator adds that type to *Allowed post types* every existing read and write applies to them unchanged. What is not ordinary is what they mean: an Element is site furniture — a hero, a footer, a script injected into `wp_head` — and its behaviour lives in `_generate_*` postmeta, not in its content.
+
+That meta is now proposable as fields (see the field table): a footer call-to-action is one `create` with `element_type`, `block_type`, `hook`, and display and exclude conditions, drafted with its behaviour already set. `create_translation` still copies the meta across from the source. Before this, a created Element arrived inert and the reviewer finished it in the editor.
 
 `GET /elements` surfaces that meta: `element_type` (`block` / `hook` / `layout`), `block_type`, `hook` and priority, and the display, exclude and user conditions. It also reports `editable`, so an agent learns whether proposing against Elements is permitted here without first having a proposal refused. Without this an agent sees a pile of oddly-named pages and cannot tell that the footer CTA is one Element rather than something repeated on forty pages.
 
@@ -326,6 +330,10 @@ Send `X-Accesslink-Agent: <name>` to identify the caller in the queue and the au
 | `categories`, `tags` | Arrays of **existing** term slugs. Unknown slugs are refused with the valid list; Accesslink never creates terms, because an agent inventing near-duplicates quietly wrecks a taxonomy. Refused outright on post types without that taxonomy. |
 | `featured_media` | Attachment id, must be an image. `0` clears it. Uploading is not possible. |
 | `post_status` | `draft`, `pending`, `publish`, `private`. Settable on an update as well as a create, so unpublishing and publishing can be proposed. |
+| `sidebar_layout`, `content_container`, `hide_title` | GeneratePress per-page layout, present only when that theme is active: the same three choices as the editor's Layout panel, with `default` meaning "inherit the site setting". A page built from full-width front-page sections wants `no-sidebar` and `full-width`, or it opens inside whatever the theme default is. Refused on `gp_elements`. |
+| `element_type`, `block_type`, `hook`, `custom_hook`, `hook_priority`, `display_conditions`, `exclude_conditions`, `user_conditions` | What a GeneratePress Element *does*, in the names `GET /elements` returns. Only on `gp_elements`, and listed only when that type is allowed. Hooks are validated against GP Premium's own list; condition rules are checked for shape (`{"rule": "post:page", "object": "712"}`), not against the site's rule catalogue — the editor is where a wrong one shows up immediately. |
+
+A `create` also takes a top-level `slug`. A new draft has nothing to redirect from, so it needs none of the care a rename does; renaming an existing post is still not offered.
 
 Everything is validated at **propose** time, not just at apply, so an agent finds out immediately and the reviewer's queue doesn't fill with proposals that were never applicable. Apply re-checks anyway, since the site can move underneath a queued change.
 
@@ -335,7 +343,7 @@ The agent uses normalised names; Accesslink maps them onto whatever the site run
 
 Scope is three fields on purpose. `noindex` is excluded: an agent proposing to deindex a page is a decision with delayed, silent, severe consequences that a reviewer skimming a diff would not weigh correctly.
 
-Existing values frequently contain plugin template variables (`%sep%`, `%sitename%`) that expand at render time. The guide tells agents to preserve them.
+Existing values frequently contain plugin template variables that expand at render time — `%%sep%%` on Yoast, `%sep%` on Rank Math. The adapter owns that spelling: the guide prints the site's own variables and the title template a post type falls back to, and the review screen renders a proposed `seo_title` or `seo_description` through the plugin's replace-vars with its length, so a reviewer judges what Google will show rather than the stored string. The guide hardcoded Rank Math's syntax once and was wrong on every Yoast site.
 
 Errors: `400` bad action/fields/post type · `401` bad key · `404` no such target · `503` writes switched off.
 

@@ -38,4 +38,20 @@ interface SeoAdapter
 
     /** True when this adapter can actually store the fields. */
     public function can_write(): bool;
+
+    /**
+     * The plugin's own spelling of the template variables an agent is most
+     * likely to meet, keyed by a plugin-neutral name: title, sep, sitename.
+     * Yoast writes `%%sep%%`, Rank Math `%sep%`; a guide that hardcodes one
+     * of them is wrong on half the sites.
+     *
+     * @return array<string, string>
+     */
+    public function variables(): array;
+
+    /** The title template a post type falls back to when `seo_title` is empty, '' if unknown. */
+    public function title_template(string $post_type): string;
+
+    /** A value with its template variables expanded for this post, '' if the plugin cannot do it here. */
+    public function render(int $post_id, string $value): string;
 }

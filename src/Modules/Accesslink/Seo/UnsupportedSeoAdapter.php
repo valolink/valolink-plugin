@@ -47,4 +47,19 @@ final class UnsupportedSeoAdapter implements SeoAdapter
     {
         // Intentionally empty — can_write() is false, callers must check.
     }
+
+    public function variables(): array
+    {
+        return [];
+    }
+
+    public function title_template(string $post_type): string
+    {
+        return '';
+    }
+
+    public function render(int $post_id, string $value): string
+    {
+        return '';
+    }
 }

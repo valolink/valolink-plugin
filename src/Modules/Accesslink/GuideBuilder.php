@@ -150,7 +150,7 @@ final class GuideBuilder
         $site     = get_bloginfo('name');
         $types    = implode(', ', $this->service->allowed_post_types());
         $applier  = new PostApplier();
-        $fields   = implode(', ', $applier->allowed_fields());
+        $fields   = implode(', ', $applier->allowed_fields($this->service->allowed_post_types()));
         $statuses = implode(', ', PostApplier::ALLOWED_STATUSES);
 
         $md = [];
@@ -310,10 +310,26 @@ final class GuideBuilder
             $md[] = 'Sending an empty string clears the value and lets the plugin fall back to its';
             $md[] = 'global template, which is usually what you want rather than a blank tag.';
             $md[] = '';
-            $md[] = 'Existing values often contain the plugin\'s own template variables, like';
-            $md[] = '`%sep%` or `%sitename%`, which expand when the page renders. Preserve them';
-            $md[] = 'unless you have a reason not to — replacing them with literal text hardcodes';
-            $md[] = 'something the site owner configured globally.';
+            // The variable syntax comes from the adapter: Yoast writes %%sep%%,
+            // Rank Math %sep%, and a guide that hardcodes either is wrong on
+            // the other half of the sites.
+            $vars  = $seo->variables();
+            $sep   = (string) ($vars['sep'] ?? '');
+            $site  = (string) ($vars['sitename'] ?? '');
+            $title = (string) ($vars['title'] ?? '');
+            $md[] = 'Existing values often contain the plugin\'s own template variables'
+                . ($sep !== '' ? ' — here `' . $title . '`, `' . $sep . '` and `' . $site . '` —' : ',')
+                . ' which expand when the page';
+            $md[] = 'renders. Preserve them unless you have a reason not to — replacing them with';
+            $md[] = 'literal text hardcodes something the site owner configured globally.';
+            $template = $seo->title_template('page') ?: $seo->title_template('post');
+            if ($template !== '') {
+                $md[] = '';
+                $md[] = 'When `seo_title` is empty, titles here render through the template `' . $template . '`.';
+                if ($sep !== '') {
+                    $md[] = 'When you set one, keep the site name on it: end with `' . $sep . ' ' . $site . '`.';
+                }
+            }
         } else {
             $md[] = sprintf('SEO fields are **not available** on this site (%s).', $seo->label());
         }
@@ -325,6 +341,17 @@ final class GuideBuilder
         $md[] = '  inventing near-duplicate terms quietly wrecks a taxonomy.';
         $md[] = "- `featured_media` — an attachment id. Browse with `GET {$base}/media`. Send `0` to clear.";
         $md[] = '  Uploading is not possible; you can only pick an image already in the library.';
+        if (LayoutMeta::available()) {
+            $md[] = '- `sidebar_layout`, `content_container`, `hide_title` — the page\'s GeneratePress layout, the';
+            $md[] = '  same three choices as the editor\'s Layout panel. `sidebar_layout`: '
+                . implode(', ', LayoutMeta::SIDEBAR_VALUES) . '.';
+            $md[] = '  `content_container`: ' . implode(', ', LayoutMeta::CONTAINER_VALUES)
+                . '. `hide_title`: true or false. `default` inherits the site';
+            $md[] = '  setting. A page built from full-width sections wants `no-sidebar` and `full-width`, or it';
+            $md[] = '  renders inside whatever the theme default is. Current values are `layout` on `GET /content/{id}`.';
+        }
+        $md[] = '- `slug` — top-level on a `create`, beside `fields`: the URL slug of the new draft. Renaming an';
+        $md[] = '  existing post is not offered; a rename without a redirect is worse than none.';
         $md[] = '';
         $md[] = 'A `create` is drafted immediately so a human can preview it in the real theme.';
         $md[] = 'The draft is not publicly reachable; approving is what publishes it. An `update`';
@@ -421,6 +448,8 @@ final class GuideBuilder
         $md[] = '  full markup, delimiters included). Inserts as a *sibling* of the block at';
         $md[] = '  `path`. Copy the shape of a block already on the page rather than inventing';
         $md[] = '  markup; if the block type is not installed here the proposal is refused.';
+        $md[] = '  Or no `path` at all with `position` `start` or `end`, to prepend or append at the';
+        $md[] = '  top level of the document — the usual shape of "add a call-to-action at the end".';
         $md[] = '- `delete_block` — `path`.';
         $md[] = '- `move_block` — `path`, `target_path`, `position`. Both paths as they appear';
         $md[] = '  in the current document; the shift from removing the source is handled for you.';
@@ -545,6 +574,22 @@ final class GuideBuilder
         $md[] = '';
         $md[] = 'That cuts both ways — editing one affects every page it renders on, so say in';
         $md[] = 'your `note` what you expect it to affect. The reviewer is shown the same warning.';
+        $md[] = '';
+        $md[] = 'What an Element *does* is proposable too, on a `create` or an `update`, in the same';
+        $md[] = "names `GET {$base}/elements` returns: `element_type` (" . implode(', ', ElementReader::ELEMENT_TYPES) . '),';
+        $md[] = '`block_type` for a Block Element (' . implode(', ', ElementReader::BLOCK_TYPES) . '),';
+        $md[] = '`hook` and `hook_priority` for hook-driven ones (`custom` plus `custom_hook` for a hook not';
+        $md[] = 'on the list), `display_conditions` and `exclude_conditions` as lists of';
+        $md[] = '`{"rule": "post:page", "object": "712"}`, and `user_conditions` as a list like `["general:all"]`.';
+        $md[] = 'Rules use GeneratePress\'s own grammar — copy them from an existing Element rather than';
+        $md[] = 'inventing one. Hooks accepted here: ' . implode(', ', array_map(
+            static fn (string $h): string => '`' . $h . '`',
+            ElementReader::hooks(),
+        )) . '.';
+        $md[] = '';
+        $md[] = 'A footer call-to-action is therefore one proposal: a Block Element with `block_type` `hook`,';
+        $md[] = '`hook` `generate_before_footer`, displayed on `general:site`, with the pages that carry';
+        $md[] = 'their own copy in `exclude_conditions`.';
         $md[] = '';
 
         if (TranslationAdapterFactory::detect()->is_translated_type(ElementReader::POST_TYPE)) {

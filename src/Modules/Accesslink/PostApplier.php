@@ -49,8 +49,16 @@ final class PostApplier
         return $this->seo;
     }
 
-    /** Every field an agent may set on this site right now. */
-    public function allowed_fields(): array
+    /**
+     * Every field an agent may set on this site right now.
+     *
+     * Element fields are listed only when the site both has GeneratePress
+     * Elements and allows agents at that post type — otherwise they would
+     * advertise a capability every proposal naming them is refused for.
+     *
+     * @param array<int, string>|null $post_types the site's allowed post types, if known
+     */
+    public function allowed_fields(?array $post_types = null): array
     {
         $fields = self::POST_FIELDS;
         if ($this->seo->can_write()) {
@@ -59,6 +67,13 @@ final class PostApplier
         $fields = array_merge($fields, array_keys(self::TERM_FIELDS));
         $fields[] = self::MEDIA_FIELD;
         $fields[] = self::STATUS_FIELD;
+        if (LayoutMeta::available()) {
+            $fields = array_merge($fields, LayoutMeta::FIELDS);
+        }
+        if (ElementReader::available()
+            && ($post_types === null || in_array(ElementReader::POST_TYPE, $post_types, true))) {
+            $fields = array_merge($fields, ElementReader::WRITABLE);
+        }
 
         return $fields;
     }
@@ -101,13 +116,30 @@ final class PostApplier
             return (string) $post->post_status;
         }
 
+        if (in_array($field, LayoutMeta::FIELDS, true)) {
+            return LayoutMeta::applies_to($post->post_type)
+                ? (new LayoutMeta())->read_field($post_id, $field)
+                : '';
+        }
+
+        if (in_array($field, ElementReader::WRITABLE, true)) {
+            return $post->post_type === ElementReader::POST_TYPE
+                ? (new ElementReader())->read_field($post_id, $field)
+                : '';
+        }
+
         return '';
     }
 
     /**
-     * Digest of the fields this change intends to touch, plus the modification
-     * timestamp. Compared again at approval time; a mismatch means somebody
-     * edited the post in between and the proposal is answering a stale question.
+     * Digest of the fields this change intends to touch. Compared again at
+     * approval time; a mismatch means somebody changed one of those values in
+     * between and the proposal is answering a stale question.
+     *
+     * Deliberately *not* the modification timestamp. It used to be, and then
+     * two proposals touching disjoint fields on one post could never both
+     * apply: the first bumped the stamp and parked the second as stale, though
+     * nothing it was replacing had changed. The values are the honest question.
      */
     public function hash(int $post_id, array $field_names): string
     {
@@ -116,7 +148,7 @@ final class PostApplier
             return '';
         }
 
-        $parts = ['modified' => $post->post_modified_gmt];
+        $parts = [];
         foreach ($field_names as $field) {
             $parts[$field] = $this->current_value($post_id, $field);
         }
@@ -130,7 +162,7 @@ final class PostApplier
      * raw HTML in a queue. A draft is not publicly reachable, and approving is
      * then just a status flip — nothing is re-created from the payload later.
      */
-    public function create_draft(array $fields, string $post_type): int|\WP_Error
+    public function create_draft(array $fields, string $post_type, string $slug = ''): int|\WP_Error
     {
         $data = [
             'post_type'    => $post_type,
@@ -139,6 +171,11 @@ final class PostApplier
             'post_content' => $this->filter_content((string) ($fields['post_content'] ?? '')),
             'post_excerpt' => (string) ($fields['post_excerpt'] ?? ''),
         ];
+        // A new draft has nothing to redirect from, so a slug here needs none
+        // of the care a rename does. WordPress makes it unique on publish.
+        if ($slug !== '') {
+            $data['post_name'] = sanitize_title($slug);
+        }
 
         // wp_insert_post expects slashed data — it unslashes internally.
         $id = self::without_kses(static fn () => wp_insert_post(wp_slash($data), true));
@@ -243,6 +280,36 @@ final class PostApplier
             }
         }
 
+        $layout = array_intersect_key($fields, array_flip(LayoutMeta::FIELDS));
+        if ($layout !== []) {
+            if (!LayoutMeta::applies_to($post_type)) {
+                return new \WP_Error(
+                    'layout_unavailable',
+                    sprintf('Layout fields (%s) do not apply to %s on this site.', implode(', ', array_keys($layout)), $post_type),
+                    ['status' => 400],
+                );
+            }
+            $check = (new LayoutMeta())->normalise($layout);
+            if (is_wp_error($check)) {
+                return $check;
+            }
+        }
+
+        $element = array_intersect_key($fields, array_flip(ElementReader::WRITABLE));
+        if ($element !== []) {
+            if ($post_type !== ElementReader::POST_TYPE || !ElementReader::available()) {
+                return new \WP_Error(
+                    'element_fields_unsupported',
+                    sprintf('Element fields (%s) apply only to %s.', implode(', ', array_keys($element)), ElementReader::POST_TYPE),
+                    ['status' => 400],
+                );
+            }
+            $check = (new ElementReader())->normalise_fields($element);
+            if (is_wp_error($check)) {
+                return $check;
+            }
+        }
+
         return true;
     }
 
@@ -306,6 +373,32 @@ final class PostApplier
                 }
                 set_post_thumbnail($post_id, $attachment);
             }
+            $wrote = true;
+        }
+
+        $layout = array_intersect_key($fields, array_flip(LayoutMeta::FIELDS));
+        if ($layout !== []) {
+            if (!LayoutMeta::applies_to((string) get_post_type($post_id))) {
+                return new \WP_Error('layout_unavailable', 'Layout fields do not apply to this post.');
+            }
+            $normalised = (new LayoutMeta())->normalise($layout);
+            if (is_wp_error($normalised)) {
+                return $normalised;
+            }
+            (new LayoutMeta())->write($post_id, $normalised);
+            $wrote = true;
+        }
+
+        $element = array_intersect_key($fields, array_flip(ElementReader::WRITABLE));
+        if ($element !== []) {
+            if ((string) get_post_type($post_id) !== ElementReader::POST_TYPE) {
+                return new \WP_Error('element_fields_unsupported', 'Element fields apply only to ' . ElementReader::POST_TYPE . '.');
+            }
+            $normalised = (new ElementReader())->normalise_fields($element);
+            if (is_wp_error($normalised)) {
+                return $normalised;
+            }
+            (new ElementReader())->write_fields($post_id, $normalised);
             $wrote = true;
         }
 

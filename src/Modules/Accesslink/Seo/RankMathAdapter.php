@@ -59,4 +59,36 @@ final class RankMathAdapter implements SeoAdapter
             }
         }
     }
+
+    public function variables(): array
+    {
+        return ['title' => '%title%', 'sep' => '%sep%', 'sitename' => '%sitename%'];
+    }
+
+    public function title_template(string $post_type): string
+    {
+        if (!class_exists('\RankMath\Helper') || !method_exists('\RankMath\Helper', 'get_settings')) {
+            return '';
+        }
+        try {
+            $template = \RankMath\Helper::get_settings('titles.pt_' . $post_type . '_title', '');
+        } catch (\Throwable $e) {
+            return '';
+        }
+
+        return is_string($template) ? $template : '';
+    }
+
+    public function render(int $post_id, string $value): string
+    {
+        if ($value === '' || !class_exists('\RankMath\Helper') || !method_exists('\RankMath\Helper', 'replace_vars')) {
+            return '';
+        }
+        $post = get_post($post_id);
+        try {
+            return (string) \RankMath\Helper::replace_vars($value, $post instanceof \WP_Post ? $post : []);
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
 }

@@ -111,7 +111,7 @@ final class ChangeService
         if ($fields === []) {
             return new \WP_Error(
                 'no_fields',
-                'fields must contain at least one of: ' . implode(', ', $this->applier->allowed_fields()),
+                'fields must contain at least one of: ' . implode(', ', $this->applier->allowed_fields($this->allowed_post_types())),
                 ['status' => 400],
             );
         }
@@ -147,7 +147,8 @@ final class ChangeService
             return $invalid;
         }
 
-        $draft_id = $this->applier->create_draft($fields, $post_type);
+        $slug = isset($input['slug']) ? sanitize_title((string) $input['slug']) : '';
+        $draft_id = $this->applier->create_draft($fields, $post_type, $slug);
         if (is_wp_error($draft_id)) {
             return $draft_id;
         }
@@ -156,7 +157,7 @@ final class ChangeService
             'action'          => ChangeRepository::ACTION_CREATE,
             'target_id'       => $draft_id,
             'post_type'       => $post_type,
-            'payload'         => ['fields' => $fields, 'requested_status' => $requested_status],
+            'payload'         => ['fields' => $fields, 'requested_status' => $requested_status, 'slug' => $slug],
             'summary'         => $this->summarize($fields['post_title'] ?? '(untitled)'),
             'note'            => $note,
             'requested_by'    => $requested_by,
@@ -333,8 +334,18 @@ final class ChangeService
         }
 
         $path = trim((string) ($input['path'] ?? ''));
-        if ($path === '') {
-            return new \WP_Error('no_path', 'path is required — see GET /content/{id}/blocks.', ['status' => 400]);
+        // "Append a call-to-action" is the common insert and used to need a
+        // read of the block tree just to learn the last sibling's path. At the
+        // top level, start and end are positions in their own right.
+        $root_insert = $action === ChangeRepository::ACTION_INSERT_BLOCK
+            && $path === ''
+            && in_array((string) ($input['position'] ?? ''), ['start', 'end'], true);
+        if ($path === '' && !$root_insert) {
+            return new \WP_Error(
+                'no_path',
+                'path is required — see GET /content/{id}/blocks. insert_block with position "start" or "end" needs no path.',
+                ['status' => 400],
+            );
         }
 
         $reader = new BlockReader();
@@ -378,14 +389,15 @@ final class ChangeService
             return new \WP_Error('invalid_block_markup', implode(' ', $issues), ['status' => 400, 'issues' => $issues]);
         }
 
-        $block = $reader->get_at($content, $path);
+        $block = $path === '' ? null : $reader->get_at($content, $path);
+        $where = $block['name'] ?? ($path === '' ? 'document ' . (string) ($payload['position'] ?? '') : $path);
         $id = $this->repo->insert([
             'action'          => $action,
             'target_id'       => $target_id,
             'post_type'       => $post->post_type,
             'base_hash'       => $this->content_hash($post),
             'payload'         => $payload,
-            'summary'         => $this->summarize($post->post_title . ' — ' . ($block['name'] ?? $path)),
+            'summary'         => $this->summarize($post->post_title . ' — ' . $where),
             'note'            => $note,
             'requested_by'    => $requested_by,
             'idempotency_key' => $idempotency_key,
@@ -1364,7 +1376,7 @@ final class ChangeService
             return [];
         }
 
-        $allowed = $this->applier->allowed_fields();
+        $allowed = $this->applier->allowed_fields($this->allowed_post_types());
         $out = [];
 
         foreach ($allowed as $field) {
@@ -1400,6 +1412,18 @@ final class ChangeService
 
             if ($field === PostApplier::MEDIA_FIELD) {
                 $out[$field] = (int) $value;
+                continue;
+            }
+
+            if (in_array($field, ElementReader::CONDITION_FIELDS, true)) {
+                // Lists of rules. Kept as sent; ElementReader checks their
+                // shape at validate time and rejects with the reason.
+                $out[$field] = is_array($value) ? $value : (string) $value;
+                continue;
+            }
+
+            if ($field === 'hide_title') {
+                $out[$field] = LayoutMeta::truthy($value) ? 'true' : 'false';
                 continue;
             }
 

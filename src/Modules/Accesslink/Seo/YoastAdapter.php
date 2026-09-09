@@ -56,4 +56,36 @@ final class YoastAdapter implements SeoAdapter
             }
         }
     }
+
+    public function variables(): array
+    {
+        return ['title' => '%%title%%', 'sep' => '%%sep%%', 'sitename' => '%%sitename%%'];
+    }
+
+    public function title_template(string $post_type): string
+    {
+        if (!class_exists('\WPSEO_Options')) {
+            return '';
+        }
+        try {
+            $template = \WPSEO_Options::get('title-' . $post_type, '');
+        } catch (\Throwable $e) {
+            return '';
+        }
+
+        return is_string($template) ? $template : '';
+    }
+
+    public function render(int $post_id, string $value): string
+    {
+        if ($value === '' || !function_exists('wpseo_replace_vars')) {
+            return '';
+        }
+        $post = get_post($post_id);
+        try {
+            return (string) wpseo_replace_vars($value, $post instanceof \WP_Post ? $post : []);
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
 }

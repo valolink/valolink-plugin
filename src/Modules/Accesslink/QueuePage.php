@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\Accesslink;
 
+use Valolink\Plugin\Modules\Accesslink\Seo\SeoAdapterFactory;
 use Valolink\Plugin\Settings;
 
 /**
@@ -307,14 +308,72 @@ final class QueuePage
             // diff can never disagree with the staleness hash about what
             // "current" means.
             $current = $applier->current_value((int) $change['target_id'], $field);
-            $proposed = is_array($proposed) ? implode(', ', $proposed) : (string) $proposed;
+            if (is_array($proposed)) {
+                if (in_array($field, ElementReader::CONDITION_FIELDS, true)) {
+                    // Same JSON shape current_value() produces, so equal
+                    // conditions compare equal instead of always differing.
+                    $normalised = ElementReader::normalise_conditions($field, $proposed);
+                    $proposed = is_wp_error($normalised) ? '(invalid)' : (string) wp_json_encode($normalised);
+                } else {
+                    $proposed = implode(', ', $proposed);
+                }
+            } else {
+                $proposed = (string) $proposed;
+            }
             if ($current === $proposed) {
                 continue;
             }
 
             echo '<h4>' . esc_html($field) . '</h4>';
-            $this->render_field_diff($current, (string) $proposed);
+            $this->render_field_diff($current, $proposed);
+            if (in_array($field, ['seo_title', 'seo_description'], true)) {
+                $this->render_seo_preview($applier, (int) $change['target_id'], $field, $proposed);
+            }
         }
+    }
+
+    /**
+     * What the SEO plugin will actually output for the proposed value, with a
+     * length. The diff shows the stored string, template variables and all;
+     * a reviewer judging a title against Google's ~60 characters needs the
+     * rendered one, and the raw `%%sep%% %%sitename%%` tells them nothing.
+     */
+    private function render_seo_preview(PostApplier $applier, int $post_id, string $field, string $proposed): void
+    {
+        if ($proposed === '') {
+            $template = $applier->seo()->title_template((string) get_post_type($post_id));
+            if ($field === 'seo_title' && $template !== '') {
+                printf(
+                    '<p class="description">%s <code>%s</code></p>',
+                    esc_html__('Empty — the plugin falls back to its template:', 'valolink-plugin'),
+                    esc_html($template),
+                );
+            }
+
+            return;
+        }
+
+        $rendered = $applier->seo()->render($post_id, $proposed);
+        $shown    = $rendered !== '' ? $rendered : $proposed;
+        $length   = mb_strlen($shown);
+        $limit    = (int) (SeoAdapterFactory::RECOMMENDED[$field] ?? 0);
+        printf(
+            '<p class="description">%s <strong>%s</strong> — %s</p>',
+            esc_html__('Renders as:', 'valolink-plugin'),
+            esc_html($shown),
+            esc_html($limit > 0
+                ? sprintf(
+                    /* translators: 1: rendered length, 2: recommended maximum */
+                    __('%1$d characters, about %2$d recommended', 'valolink-plugin'),
+                    $length,
+                    $limit,
+                )
+                : sprintf(
+                    /* translators: %d: rendered length */
+                    __('%d characters', 'valolink-plugin'),
+                    $length,
+                )),
+        );
     }
 
     /**
@@ -462,16 +521,27 @@ final class QueuePage
                 return;
 
             case ChangeRepository::ACTION_INSERT_BLOCK:
-                printf(
-                    '<h4>%s</h4>',
-                    esc_html(sprintf(
-                        /* translators: 1: before or after, 2: block name, 3: block path. */
-                        __('Insert a block %1$s %2$s @ %3$s', 'valolink-plugin'),
-                        (string) ($change['payload']['position'] ?? 'after'),
-                        $name,
-                        $path,
-                    )),
-                );
+                if ($path === '') {
+                    printf(
+                        '<h4>%s</h4>',
+                        esc_html(sprintf(
+                            /* translators: %s: "start" or "end". */
+                            __('Insert a block at the %s of the document', 'valolink-plugin'),
+                            (string) ($change['payload']['position'] ?? 'end'),
+                        )),
+                    );
+                } else {
+                    printf(
+                        '<h4>%s</h4>',
+                        esc_html(sprintf(
+                            /* translators: 1: before or after, 2: block name, 3: block path. */
+                            __('Insert a block %1$s %2$s @ %3$s', 'valolink-plugin'),
+                            (string) ($change['payload']['position'] ?? 'after'),
+                            $name,
+                            $path,
+                        )),
+                    );
+                }
                 $this->render_field_diff('', (string) ($change['payload']['markup'] ?? ''));
                 break;
 
@@ -667,11 +737,32 @@ final class QueuePage
         }
 
         $key   = $this->auth->api_key();
-        $types = implode(', ', (array) $this->settings->get_module_setting(
+        $types = array_map('strval', (array) $this->settings->get_module_setting(
             AccesslinkModule::MODULE_ID,
             'allowed_post_types',
             ['post', 'page'],
         ));
+        // Every type with an admin UI is a candidate — that is what an operator
+        // can find in wp-admin and reason about. Attachments are excluded
+        // because Accesslink cannot write them (see the roadmap). A saved type
+        // whose plugin is currently inactive stays listed and checked, so
+        // saving the form does not silently drop it.
+        $candidates = [];
+        foreach (get_post_types(['show_ui' => true], 'objects') as $slug => $object) {
+            if ($slug === 'attachment') {
+                continue;
+            }
+            $candidates[(string) $slug] = (string) ($object->labels->name ?? $slug);
+        }
+        foreach ($types as $slug) {
+            if (!isset($candidates[$slug])) {
+                $candidates[$slug] = sprintf(
+                    /* translators: %s: post type slug */
+                    __('%s (not registered right now)', 'valolink-plugin'),
+                    $slug,
+                );
+            }
+        }
         ?>
         <h2><?php esc_html_e('Settings', 'valolink-plugin'); ?></h2>
 
@@ -748,10 +839,19 @@ final class QueuePage
                 <tr>
                     <th scope="row"><?php esc_html_e('Allowed post types', 'valolink-plugin'); ?></th>
                     <td>
-                        <input type="text" class="regular-text" name="allowed_post_types"
-                               value="<?php echo esc_attr($types); ?>">
+                        <fieldset>
+                            <?php foreach ($candidates as $slug => $label) : ?>
+                                <label style="display:block;margin-bottom:4px;">
+                                    <input type="checkbox" name="allowed_post_types[]"
+                                           value="<?php echo esc_attr($slug); ?>"
+                                        <?php checked(in_array($slug, $types, true)); ?>>
+                                    <?php echo esc_html($label); ?>
+                                    <code><?php echo esc_html($slug); ?></code>
+                                </label>
+                            <?php endforeach; ?>
+                        </fieldset>
                         <p class="description">
-                            <?php esc_html_e('Comma-separated. Governs both what agents may read and what they may propose.', 'valolink-plugin'); ?>
+                            <?php esc_html_e('Governs both what agents may read and what they may propose. With none ticked, posts and pages are allowed.', 'valolink-plugin'); ?>
                         </p>
                     </td>
                 </tr>

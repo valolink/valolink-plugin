@@ -367,7 +367,7 @@ final class AccesslinkModule implements Module
             ),
             'writes_enabled'     => (new AccesslinkAuth($this->settings))->writes_enabled(),
             'allowed_post_types' => $service->allowed_post_types(),
-            'allowed_fields'     => (new PostApplier())->allowed_fields(),
+            'allowed_fields'     => (new PostApplier())->allowed_fields($service->allowed_post_types()),
             'seo_plugin'         => (new PostApplier())->seo()->id(),
             'allowed_statuses'   => PostApplier::ALLOWED_STATUSES,
             // Derived, never hand-listed: this field and the validator drifted
@@ -397,6 +397,7 @@ final class AccesslinkModule implements Module
                 'menus'          => $service->menus_enabled(),
                 'elements'       => ElementReader::available()
                     && in_array(ElementReader::POST_TYPE, $service->allowed_post_types(), true),
+                'layout'         => LayoutMeta::available(),
                 'translations'   => TranslationAdapterFactory::detect()->available(),
                 'delete_post'    => false,
                 'media_upload'   => false,
@@ -419,6 +420,7 @@ final class AccesslinkModule implements Module
             'post_type' => $request->get_param('post_type'),
             'status'    => $request->get_param('status'),
             'limit'     => $request->get_param('limit'),
+            'fields'    => $request->get_param('fields'),
         ]));
     }
 
@@ -580,7 +582,18 @@ final class AccesslinkModule implements Module
         }
 
         $group  = $tr->translations($id);
-        $source_modified = get_post_modified_time('Y-m-d H:i:s', true, $post);
+        // "Outdated" is measured against the group's source — the default-
+        // language member when there is one — never against whichever post
+        // happened to be queried. Read from the English page, the Finnish
+        // original used to be flagged outdated for being older, which is the
+        // wrong advice in the wrong direction.
+        $source_id   = (int) ($group[$tr->default_language()] ?? $id);
+        $source_post = get_post($source_id);
+        $source_modified = get_post_modified_time(
+            'Y-m-d H:i:s',
+            true,
+            $source_post instanceof \WP_Post ? $source_post : $post,
+        );
 
         $out = [];
         foreach ($tr->languages() as $language) {
@@ -595,15 +608,15 @@ final class AccesslinkModule implements Module
             $modified = $t instanceof \WP_Post ? get_post_modified_time('Y-m-d H:i:s', true, $t) : null;
             $out[$slug] = [
                 'id'           => $tid,
-                'is_source'    => $tid === $id,
+                'is_source'    => $tid === $source_id,
                 'status'       => $t->post_status ?? null,
                 'title'        => $t->post_title ?? null,
                 'link'         => get_permalink($tid) ?: null,
                 'modified_gmt' => $modified,
-                // Older than the post it translates. Polylang tracks no such
+                // Older than the source it translates. Polylang tracks no such
                 // thing, so this is a timestamp comparison and nothing more —
                 // it flags "worth re-reading", not "definitely wrong".
-                'outdated'     => $tid !== $id && $modified !== null && $modified < $source_modified,
+                'outdated'     => $tid !== $source_id && $modified !== null && $modified < $source_modified,
             ];
         }
 
@@ -612,6 +625,7 @@ final class AccesslinkModule implements Module
             'available' => true,
             'plugin'    => $tr->plugin(),
             'language'  => $tr->language_of($id),
+            'source_id' => $source_id,
             'missing'   => array_keys(array_filter($out, static fn ($v): bool => $v === null)),
             'translations' => $out,
         ]);
@@ -778,13 +792,16 @@ final class AccesslinkModule implements Module
             wp_die(esc_html__('You do not have permission to change these settings.', 'valolink-plugin'));
         }
 
-        $raw_types = isset($_POST['allowed_post_types'])
-            ? sanitize_text_field(wp_unslash($_POST['allowed_post_types']))
-            : '';
-        $types = array_values(array_filter(array_map(
+        // Checkboxes post an array; the comma-separated string the field used
+        // to be is still accepted so an old form or a scripted POST keeps working.
+        $raw_types = isset($_POST['allowed_post_types']) ? wp_unslash($_POST['allowed_post_types']) : [];
+        $raw_types = is_array($raw_types)
+            ? array_map(static fn ($t): string => sanitize_text_field((string) $t), $raw_types)
+            : explode(',', sanitize_text_field((string) $raw_types));
+        $types = array_values(array_unique(array_filter(array_map(
             static fn (string $t): string => sanitize_key(trim($t)),
-            explode(',', $raw_types),
-        )));
+            $raw_types,
+        ))));
 
         $instructions = isset($_POST['instructions'])
             ? sanitize_textarea_field(wp_unslash($_POST['instructions']))

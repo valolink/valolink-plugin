@@ -209,7 +209,7 @@ it cost time.
   order. Pending is now oldest first (REST `GET /changes` keeps newest first,
   since an agent polling it wants what just happened); the block outline sits in
   a `<details>` folded by default.
-- [ ] **The guide hardcodes Rank Math's variable syntax.** `GuideBuilder.php:314`
+- [x] **The guide hardcodes Rank Math's variable syntax.** Fixed in 0.2.2: the adapter owns the spelling, the guide prints the site's variables and title template, and the queue renders SEO fields with a length. `GuideBuilder.php:314`
   tells every agent to preserve `%sep%` / `%sitename%`, on Yoast sites too, where
   the syntax is `%%sep%%`. The agent guessed right, and the queue could not have
   told anyone either way because the diff shows the raw stored string. The SEO
@@ -219,14 +219,14 @@ it cost time.
   own replace-vars with a character count beside them. Independent of which
   plugin a site runs — jet-steel is moving to Rank Math, and the bug would simply
   flip sides.
-- [ ] **Auditing needs one read per post.** `GET /content` omits SEO fields,
+- [x] **Auditing needs one read per post.** Fixed in 0.2.2: `GET /content?fields=seo,terms,media,layout`. `GET /content` omits SEO fields,
   categories and featured image, so "which posts have no description" and "which
   are in the wrong category" took ~35 `GET /content/{id}` calls. A
   `fields=seo,terms,media` parameter on the list, or the audit read in Tier 1.
   The missing categories are what hid the Artikkelit problem: that page's query
   loop lists `yleinen`, both SEO articles sat in `ruostumatonta-tietoa`, and the
   page rendered empty.
-- [ ] **Staleness for `update` hashes the modification time.** `PostApplier::hash()`
+- [x] **Staleness for `update` hashes the modification time.** Fixed in 0.2.2: values only. Proven on staging by approving an excerpt change and then an SEO change on the same post. `PostApplier::hash()`
   folds `post_modified_gmt` in, so two proposals touching disjoint fields on one
   post cannot both apply — the second parks as `stale` once the first bumps the
   stamp, which is why the category move had to be folded into the metadata
@@ -237,19 +237,39 @@ it cost time.
   proposals, grouped in the queue under one *Approve all* button, each still
   applied and stale-checked on its own with a result per row. The attachment alt
   sweep in Tier 1 will produce a hundred proposals and is unusable without this.
-- [ ] **`create` does not accept `slug`; `create_translation` does.** The
+- [x] **`create` does not accept `slug`; `create_translation` does.** Fixed in 0.2.2. The
   service-page draft has no URL yet, and for a landing page the URL is the point.
   A slug on a new draft has nothing to redirect from, so it needs none of the
   redirect pairing a rename needs.
-- [ ] **`insert_block` needs a path even to append.** "Add a call-to-action at
+- [x] **`insert_block` needs a path even to append.** Fixed in 0.2.2: `position: start | end` with no path. "Add a call-to-action at
   the end" is the common case and took a `/blocks` read to find the last sibling.
   `position: start | end` without a path, at the top level.
-- [ ] **`/taxonomies` returns slugs; query loops reference term ids.** Inferring
+- [x] **`/taxonomies` returns slugs; query loops reference term ids.** Fixed in 0.2.2. Inferring
   that term 1 was Yleinen worked, but it was a guess. Add `id` per term.
-- [ ] **The translation `outdated` flag is symmetric.** Read from the English
+- [x] **The translation `outdated` flag is symmetric.** Fixed in 0.2.2: anchored to the group's source, reported as `source_id`. Read from the English
   home, the Finnish *source* was flagged outdated because it was older — the
   wrong advice. Define outdated for translations relative to their source only.
-- [ ] **The media list cannot be chosen from.** Entries titled "164", "163",
+- [x] **`create` cannot set an Element's type, hook or display conditions.** Fixed in 0.2.2: element fields on create and update, hooks validated against GP Premium's list, conditions checked for shape; and the three page layout keys as `sidebar_layout`, `content_container`, `hide_title`. Proven on staging by creating a before-footer Element and a full-width page in one proposal each.
+  Found when proposing a footer call-to-action as a `gp_elements` post: the
+  draft arrives with none of the `_generate_*` meta, so the reviewer picks the
+  type, hook and conditions in the editor before publishing. `ElementReader`
+  already maps the keys; accepting `element` fields on `create` (and `update`)
+  with the same shape `GET /elements` returns, validated against GeneratePress's
+  own hook and rule lists, would let an agent finish the job. The review screen
+  already warns that an Element change is site-wide. The same gap covers a
+  page's own layout meta (`_generate-sidebar-layout-meta`,
+  `_generate-full-width-content`, `_generate-disable-headline`): a page
+  created through Accesslink opens with the theme default, so the Palvelut
+  draft built from full-width front-page sections needs "no sidebar, full
+  width" set in the editor before it looks like the front page. Reading those
+  three keys on `GET /content/{id}` and accepting them on `create` is the
+  small version of this item.
+- [x] **Allowed post types are checkboxes now**, listing every type with an
+  admin UI (attachments excluded, since Accesslink cannot write them). A saved
+  type whose plugin is inactive stays listed and checked, so saving the form
+  does not silently drop it. The comma-separated string is still accepted on
+  save for scripted POSTs.
+- [~] **The media list cannot be chosen from.** First slice in 0.2.2: `attached_to`, the post an image was uploaded to. "Used on" across content is still open; it needs a content scan. Entries titled "164", "163",
   empty alt, no usage — and an agent cannot see pixels. Return which posts use
   each attachment, so "the image on the säiliöt article" becomes addressable.
 

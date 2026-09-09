@@ -292,7 +292,11 @@ final class BlockReader
      */
     public function insert_block(string $content, string $path, string $position, string $markup): string|\WP_Error
     {
-        if (!in_array($position, ['before', 'after'], true)) {
+        $root = $path === '';
+        if ($root && !in_array($position, ['start', 'end'], true)) {
+            return new \WP_Error('bad_position', 'Without a path, position must be "start" or "end".');
+        }
+        if (!$root && !in_array($position, ['before', 'after'], true)) {
             return new \WP_Error('bad_position', 'position must be "before" or "after".');
         }
 
@@ -322,6 +326,19 @@ final class BlockReader
         }
 
         $blocks = parse_blocks($content);
+
+        // Top level has no parent innerContent to keep in step, so start and
+        // end are a plain prepend or append on the root list.
+        if ($root) {
+            if ($position === 'start') {
+                array_unshift($blocks, $new);
+            } else {
+                $blocks[] = $new;
+            }
+
+            return $this->preserve_delimiters($content, serialize_blocks($blocks));
+        }
+
         $ok = $this->at_parent($blocks, $path, function (array &$children, ?array &$inner, int $index) use ($new, $position): bool {
             $at = $position === 'after' ? $index + 1 : $index;
             array_splice($children, $at, 0, [$new]);
