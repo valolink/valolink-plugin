@@ -193,15 +193,95 @@ translate a site cannot finish the job on its own.
   actions legitimately change that count and are still exposed; worth revisiting
   if a GenerateBlocks page ever comes back invalid after an insert or move.
 
+#### Found doing SEO on jet-steel.fi (2026-09-09)
+
+First run on a real client site: a full audit, then 17 proposals in one sitting —
+13 Yoast metadata updates, 3 `insert_block` call-to-actions, 1 `create` of a
+service-page draft. The loop held. Idempotency keys made the filing script safe to
+rerun three times without a duplicate, `/validate` and the per-post
+`pending_changes` list did their jobs, and the notes endpoint carried the
+conventions forward. Everything below is friction *around* the loop, in the order
+it cost time.
+
+- [x] **The queue listed newest first and the outline was always open.**
+  Approving reloads the page at the top, so the next change to review has to be
+  the top one — and proposals against one document often only apply in filing
+  order. Pending is now oldest first (REST `GET /changes` keeps newest first,
+  since an agent polling it wants what just happened); the block outline sits in
+  a `<details>` folded by default.
+- [ ] **The guide hardcodes Rank Math's variable syntax.** `GuideBuilder.php:314`
+  tells every agent to preserve `%sep%` / `%sitename%`, on Yoast sites too, where
+  the syntax is `%%sep%%`. The agent guessed right, and the queue could not have
+  told anyone either way because the diff shows the raw stored string. The SEO
+  adapter should own the variable syntax, the guide should print the site's
+  resolved title template ("titles render as `%%title%% - Jet Steel Oy`"), and
+  the queue should render `seo_title` / `seo_description` through the plugin's
+  own replace-vars with a character count beside them. Independent of which
+  plugin a site runs — jet-steel is moving to Rank Math, and the bug would simply
+  flip sides.
+- [ ] **Auditing needs one read per post.** `GET /content` omits SEO fields,
+  categories and featured image, so "which posts have no description" and "which
+  are in the wrong category" took ~35 `GET /content/{id}` calls. A
+  `fields=seo,terms,media` parameter on the list, or the audit read in Tier 1.
+  The missing categories are what hid the Artikkelit problem: that page's query
+  loop lists `yleinen`, both SEO articles sat in `ruostumatonta-tietoa`, and the
+  page rendered empty.
+- [ ] **Staleness for `update` hashes the modification time.** `PostApplier::hash()`
+  folds `post_modified_gmt` in, so two proposals touching disjoint fields on one
+  post cannot both apply — the second parks as `stale` once the first bumps the
+  stamp, which is why the category move had to be folded into the metadata
+  proposals. The field values are the honest question ("are the values I am
+  replacing still what I saw?"); the stamp only adds false positives. Drop it.
+- [ ] **Thirteen identical proposals were thirteen approvals and thirteen reloads.**
+  Not atomicity — the first slice is review: an optional `batch` label on
+  proposals, grouped in the queue under one *Approve all* button, each still
+  applied and stale-checked on its own with a result per row. The attachment alt
+  sweep in Tier 1 will produce a hundred proposals and is unusable without this.
+- [ ] **`create` does not accept `slug`; `create_translation` does.** The
+  service-page draft has no URL yet, and for a landing page the URL is the point.
+  A slug on a new draft has nothing to redirect from, so it needs none of the
+  redirect pairing a rename needs.
+- [ ] **`insert_block` needs a path even to append.** "Add a call-to-action at
+  the end" is the common case and took a `/blocks` read to find the last sibling.
+  `position: start | end` without a path, at the top level.
+- [ ] **`/taxonomies` returns slugs; query loops reference term ids.** Inferring
+  that term 1 was Yleinen worked, but it was a guess. Add `id` per term.
+- [ ] **The translation `outdated` flag is symmetric.** Read from the English
+  home, the Finnish *source* was flagged outdated because it was older — the
+  wrong advice. Define outdated for translations relative to their source only.
+- [ ] **The media list cannot be chosen from.** Entries titled "164", "163",
+  empty alt, no usage — and an agent cannot see pixels. Return which posts use
+  each attachment, so "the image on the säiliöt article" becomes addressable.
+
+Not roadmap, but recorded so it is not rediscovered: the demand data (keyword
+targets, Search Console rows) lives in EngineLink and reached the agent as an
+exported PDF. A read-only site brief on EngineLink's existing bot zone would close
+that gap for any agent, not only Sidelink — that is an EngineLink backlog item.
+And on jet-steel specifically, allowing `gp_elements` would let the after-article
+call-to-action be one Element instead of an edit to each technical article the
+client wants left alone.
+
 #### Tier 1 — cheap, and the existing machinery already fits
 
 - [ ] **`post_name` and `post_date`.** An agent cannot currently rename or schedule
   anything. Two entries in `PostApplier::POST_FIELDS`. Ship slug together with
-  redirects — a silent rename is worse than no rename.
+  redirects — a silent rename is worse than no rename. (`slug` on `create` is
+  the separate, redirect-free case noted above; it need not wait for this.)
 - [ ] **Attachment alt text / title / caption.** New `entity_type` (the column
   exists and defaults to `post`), small applier, trivial diff, near-zero blast
   radius. Unlocks an accessibility + SEO sweep across a whole media library:
-  high-volume, billable, and miserable by hand.
+  high-volume, billable, and miserable by hand. Necessary but not sufficient on
+  GenerateBlocks sites: the alt Google sees on jet-steel's front page comes from
+  the block markup, not the attachment, so a safe `set_image_alt` at a block
+  path belongs beside this applier — or the sweep changes the library and not
+  the pages. Needs the grouped review above to be usable at volume.
+- [ ] **Content audit reads.** `GET /audit/content`: missing meta descriptions,
+  images without alt text, thin content, orphan pages, broken internal links. No
+  new write surface — only reads that already exist. Aims at the top friction in
+  the root `CLAUDE.md` (employees inventing work when the queue is empty) by
+  turning Accesslink into a source of concrete claimable work rather than only a
+  way to apply edits. Moved up from Tier 2 after jet-steel: the audit was most of
+  that session, and every part of it was a read that already exists.
 - [ ] **`wp_block` (synced patterns).** Just a post type — but editing one changes
   every page using it, so the queue has to show "used on N pages" or approval is
   blind.
@@ -219,12 +299,6 @@ translate a site cannot finish the job on its own.
   Still open: `sync_translation` (mirror a source change into an existing
   translation), term translations, and the outdated-translation report as a
   standalone endpoint. See the design subsection below.
-- [ ] **Content audit reads.** `GET /audit/content`: missing meta descriptions,
-  images without alt text, thin content, orphan pages, broken internal links. No
-  new write surface — only reads that already exist. Aims at the top friction in
-  the root `CLAUDE.md` (employees inventing work when the queue is empty) by
-  turning Accesslink into a source of concrete claimable work rather than only a
-  way to apply edits.
 - [ ] **ACF / custom fields.** CPT UI is on much of the fleet, so custom post types
   exist that are only half-readable now. Needs discovery first — `GET /field-groups`
   and `GET /content/{id}/fields` — because an agent cannot guess field keys. v1 is
@@ -232,13 +306,17 @@ translate a site cannot finish the job on its own.
   repeaters and flexible content are where the cost lives, and they wait.
 - [ ] **Media upload by URL, sideloaded at approval.** Without it every created page
   is imageless. Fetch happens only on approve, behind a host allowlist with MIME
-  and size limits.
+  and size limits. Worth more than its place here suggests: a service page drafted
+  without images gets judged on that before anyone reads it, which is exactly what
+  the jet-steel exemplar page will face.
 - [ ] **Redirects.** Adapter for the Redirection plugin, degrading to unavailable.
   Pairs with slug changes, which needs the next item.
-- [ ] **Batched proposals.** A `batch_id` with all-or-nothing apply. Today every
+- [ ] **Atomic batches.** A `batch_id` with all-or-nothing apply. Today every
   change stands alone, so a translation plus its menu entry plus its redirect can
   be approved piecemeal and leave the site half-done. Architectural, and the unlock
-  for every multi-entity item here.
+  for every multi-entity item here. This is the second slice; the first — grouped
+  review with one *Approve all*, no change to apply — is in the jet-steel section
+  and should ship first, because it is what metadata and alt sweeps need.
 
 #### Tier 3 — deferred, with the reason
 
@@ -257,7 +335,9 @@ translate a site cannot finish the job on its own.
   implementation behind both the REST routes and the admin screen, so aggregating
   every site's queue into one Nuxt page is additive — but it needs an approver
   credential distinct from the propose key, since the whole design rests on those
-  not being the same secret.
+  not being the same secret. Closer than it looks: the queue-order fix of
+  2026-09-09 was a symptom. Reviewing a fleet every month through one wp-admin at
+  a time will not scale, and the service layer is already shared.
 - [ ] **Per-key scoping** (which post types, which categories) and **reading back a
   proposal's payload**. Both are prerequisites for multiple agents or an EngineLink
   reviewer; neither matters while one operator reviews in wp-admin.

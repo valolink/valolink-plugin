@@ -25,7 +25,11 @@ final class QueuePage
             wp_die(esc_html__('You do not have permission to review changes.', 'valolink-plugin'));
         }
 
-        $pending  = $this->repo->list(ChangeRepository::STATUS_PENDING, 50);
+        // Oldest first. Approving reloads the page at the top, so the next
+        // change to look at has to be the one at the top — and changes filed
+        // against the same document frequently have to be applied in the
+        // order the agent filed them.
+        $pending  = $this->repo->list(ChangeRepository::STATUS_PENDING, 50, 0, true);
         $recent   = array_filter(
             $this->repo->list(null, 30),
             static fn (array $c): bool => $c['status'] !== ChangeRepository::STATUS_PENDING,
@@ -495,8 +499,16 @@ final class QueuePage
                 break;
         }
 
-        echo '<h4>' . esc_html__('Block outline', 'valolink-plugin') . '</h4>';
+        // Folded by default: the outline of a GenerateBlocks page runs to a
+        // hundred lines, and the line that moved is what the block diff above
+        // already shows. It is here for the reviewer who wants to check where
+        // in the document that block sits, not for every glance at the queue.
+        echo '<details style="margin:1em 0;">';
+        echo '<summary style="cursor:pointer;font-weight:600;">'
+            . esc_html__('Block outline (before and after)', 'valolink-plugin')
+            . '</summary>';
         $this->render_field_diff($this->outline($reader, $current), $this->outline($reader, $proposed));
+        echo '</details>';
     }
 
     /**

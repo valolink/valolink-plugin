@@ -66,7 +66,9 @@ Approval is the only gate, so every action has to be reviewable at the scope it 
 | `delete_block` | the block being removed, plus the block outline | proposed page |
 | `move_block` | the block outline, before and after | proposed page |
 
-The **block outline** is the tree as indented `name — first words` lines. Paths are deliberately left out: an insert or delete renumbers every later sibling, so including them would mark the rest of the document as changed and bury the line that actually moved.
+The **block outline** is the tree as indented `name — first words` lines. Paths are deliberately left out: an insert or delete renumbers every later sibling, so including them would mark the rest of the document as changed and bury the line that actually moved. It is folded by default — on a GenerateBlocks page it runs to a hundred lines, and the block diff above it already shows the line that changed.
+
+The queue lists pending changes **oldest first**. Approving reloads the page at the top, so the next change to review has to be the top one; and proposals filed against the same document frequently only make sense in the order the agent filed them. `GET /changes` keeps newest first, since an agent polling it wants to see what just happened.
 
 For `update_text` the diff shows the block as it will *end up*, not the submitted `text`. The wrapper appearing byte-identical on both sides is the reviewer's evidence that the edit cannot invalidate the block, and showing the payload alone would hide exactly that.
 

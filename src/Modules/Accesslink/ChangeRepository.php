@@ -118,20 +118,27 @@ final class ChangeRepository
     }
 
     /** @return array<int, array> */
-    public function list(?string $status = null, int $limit = 50, int $offset = 0): array
+    /**
+     * Newest first by default, which is what an agent polling the REST route
+     * and the "recently resolved" table want. The review queue asks for the
+     * oldest first: proposals against one document often only make sense in
+     * the order they were filed, and the reviewer works top-down.
+     */
+    public function list(?string $status = null, int $limit = 50, int $offset = 0, bool $oldest_first = false): array
     {
         global $wpdb;
         $table = ChangeTable::table_name();
+        $order = $oldest_first ? 'ASC' : 'DESC';
 
         $sql = $status !== null
             ? $wpdb->prepare(
-                "SELECT * FROM $table WHERE status = %s ORDER BY created_at DESC LIMIT %d OFFSET %d",
+                "SELECT * FROM $table WHERE status = %s ORDER BY created_at $order, id $order LIMIT %d OFFSET %d",
                 $status,
                 $limit,
                 $offset,
             )
             : $wpdb->prepare(
-                "SELECT * FROM $table ORDER BY created_at DESC LIMIT %d OFFSET %d",
+                "SELECT * FROM $table ORDER BY created_at $order, id $order LIMIT %d OFFSET %d",
                 $limit,
                 $offset,
             );
