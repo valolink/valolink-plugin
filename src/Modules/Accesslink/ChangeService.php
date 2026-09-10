@@ -251,7 +251,9 @@ final class ChangeService
         if (!array_key_exists($key, $input)) {
             return new \WP_Error('no_' . $key, sprintf('%s is required.', $key), ['status' => 400]);
         }
-        $html = (string) $input[$key];
+        // The fragment is the only agent-authored markup in a block edit; the
+        // rest of the document is the site's own and is never filtered.
+        $html = ContentSanitizer::filter((string) $input[$key]);
 
         $reader = new BlockReader();
         $block = $reader->get_at((string) $post->post_content, $path);
@@ -354,7 +356,7 @@ final class ChangeService
 
         switch ($action) {
             case ChangeRepository::ACTION_INSERT_BLOCK:
-                $markup = (string) ($input['markup'] ?? '');
+                $markup = ContentSanitizer::filter((string) ($input['markup'] ?? ''));
                 if (trim($markup) === '') {
                     return new \WP_Error('no_markup', 'markup is required.', ['status' => 400]);
                 }
@@ -1386,9 +1388,11 @@ final class ChangeService
             $value = $raw[$field];
 
             if ($field === 'post_content') {
-                // Markup is kept — PostApplier decides how far to filter it at
-                // apply time, mirroring WP's own unfiltered_html rule.
-                $out[$field] = (string) $value;
+                // Agent-authored markup is sanitised here, once, whoever ends
+                // up approving it. It used to be filtered at apply time by the
+                // reviewer's capability, which made the queue show one thing
+                // and an Editor's approval apply another.
+                $out[$field] = ContentSanitizer::filter((string) $value);
                 continue;
             }
 

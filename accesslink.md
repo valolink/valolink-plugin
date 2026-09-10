@@ -67,6 +67,10 @@ Approval is the only gate, so every action has to be reviewable at the scope it 
 | `insert_block` | the markup being added, plus the block outline | proposed page |
 | `delete_block` | the block being removed, plus the block outline | proposed page |
 | `move_block` | the block outline, before and after | proposed page |
+| `create_translation` | — (draft exists; the card names source, source language and target language) | WordPress draft preview, plus a link to the original |
+| `set_language` | a statement of the language being assigned; nothing about the content changes | — |
+| `sync_translation_meta` | the missing keys and the values they will take | — |
+| `update_menu` | both sides as an indented `label → target` tree | — (the menu, not a page) |
 
 The **block outline** is the tree as indented `name — first words` lines. Paths are deliberately left out: an insert or delete renumbers every later sibling, so including them would mark the rest of the document as changed and bury the line that actually moved. It is folded by default — on a GenerateBlocks page it runs to a hundred lines, and the block diff above it already shows the line that changed.
 
@@ -118,7 +122,7 @@ The read half. Core's `/wp/v2` can't be reached with an Accesslink key, can't se
 
 `GET /content/{id}` — adds full `post_content`, `post_excerpt`, a `truncated` flag past 60000 characters, and `pending_changes`: ids of proposals already queued against that post. A non-empty list means someone has already proposed an edit on it; read those first. On a GeneratePress site it also carries `layout` (`sidebar_layout`, `content_container`, `hide_title`), and on a `gp_elements` post an `element` object in the same names an update may send back.
 
-Scope is the same `allowed_post_types` list that governs proposing, so a CPT outside it returns `403` on read as well as on write. Password-protected posts are never exposed. Visible statuses are `publish`, `draft`, `pending`, `private`, `future` — trash and auto-drafts never appear.
+Scope is the same `allowed_post_types` list that governs proposing, so a CPT outside it returns `403` on read as well as on write. Visible statuses are `publish`, `draft`, `pending`, `private`, `future` — trash and auto-drafts never appear. Password-protected posts are readable and proposable: the password gates the public front end only, and a key that already sees drafts and private posts is not kept out by it. They were refused until 0.2.3, which stalled the one case the password exists for — a page put behind one while the client reviews it.
 
 Note this widens the key beyond propose-only: it can read unpublished content. That is required for the workflow (an agent must be able to see the draft it proposed) but it is a real broadening of what a leaked key exposes.
 
@@ -385,9 +389,11 @@ Capability-gated (`publish_posts`), **not** key-gated. With no logged-in user th
 
 ## Content filtering
 
-`post_content` is stored raw and filtered at apply time, mirroring WordPress's own rule: if the approving user has `unfiltered_html` (an administrator on a single site does), the content is applied as-is, exactly as if they had pasted it into the editor. Otherwise it goes through `wp_kses_post()`.
+What an agent authored is sanitised once, at propose time, whoever ends up approving it: a `post_content` on a create or update, the `html` or `text` of a block edit, the `markup` of an insert. What the site already had is never filtered — the document rebuilt for a block edit is the site's own markup around one sanitised fragment, and it is applied as-is.
 
-One subtlety, because it silently defeated the above for a while: WordPress adds `wp_filter_post_kses` to `content_save_pre` whenever the current user lacks `unfiltered_html`, and a propose-time request has **no user at all**. So every `create` had its content filtered a second time on save, by core's kses rather than by `ContentSanitizer` — which stripped every inline `<svg>` back out, exactly what `ContentSanitizer` exists to prevent. Every save path now runs through `PostApplier::without_kses()`, which lifts those filters and restores them, making `filter_content()` the single authority on what survives instead of the first of two filters where the second quietly won. Verified adversarially: `<script>`, `onclick`, `onerror`, `javascript:` URLs and external `<use>` references are all still removed.
+It was not always so. Filtering used to happen at apply time by the reviewer's capability, mirroring WordPress's own `unfiltered_html` rule, and that had two faults. The queue could show one thing and an Editor's approval apply another. And for block edits the *whole rebuilt document* went through the filter, so an Editor approving a one-word change on a page full of SVG icons stripped every icon on the page. Sanitising the fragment at propose time and applying the document raw closes both: the diff is the truth, and the site's markup is not the agent's to lose. `create_translation` is the one path with no sanitiser at all, because its markup-skeleton check makes injection impossible and the sanitiser damaged the site's own SVG there.
+
+A second subtlety, because it silently defeated the above for a while: WordPress adds `wp_filter_post_kses` to `content_save_pre` whenever the current user lacks `unfiltered_html`, and a propose-time request has **no user at all**. So every `create` had its content filtered a second time on save, by core's kses rather than by `ContentSanitizer` — which stripped every inline `<svg>` back out, exactly what `ContentSanitizer` exists to prevent. Every save path runs through `PostApplier::without_kses()`, which lifts those filters and restores them. Verified adversarially: `<script>`, `onclick`, `onerror`, `javascript:` URLs and external `<use>` references are all still removed.
 
 Filtering does **not** go through `wp_kses_post()` directly. That call preserves block delimiters fine — they are HTML comments and modern kses keeps them — but it has no allowlist for inline SVG, and on a GeneratePress/GenerateBlocks site SVG icons are everywhere. Measured on this project's own front page, plain `wp_kses_post()` stripped 42 `<svg>`, 82 `<path>` and every `<g>`/`<circle>`/`<defs>`/`<mask>`, costing 14% of the document; across all 16 block posts it lost 7.9%.
 
@@ -402,6 +408,7 @@ Sites differ, and absence of a plugin narrows what Accesslink offers instead of 
 - **No SEO plugin, or an unwritable one** — the SEO fields drop out of `allowed_fields` entirely and a proposal naming them is refused with the reason. `GET /guide` reports the resolved adapter and lists what is unavailable on this site.
 - **A post type without a taxonomy** — refused by name rather than written where nothing renders it.
 - **A block type whose plugin isn't installed** — `insert_block` refuses it by name.
+- **Not GeneratePress** — the three layout fields drop out of `allowed_fields`; **no GP Elements, or `gp_elements` not in the allowed types** — the element fields drop out, so the guide never advertises a field every proposal naming it would be refused for.
 - **Logging module off** — audit calls are wrapped and swallowed; nothing depends on it.
 - **Queue table never installed** — every endpoint answers `503 accesslink_unavailable` instead of leaking SQL errors.
 
@@ -409,13 +416,16 @@ Sites differ, and absence of a plugin narrows what Accesslink offers instead of 
 
 ## Not built yet
 
-Named here so nobody assumes otherwise:
+Named here so nobody assumes otherwise. The roadmap (`ROADMAP.md`, *Accesslink follow-ups*) carries the order and the reasoning.
 
 - **WooCommerce products.** Products are a CPT, but price/stock/SKU live in postmeta *and* in Woo's `wp_wc_product_meta_lookup` table. Writing them through `wp_update_post` desynchronises the two. A `ProductApplier` going through `wc_get_product()` setters and `save()` slots in beside `PostApplier`; the queue, auth, staleness and review UI all work unchanged.
-- **GeneratePress Elements.** Reading them (type, hook, and display conditions resolved to which posts they apply to) so an agent can tell that the footer CTA is an Element rather than a page.
-- **Menus.** `nav_menu_item` posts as a tree. Blocked less by the write than by the review: a text diff of a menu is meaningless, so the queue screen needs a tree diff before approving one is honest.
+- **Attachment fields.** Alt text, title and caption of media items. Reads exist; there is no applier for the `attachment` entity yet, and on GenerateBlocks pages the rendered alt lives in the block markup rather than on the attachment.
 - **Custom fields / ACF.** Common on agency sites, entirely absent here.
+- **Renaming and scheduling.** `post_name` on an existing post and `post_date`. A rename ships together with redirects or not at all.
+- **Media upload.** `/media` is a picker, not an uploader; a page an agent creates has no images unless the library already holds them.
+- **Reverting an applied change**, though the revision to revert to already exists.
+- **Grouped or atomic batches.** Every proposal is reviewed and applied on its own.
 - **Reading back a proposal's payload.** `GET /changes/{id}` returns metadata, not the proposed content, so an agent cannot inspect what a *different* agent queued — only that something is queued.
-- **Per-key scoping.** One key per site; the only granularity is the site-wide `allowed_post_types` list.
+- **Per-key scoping.** One key per site; the only granularity is the site-wide allowed post types list.
 - **Remote approval from EngineLink.** The service layer is already the single implementation behind both entry points, so aggregating queues across sites is additive — but it needs an approver credential that is not the propose key.
-- **Per-key scoping.** One key per site, all-or-nothing across the allowed post types.
+- **Menus: creating one, setting its language, assigning a theme location.** Repointing items ships; those one-time structural decisions stay in wp-admin.

@@ -16,7 +16,11 @@ use Valolink\Plugin\Modules\Accesslink\Seo\SeoAdapterFactory;
  * predictable shape instead, and can see the drafts Accesslink itself created.
  *
  * Scope is the same allowed_post_types list that governs proposing, so widening
- * one widens the other. Password-protected posts are excluded outright.
+ * one widens the other. Password-protected posts are included: a post password
+ * gates the public front end, nothing more, and an agent that already sees
+ * drafts and private posts is not kept out by it. Operators put a password on
+ * a page precisely while a client reviews it, which is when the agent's edits
+ * are wanted — refusing it here stalled exactly that work.
  */
 final class ContentReader
 {
@@ -52,6 +56,17 @@ final class ContentReader
             ? [$status]
             : self::VISIBLE_STATUSES;
 
+        // WP_Query's search clause drops password-protected posts whenever no
+        // user is logged in — and a Bearer request has no user. The key already
+        // reads those posts one by one, so a search that cannot find them is
+        // simply wrong; strip the clause for the duration of this query.
+        global $wpdb;
+        $strip = static fn (string $search): string => (string) preg_replace(
+            '/\s*AND\s*\(\s*' . preg_quote($wpdb->posts, '/') . '\.post_password\s*=\s*\'\'\s*\)\s*/',
+            ' ',
+            $search,
+        );
+        add_filter('posts_search', $strip);
         $query = new \WP_Query([
             'post_type'           => $types,
             'post_status'         => $statuses,
@@ -59,10 +74,10 @@ final class ContentReader
             's'                   => isset($args['search']) ? sanitize_text_field((string) $args['search']) : '',
             'orderby'             => 'modified',
             'order'               => 'DESC',
-            'has_password'        => false,
             'ignore_sticky_posts' => true,
             'no_found_rows'       => false,
         ]);
+        remove_filter('posts_search', $strip);
 
         // Opt-in extras so an audit is one call instead of one per post,
         // while the default row stays as lean as an agent's context needs.
@@ -99,10 +114,6 @@ final class ContentReader
         if (!in_array($post->post_status, self::VISIBLE_STATUSES, true)) {
             return new \WP_Error('not_readable', 'That post is not readable through Accesslink.', ['status' => 403]);
         }
-        if ($post->post_password !== '') {
-            return new \WP_Error('protected', 'Password-protected posts are not exposed.', ['status' => 403]);
-        }
-
         $content = (string) $post->post_content;
         $truncated = mb_strlen($content) > self::CONTENT_MAX_CHARS;
 

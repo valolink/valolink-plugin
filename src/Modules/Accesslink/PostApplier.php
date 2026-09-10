@@ -168,7 +168,7 @@ final class PostApplier
             'post_type'    => $post_type,
             'post_status'  => 'draft',
             'post_title'   => (string) ($fields['post_title'] ?? ''),
-            'post_content' => $this->filter_content((string) ($fields['post_content'] ?? '')),
+            'post_content' => (string) ($fields['post_content'] ?? ''),
             'post_excerpt' => (string) ($fields['post_excerpt'] ?? ''),
         ];
         // A new draft has nothing to redirect from, so a slug here needs none
@@ -199,7 +199,7 @@ final class PostApplier
                 continue;
             }
             $value = (string) $fields[$field];
-            $data[$field] = $field === 'post_content' ? $this->filter_content($value) : $value;
+            $data[$field] = $value;
         }
 
         if (count($data) > 1) {
@@ -471,7 +471,7 @@ final class PostApplier
      */
     public function apply_raw_content(int $post_id, string $content): bool|\WP_Error
     {
-        $data = wp_slash(['ID' => $post_id, 'post_content' => $this->filter_content($content)]);
+        $data = wp_slash(['ID' => $post_id, 'post_content' => $content]);
         $result = self::without_kses(static fn () => wp_update_post($data, true));
 
         return is_wp_error($result) ? $result : true;
@@ -490,34 +490,20 @@ final class PostApplier
     }
 
     /**
-     * Mirror WordPress's own rule rather than inventing one: content is passed
-     * through kses unless the acting user could have written it by hand. On a
-     * single site administrators and editors have unfiltered_html, so approving
-     * an agent's post is equivalent to pasting it into the editor yourself; the
-     * filtered path is what an author-role reviewer gets.
-     *
-     * ContentSanitizer rather than wp_kses_post() because the latter has no SVG
-     * allowlist and would strip every inline icon — see that class for the
-     * measurements.
-     */
-    private function filter_content(string $content): string
-    {
-        return current_user_can('unfiltered_html') ? $content : ContentSanitizer::filter($content);
-    }
-
-    /**
      * Run a save with WordPress's own kses filters lifted.
      *
-     * filter_content() has already applied this module's policy by the time
-     * anything reaches a save, and that policy deliberately keeps inline SVG.
-     * WordPress then adds wp_filter_post_kses to content_save_pre whenever the
-     * current user lacks unfiltered_html — and a propose-time request has no
-     * user at all — so it stripped every <svg> straight back out again,
-     * silently, undoing the exact thing ContentSanitizer exists to do.
+     * Nothing here filters content any more, on purpose. What an agent authored
+     * — a post body, a block fragment, inserted markup — is sanitised once at
+     * propose time by ChangeService, so the queue shows exactly what will be
+     * applied whoever approves it. What the site already had is never filtered:
+     * the documents rebuilt for a block edit are the site's own markup around
+     * one sanitised fragment, and passing them through any filter is how an
+     * Editor's approval used to strip every SVG icon on the page.
      *
-     * Lifting them here is what makes filter_content() the single authority on
-     * what survives, rather than the first of two filters where the second
-     * quietly wins.
+     * WordPress adds wp_filter_post_kses to content_save_pre whenever the
+     * current user lacks unfiltered_html — and a propose-time request has no
+     * user at all — so without this it stripped every <svg> back out again,
+     * silently, undoing the exact thing ContentSanitizer exists to keep.
      */
     private static function without_kses(callable $save): mixed
     {
