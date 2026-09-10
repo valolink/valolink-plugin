@@ -118,9 +118,9 @@ Both `actions` and `capabilities` are derived from the code that enforces them, 
 
 The read half. Core's `/wp/v2` can't be reached with an Accesslink key, can't see drafts, and returns far more per post than an agent wants to pay for.
 
-`GET /content` — query `search`, `post_type`, `status`, `limit` (max 50, default 20). Returns `id`, `post_type`, `status`, `title`, `slug`, `modified_gmt`, `link`, `content_chars` and a 280-character plain-text excerpt. Add `fields=seo,terms,media,layout` (any subset) to include the SEO fields, category and tag slugs, the featured image, and the page layout per row — an audit of fifty posts is then one call rather than fifty. The default row stays lean on purpose.
+`GET /content` — query `search`, `post_type`, `status`, `limit` (max 50, default 20). Returns `id`, `post_type`, `status`, `title`, `slug`, `modified_gmt`, `link`, `content_chars` and a 280-character plain-text excerpt. Add `fields=seo,terms,media,layout,product` (any subset) to include the SEO fields, term slugs, the featured image, the page layout and, on a product, its price and stock per row — an audit of fifty posts is then one call rather than fifty. The default row stays lean on purpose.
 
-`GET /content/{id}` — adds full `post_content`, `post_excerpt`, a `truncated` flag past 60000 characters, and `pending_changes`: ids of proposals already queued against that post. A non-empty list means someone has already proposed an edit on it; read those first. On a GeneratePress site it also carries `layout` (`sidebar_layout`, `content_container`, `hide_title`), and on a `gp_elements` post an `element` object in the same names an update may send back.
+`GET /content/{id}` — adds full `post_content`, `post_excerpt`, a `truncated` flag past 60000 characters, and `pending_changes`: ids of proposals already queued against that post. A non-empty list means someone has already proposed an edit on it; read those first. On a GeneratePress site it also carries `layout` (`sidebar_layout`, `content_container`, `hide_title`), on a `gp_elements` post an `element` object in the same names an update may send back, and on a WooCommerce product a `product` object (see *WooCommerce products*). Term fields appear only for taxonomies the post type has: a product used to list empty blog `categories` and `tags`, which invited proposing them, and a page no longer carries them either.
 
 Scope is the same `allowed_post_types` list that governs proposing, so a CPT outside it returns `403` on read as well as on write. Visible statuses are `publish`, `draft`, `pending`, `private`, `future` — trash and auto-drafts never appear. Password-protected posts are readable and proposable: the password gates the public front end only, and a key that already sees drafts and private posts is not kept out by it. They were refused until 0.2.3, which stalled the one case the password exists for — a page put behind one while the client reviews it.
 
@@ -237,6 +237,37 @@ The review screen flags any change to a `gp_elements` post, because a diff of an
 
 **Elements and languages.** When a multilingual plugin manages `gp_elements` — Polylang does by default — each Element belongs to one language and only runs on pages of that language. A site whose Elements are all in the source language will render a translated page with no header, no footer and none of the CSS or tracking those Elements inject. The fix is an Element per language, which is what `create_translation` is for: text-bearing Elements get translated, and the ones that only inject CSS or a script are created with no `texts` at all, existing purely so they run in the other language too.
 
+### WooCommerce products
+
+Present when WooCommerce is active and an operator has ticked `product` under *Allowed post types*. A product is a post, so its title, description (`post_content`), short description (`post_excerpt`), SEO fields, featured image and the block actions all work on it unchanged. What a product adds is the data WooCommerce owns, and that is written differently.
+
+Price, sale and stock live in postmeta **and** in `wc_product_meta_lookup`, the table the shop's filtering and sorting query instead of the meta. Writing the meta directly, or through `wp_update_post`, desynchronises the two. So those fields go through `ProductApplier`, which uses `wc_get_product()` setters and one `save()` — and **every write to a product ends in that save**, including a change that only touched its description. The save with nothing to set is deliberate: WooCommerce's own editor ends every edit in `WC_Product::save()`, feed and search integrations listen for the `woocommerce_update_product` it fires, and it fills in whatever Woo meta a product drafted as a bare post lacks, so a `create` arrives as a complete simple product, lookup row included. Woo's product instance cache is invalidated by `clean_post_cache` and meta writes, so the post-level write before it is read back fresh.
+
+`GET /content/{id}` on a product adds a `product` object: `type`, `currency`, `prices_include_tax`, the active `price`, `on_sale`, every product field with its current value, `variations` on a variable product, and `proposable` — the fields this product takes here, given its type and the switch below. `GET /content?fields=product` adds a short version per row, so a price audit is one call. `GET /taxonomies` adds `product_categories` and `product_tags`.
+
+Fields are WooCommerce's own REST API names, so what an agent already knows about Woo carries over:
+
+| Field | Notes |
+|---|---|
+| `product_categories`, `product_tags` | Existing term slugs, as for `categories`. |
+| `catalog_visibility` | `visible`, `catalog`, `search`, `hidden`. |
+| `featured` | true or false. |
+| `regular_price`, `sale_price` | Dot-decimal strings, `"49.90"`. A JSON number or `"49,90"` is accepted and stored with a dot; anything with a thousands separator or a currency sign is refused, because `1.290` read as a decimal is the mistake nothing downstream would catch. `""` as `sale_price` ends a sale; `regular_price` cannot be cleared. A sale price must be below the regular price, judged on the values *after* the change — so lowering the regular price under an existing sale is refused too, where WooCommerce would quietly stop treating the product as on sale. |
+| `date_on_sale_from`, `date_on_sale_to` | `YYYY-MM-DD` in the site's timezone. As in the product editor, a sale starts at 00:00:00 of its first day and ends at 23:59:59 of its last. Needs a sale price; an end date in the past is refused. |
+| `sku` | Unique across the shop, checked with WooCommerce's own `wc_product_has_unique_sku()`; the refusal names the product holding it. |
+| `stock_status` | Only while stock is not managed. With `manage_stock` on, WooCommerce derives the status from the quantity at save and would overwrite a proposed one, so that is refused rather than silently lost. |
+| `manage_stock`, `stock_quantity`, `backorders` | Quantity and backorders only with `manage_stock` true, and turning it on needs a quantity. Refused outright while stock management is off shop-wide. |
+
+By product type: **simple** takes everything; **external** takes prices and SKU but no stock, since WooCommerce keeps none for it; **variable** and **grouped** take SKU, visibility and featured only — a variable product's prices and stock live on its variations, which are not proposable yet. Types a plugin adds (bundles, subscriptions) get that same conservative set, since their prices are computed somewhere Accesslink has never seen. A `create` makes a simple product.
+
+**Prices, stock and SKUs ship switched off.** They change what customers pay and can order the moment a change is approved, so like menus they sit behind their own *Allow price and stock edits* toggle, rendered only while WooCommerce is active (saving the settings with Woo deactivated leaves it as it was). Descriptions, product categories and visibility need only the post type. With the toggle off the commerce fields drop out of `allowed_fields`, and a proposal naming them is refused with `403 commerce_disabled` — by name, not dropped with the other unknown fields, because an agent that sent a price and got a `201` for the title alone would report the price as proposed. A price change queued before the toggle went off fails at approval. `capabilities.products` and `capabilities.commerce` report both.
+
+Staleness needs no special case: the hash covers the values being replaced, read through the same `ProductApplier::read_field()` the diff uses. That earns its keep on stock, which moves on its own — an order between proposal and approval parks a stock change as `stale` instead of overwriting the sale.
+
+The review card for a product names its type, current price, stock and SKU, and a change touching commerce fields carries a warning that approving it changes what customers pay or can order. Each proposed price is rendered as the shop prints it, beside the old one and the change in per cent, and flagged when it moves by half or more: a misplaced decimal point is the mistake that matters, and `790` against `79.00` in a text diff hides it where `+900 %` does not. *Preview proposed version* still swaps only post columns, so it shows a changed description but not a changed price.
+
+**Orders, coupons and subscriptions** have an admin UI, so they are offered under *Allowed post types* like any other type, and a test site may want them. Each carries a warning beside its checkbox: orders and subscriptions are customer records whose edits bypass WooCommerce's own handling, and a coupon's title is a live discount code.
+
 ### POST /validate
 
 Dry-runs block checks without filing anything. Send `{content}` to check markup outright, or `{target_id, path, text|html}` to test an edit against a real post.
@@ -336,6 +367,7 @@ Send `X-Accesslink-Agent: <name>` to identify the caller in the queue and the au
 | `post_status` | `draft`, `pending`, `publish`, `private`. Settable on an update as well as a create, so unpublishing and publishing can be proposed. |
 | `sidebar_layout`, `content_container`, `hide_title` | GeneratePress per-page layout, present only when that theme is active: the same three choices as the editor's Layout panel, with `default` meaning "inherit the site setting". A page built from full-width front-page sections wants `no-sidebar` and `full-width`, or it opens inside whatever the theme default is. Refused on `gp_elements`. |
 | `element_type`, `block_type`, `hook`, `custom_hook`, `hook_priority`, `display_conditions`, `exclude_conditions`, `user_conditions` | What a GeneratePress Element *does*, in the names `GET /elements` returns. Only on `gp_elements`, and listed only when that type is allowed. Hooks are validated against GP Premium's own list; condition rules are checked for shape (`{"rule": "post:page", "object": "712"}`), not against the site's rule catalogue — the editor is where a wrong one shows up immediately. |
+| `product_categories`, `product_tags`, `catalog_visibility`, `featured`, and — with the commerce switch on — `regular_price`, `sale_price`, `date_on_sale_from`, `date_on_sale_to`, `sku`, `stock_status`, `manage_stock`, `stock_quantity`, `backorders` | WooCommerce product fields. Only on `product`, and listed only when that type is allowed. See *WooCommerce products*. |
 
 A `create` also takes a top-level `slug`. A new draft has nothing to redirect from, so it needs none of the care a rename does; renaming an existing post is still not offered.
 
@@ -409,6 +441,7 @@ Sites differ, and absence of a plugin narrows what Accesslink offers instead of 
 - **A post type without a taxonomy** — refused by name rather than written where nothing renders it.
 - **A block type whose plugin isn't installed** — `insert_block` refuses it by name.
 - **Not GeneratePress** — the three layout fields drop out of `allowed_fields`; **no GP Elements, or `gp_elements` not in the allowed types** — the element fields drop out, so the guide never advertises a field every proposal naming it would be refused for.
+- **No WooCommerce, or `product` not in the allowed types** — the product fields and taxonomies drop out and the `products` guide section is absent; **commerce switch off** — prices, sales, stock and SKU drop out, and a proposal naming them is refused by name rather than dropped.
 - **Logging module off** — audit calls are wrapped and swallowed; nothing depends on it.
 - **Queue table never installed** — every endpoint answers `503 accesslink_unavailable` instead of leaking SQL errors.
 
@@ -418,7 +451,7 @@ Sites differ, and absence of a plugin narrows what Accesslink offers instead of 
 
 Named here so nobody assumes otherwise. The roadmap (`ROADMAP.md`, *Accesslink follow-ups*) carries the order and the reasoning.
 
-- **WooCommerce products.** Products are a CPT, but price/stock/SKU live in postmeta *and* in Woo's `wp_wc_product_meta_lookup` table. Writing them through `wp_update_post` desynchronises the two. A `ProductApplier` going through `wc_get_product()` setters and `save()` slots in beside `PostApplier`; the queue, auth, staleness and review UI all work unchanged.
+- **WooCommerce beyond simple products.** Variations — a variable product's prices and stock — and attributes, gallery images, shipping and tax class, upsells and cross-sells, changing a product's type, and an external product's URL. Nor does the front-end preview render a proposed price yet.
 - **Attachment fields.** Alt text, title and caption of media items. Reads exist; there is no applier for the `attachment` entity yet, and on GenerateBlocks pages the rendered alt lives in the block markup rather than on the attachment.
 - **Custom fields / ACF.** Common on agency sites, entirely absent here.
 - **Renaming and scheduling.** `post_name` on an existing post and `post_date`. A rename ships together with redirects or not at all.

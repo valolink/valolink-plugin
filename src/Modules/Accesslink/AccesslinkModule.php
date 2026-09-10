@@ -367,7 +367,7 @@ final class AccesslinkModule implements Module
             ),
             'writes_enabled'     => (new AccesslinkAuth($this->settings))->writes_enabled(),
             'allowed_post_types' => $service->allowed_post_types(),
-            'allowed_fields'     => (new PostApplier())->allowed_fields($service->allowed_post_types()),
+            'allowed_fields'     => $service->allowed_fields(),
             'seo_plugin'         => (new PostApplier())->seo()->id(),
             'allowed_statuses'   => PostApplier::ALLOWED_STATUSES,
             // Derived, never hand-listed: this field and the validator drifted
@@ -398,6 +398,8 @@ final class AccesslinkModule implements Module
                 'elements'       => ElementReader::available()
                     && in_array(ElementReader::POST_TYPE, $service->allowed_post_types(), true),
                 'layout'         => LayoutMeta::available(),
+                'products'       => $service->products_allowed(),
+                'commerce'       => $service->products_allowed() && $service->commerce_enabled(),
                 'translations'   => TranslationAdapterFactory::detect()->available(),
                 'delete_post'    => false,
                 'media_upload'   => false,
@@ -811,7 +813,7 @@ final class AccesslinkModule implements Module
         // clipped one, but losing the operator's whole edit would be worse still.
         $instructions = mb_substr($instructions, 0, GuideBuilder::INSTRUCTIONS_MAX_CHARS);
 
-        $this->settings->set_module_settings(self::MODULE_ID, [
+        $values = [
             'notify_enabled'     => !empty($_POST['notify_enabled']),
             'notify_emails'      => isset($_POST['notify_emails'])
                 ? sanitize_text_field(wp_unslash($_POST['notify_emails']))
@@ -820,7 +822,14 @@ final class AccesslinkModule implements Module
             'allow_menu_edits'   => !empty($_POST['allow_menu_edits']),
             'allowed_post_types' => $types !== [] ? $types : ['post', 'page'],
             'instructions'       => $instructions,
-        ]);
+        ];
+        // Only when the field was on the form. It is rendered only while
+        // WooCommerce is active, and saving the settings with Woo switched off
+        // must not quietly reset it.
+        if (!empty($_POST['commerce_field'])) {
+            $values['allow_commerce_edits'] = !empty($_POST['allow_commerce_edits']);
+        }
+        $this->settings->set_module_settings(self::MODULE_ID, $values);
 
         $this->redirect_back('saved');
     }

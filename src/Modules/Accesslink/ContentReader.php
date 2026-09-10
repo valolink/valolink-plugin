@@ -92,7 +92,7 @@ final class ContentReader
         ];
     }
 
-    public const EXTRA_FIELDS = ['seo', 'terms', 'media', 'layout'];
+    public const EXTRA_FIELDS = ['seo', 'terms', 'media', 'layout', 'product'];
 
     /** @return array<int, string> */
     public static function extras(string $raw): array
@@ -135,7 +135,12 @@ final class ContentReader
                 $out[$field] = $this->applier->current_value($id, $field);
             }
         }
-        foreach (array_keys(PostApplier::TERM_FIELDS) as $field) {
+        foreach (PostApplier::term_fields() as $field => $taxonomy) {
+            // Only the taxonomies this type has: a product listing empty blog
+            // categories invites proposing them, and is refused for it.
+            if (!is_object_in_taxonomy($post->post_type, $taxonomy)) {
+                continue;
+            }
             $value = $this->applier->current_value($id, $field);
             $out[$field] = $value === '' ? [] : array_map('trim', explode(',', $value));
         }
@@ -157,6 +162,16 @@ final class ContentReader
                     $described,
                     array_flip(array_merge(ElementReader::WRITABLE, ['language'])),
                 );
+            }
+        }
+
+        // What the shop charges now and every product field, in the names an
+        // update sends back, read through the same resolver the staleness
+        // hash uses.
+        if ($post->post_type === ProductApplier::POST_TYPE && ProductApplier::available()) {
+            $product = (new ProductApplier())->read($id, $this->service->commerce_enabled());
+            if ($product !== null) {
+                $out['product'] = $product;
             }
         }
 
@@ -188,7 +203,11 @@ final class ContentReader
     public function taxonomies(): array
     {
         $out = [];
-        foreach (PostApplier::TERM_FIELDS as $field => $taxonomy) {
+        foreach (PostApplier::term_fields() as $field => $taxonomy) {
+            // Product terms only where agents may touch products at all.
+            if (isset(ProductApplier::TERM_FIELDS[$field]) && !$this->service->products_allowed()) {
+                continue;
+            }
             $terms = get_terms(['taxonomy' => $taxonomy, 'hide_empty' => false, 'number' => 200]);
             // ids as well as slugs: proposals take slugs, but a query-loop
             // block references terms by id, and an agent reading one should
@@ -272,7 +291,7 @@ final class ContentReader
             }
         }
         if (in_array('terms', $extra, true)) {
-            foreach (PostApplier::TERM_FIELDS as $field => $taxonomy) {
+            foreach (PostApplier::term_fields() as $field => $taxonomy) {
                 if (!is_object_in_taxonomy($post->post_type, $taxonomy)) {
                     continue;
                 }
@@ -287,6 +306,11 @@ final class ContentReader
         }
         if (in_array('layout', $extra, true) && LayoutMeta::applies_to($post->post_type)) {
             $row['layout'] = (new LayoutMeta())->read($post->ID);
+        }
+        if (in_array('product', $extra, true)
+            && $post->post_type === ProductApplier::POST_TYPE
+            && ProductApplier::available()) {
+            $row['product'] = (new ProductApplier())->summary($post->ID);
         }
 
         return $row;

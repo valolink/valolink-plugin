@@ -70,6 +70,11 @@ final class GuideBuilder
                 'summary' => 'Addressing one block instead of rewriting a page, and adding, removing or moving blocks.',
                 'when'    => $this->uses_blocks(),
             ],
+            'products' => [
+                'label'   => 'WooCommerce products',
+                'summary' => 'Product fields — categories, visibility and, where switched on, prices and stock — and the rules WooCommerce holds them to.',
+                'when'    => $this->service->products_allowed(),
+            ],
             'translations' => [
                 'label'   => 'Translations',
                 'summary' => 'Reading what exists in which language, and proposing a translation.',
@@ -118,6 +123,7 @@ final class GuideBuilder
         $lines = match ($name) {
             'proposing'    => $this->section_proposing(),
             'blocks'       => $this->section_blocks(),
+            'products'     => $this->section_products(),
             'translations' => $this->section_translations(),
             'elements'     => $this->section_elements(),
             'menus'        => $this->section_menus(),
@@ -149,8 +155,7 @@ final class GuideBuilder
         $base     = $this->base();
         $site     = get_bloginfo('name');
         $types    = implode(', ', $this->service->allowed_post_types());
-        $applier  = new PostApplier();
-        $fields   = implode(', ', $applier->allowed_fields($this->service->allowed_post_types()));
+        $fields   = implode(', ', $this->service->allowed_fields());
         $statuses = implode(', ', PostApplier::ALLOWED_STATUSES);
 
         $md = [];
@@ -463,6 +468,88 @@ final class GuideBuilder
     }
 
     /** @return array<int, string> */
+    private function section_products(): array
+    {
+        $base     = $this->base();
+        $commerce = $this->service->commerce_enabled();
+
+        $md = [];
+        $md[] = '## WooCommerce products';
+        $md[] = '';
+        $md[] = 'Products are `' . ProductApplier::POST_TYPE . '` posts, so the title, the description (`post_content`), the';
+        $md[] = 'short description (`post_excerpt`), SEO fields and the image work exactly as on a page.';
+        $md[] = "`GET {$base}/content/{id}` on a product adds a `product` object: its type, the price the";
+        $md[] = 'shop charges now, every product field with its current value, and `proposable` — the';
+        $md[] = "fields that particular product takes here. `GET {$base}/content?post_type=product&fields=product`";
+        $md[] = 'gives the short version per row, so a price audit is one call.';
+        $md[] = '';
+        $md[] = 'Product fields go in `fields` on a `create` or an `update`, in the names WooCommerce\'s';
+        $md[] = 'own REST API uses:';
+        $md[] = '';
+        $md[] = "- `product_categories`, `product_tags` — existing term slugs from `GET {$base}/taxonomies`.";
+        $md[] = '  `categories` and `tags` are the blog\'s; products do not have them.';
+        $md[] = '- `catalog_visibility` — ' . implode(', ', array_keys(wc_get_product_visibility_options()))
+            . '. `featured` — true or false.';
+
+        if ($commerce) {
+            $tax = wc_tax_enabled()
+                ? (wc_prices_include_tax() ? 'including tax' : 'excluding tax, which is added at checkout')
+                : 'with no tax calculated';
+            $md[] = '- `regular_price`, `sale_price` — plain numbers as strings with a dot, `"49.90"`, in '
+                . get_woocommerce_currency() . ',';
+            $md[] = '  entered ' . $tax . '. A client\'s price list often quotes the other one:';
+            $md[] = '  convert, and say in `note` that you did. `""` as `sale_price` ends a sale;';
+            $md[] = '  `regular_price` cannot be cleared. A sale price must be below the regular price.';
+            $md[] = '- `date_on_sale_from`, `date_on_sale_to` — `YYYY-MM-DD` in the site\'s timezone ('
+                . wp_timezone_string() . '). The';
+            $md[] = '  sale starts at the beginning of the first day and ends at the end of the last. Needs a';
+            $md[] = '  sale price; `""` clears.';
+            $md[] = '- `sku` — unique across the shop. Integrations often key on it; change one only when asked.';
+            $md[] = '- `stock_status` — ' . implode(', ', array_keys(wc_get_product_stock_status_options()))
+                . '. Only while stock is not managed: with';
+            $md[] = '  `manage_stock` true, WooCommerce derives it from `stock_quantity`.';
+            $md[] = '- `manage_stock` (true or false), `stock_quantity` (a whole number), `backorders` ('
+                . implode(', ', array_keys(wc_get_product_backorder_options())) . ') — the';
+            $md[] = '  last two only with `manage_stock` true.'
+                . (ProductApplier::store_manages_stock() ? '' : ' Stock management is off for this whole shop, so none of these three apply.');
+        } else {
+            $md[] = '';
+            $md[] = 'Prices, sales, stock and SKUs are **switched off** on this site: a proposal naming them is';
+            $md[] = 'refused with 403. Ask the operator if the job needs them.';
+        }
+        $md[] = '';
+        $md[] = 'What each product type takes: **simple** — everything; **external** — prices and SKU but';
+        $md[] = 'no stock; **variable** and **grouped** — SKU, visibility and featured only. A variable';
+        $md[] = 'product\'s prices and stock live on its variations, which cannot be proposed yet. A';
+        $md[] = '`create` makes a simple product.';
+        $md[] = '';
+
+        if ($commerce) {
+            $md[] = '```json';
+            $md[] = '{';
+            $md[] = '  "action": "update",';
+            $md[] = '  "target_id": 123,';
+            $md[] = '  "fields": { "sale_price": "39.90", "date_on_sale_from": "' . wp_date('Y-m-d', time() + 7 * DAY_IN_SECONDS)
+                . '", "date_on_sale_to": "' . wp_date('Y-m-d', time() + 10 * DAY_IN_SECONDS) . '" },';
+            $md[] = '  "note": "Campaign price from the client\'s email of today.",';
+            $md[] = '  "idempotency_key": "unique-string-per-proposal"';
+            $md[] = '}';
+            $md[] = '```';
+            $md[] = '';
+            $md[] = 'A price applies the moment it is approved, carts in progress included. The reviewer';
+            $md[] = 'sees the old and the new price and the change in per cent; your `note` is how they know';
+            $md[] = 'the number is right, so say where it came from.';
+            $md[] = '';
+            $md[] = 'Stock moves on its own — every order changes it. A stock proposal records the quantity';
+            $md[] = 'you saw, and if anything sells before approval it is parked as `stale` rather than';
+            $md[] = 'overwriting the sale. Re-read and propose again.';
+            $md[] = '';
+        }
+
+        return $md;
+    }
+
+    /** @return array<int, string> */
     private function section_translations(): array
     {
         $base = $this->base();
@@ -756,6 +843,13 @@ final class GuideBuilder
         }
         if (!$this->service->menus_enabled()) {
             $out[] = 'Navigation menus — editing them is switched off for this site';
+        }
+        if (ProductApplier::available()) {
+            if (!$this->service->products_allowed()) {
+                $out[] = 'WooCommerce products — not among the post types allowed here';
+            } elseif (!$this->service->commerce_enabled()) {
+                $out[] = 'Product prices, sales, stock and SKUs — switched off for this site';
+            }
         }
         $out[] = 'Creating menus, assigning theme locations, media uploads, and deleting anything';
 

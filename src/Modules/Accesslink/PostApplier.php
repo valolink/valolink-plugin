@@ -16,9 +16,10 @@ use Valolink\Plugin\Modules\Accesslink\Seo\SeoAdapterFactory;
  * ChangeService so the queue, the staleness gate and the review diff all get
  * them for free.
  *
- * A WooCommerce applier still slots in beside this later — product price and
- * stock live in postmeta *and* Woo's lookup table, so they need wc_get_product()
- * setters rather than any of the paths below.
+ * WooCommerce products add one more family, the fields Woo owns, which
+ * ProductApplier writes beside this: price and stock live in postmeta *and*
+ * Woo's lookup table, so they need wc_get_product() setters rather than any of
+ * the paths below. Every write to a product ends in its save().
  */
 final class PostApplier
 {
@@ -52,13 +53,14 @@ final class PostApplier
     /**
      * Every field an agent may set on this site right now.
      *
-     * Element fields are listed only when the site both has GeneratePress
-     * Elements and allows agents at that post type — otherwise they would
+     * Element and product fields are listed only when the site both has the
+     * plugin and allows agents at that post type — otherwise they would
      * advertise a capability every proposal naming them is refused for.
+     * Prices, stock and SKUs need the operator's commerce switch as well.
      *
      * @param array<int, string>|null $post_types the site's allowed post types, if known
      */
-    public function allowed_fields(?array $post_types = null): array
+    public function allowed_fields(?array $post_types = null, bool $commerce = false): array
     {
         $fields = self::POST_FIELDS;
         if ($this->seo->can_write()) {
@@ -74,8 +76,26 @@ final class PostApplier
             && ($post_types === null || in_array(ElementReader::POST_TYPE, $post_types, true))) {
             $fields = array_merge($fields, ElementReader::WRITABLE);
         }
+        if (ProductApplier::available()
+            && ($post_types === null || in_array(ProductApplier::POST_TYPE, $post_types, true))) {
+            $fields = array_merge($fields, array_keys(ProductApplier::TERM_FIELDS), ProductApplier::MERCHANDISING_FIELDS);
+            if ($commerce) {
+                $fields = array_merge($fields, ProductApplier::COMMERCE_FIELDS);
+            }
+        }
 
         return $fields;
+    }
+
+    /**
+     * Taxonomy fields across post types: the blog's categories and tags, and
+     * WooCommerce's product ones where it is active.
+     *
+     * @return array<string, string> field => taxonomy
+     */
+    public static function term_fields(): array
+    {
+        return ProductApplier::available() ? self::TERM_FIELDS + ProductApplier::TERM_FIELDS : self::TERM_FIELDS;
     }
 
     /**
@@ -98,14 +118,21 @@ final class PostApplier
             return (string) ($this->seo->read($post_id)[$field] ?? '');
         }
 
-        if (isset(self::TERM_FIELDS[$field])) {
-            $terms = wp_get_object_terms($post_id, self::TERM_FIELDS[$field], ['fields' => 'slugs']);
+        $term_fields = self::term_fields();
+        if (isset($term_fields[$field])) {
+            $terms = wp_get_object_terms($post_id, $term_fields[$field], ['fields' => 'slugs']);
             if (is_wp_error($terms)) {
                 return '';
             }
             sort($terms);
 
             return implode(', ', $terms);
+        }
+
+        if (in_array($field, ProductApplier::FIELDS, true)) {
+            return $post->post_type === ProductApplier::POST_TYPE && ProductApplier::available()
+                ? (new ProductApplier())->read_field($post_id, $field)
+                : '';
         }
 
         if ($field === self::MEDIA_FIELD) {
@@ -187,12 +214,40 @@ final class PostApplier
         // preview shows the whole proposal rather than a headline with no
         // image and no category.
         $rest = $this->apply_non_post_fields((int) $id, $fields);
+        if (is_wp_error($rest)) {
+            return $rest;
+        }
 
-        return is_wp_error($rest) ? $rest : (int) $id;
+        // A product drafted as a bare post has none of WooCommerce's meta and
+        // no lookup row. One save through its CRUD fills that in and sets the
+        // proposed price and stock — what the product editor does with the
+        // auto-draft it starts from. Removed outright if that fails: nobody
+        // has reviewed it, so there is nothing to recover.
+        if ($post_type === ProductApplier::POST_TYPE && ProductApplier::available()) {
+            $product = (new ProductApplier())->apply((int) $id, $fields);
+            if (is_wp_error($product)) {
+                wp_delete_post((int) $id, true);
+
+                return $product;
+            }
+        }
+
+        return (int) $id;
     }
 
     public function apply_update(int $post_id, array $fields): bool|\WP_Error
     {
+        // Checked before anything is written: a product change that fails
+        // half-way — title applied, SKU refused — is worse than one that
+        // fails whole.
+        $product = self::product_of($post_id);
+        if ($product !== null) {
+            $check = (new ProductApplier())->check($fields, $product);
+            if (is_wp_error($check)) {
+                return $check;
+            }
+        }
+
         $data = ['ID' => $post_id];
         foreach (self::POST_FIELDS as $field) {
             if (!array_key_exists($field, $fields)) {
@@ -215,6 +270,12 @@ final class PostApplier
             return $rest;
         }
 
+        // Last, so the save WooCommerce's integrations hear about sees the
+        // title, terms and SEO just written as well as its own fields.
+        if ($product !== null) {
+            return (new ProductApplier())->apply($post_id, $fields);
+        }
+
         if (count($data) === 1 && $rest === false) {
             return new \WP_Error('nothing_to_apply', 'No supported fields in payload.');
         }
@@ -230,8 +291,10 @@ final class PostApplier
      * cheerful 201, and so the reviewer's queue doesn't fill with proposals
      * that were never applicable. Apply time re-checks anyway, because the
      * site can move underneath a queued change.
+     *
+     * @param int $post_id the post an update targets; 0 for a create
      */
-    public function validate(string $post_type, array $fields): true|\WP_Error
+    public function validate(string $post_type, array $fields, int $post_id = 0): true|\WP_Error
     {
         $seo_fields = array_intersect_key($fields, array_flip(SeoAdapterFactory::FIELDS));
         if ($seo_fields !== [] && !$this->seo->can_write()) {
@@ -242,7 +305,7 @@ final class PostApplier
             );
         }
 
-        foreach (self::TERM_FIELDS as $field => $taxonomy) {
+        foreach (self::term_fields() as $field => $taxonomy) {
             if (!array_key_exists($field, $fields)) {
                 continue;
             }
@@ -310,6 +373,27 @@ final class PostApplier
             }
         }
 
+        $product_fields = array_intersect_key($fields, array_flip(ProductApplier::FIELDS));
+        if ($product_fields !== []) {
+            if ($post_type !== ProductApplier::POST_TYPE || !ProductApplier::available()) {
+                return new \WP_Error(
+                    'product_fields_unsupported',
+                    sprintf('Product fields (%s) apply only to %s.', implode(', ', array_keys($product_fields)), ProductApplier::POST_TYPE),
+                    ['status' => 400],
+                );
+            }
+            // A create is checked against a fresh simple product, whose
+            // defaults are what the new one starts from.
+            $product = $post_id > 0 ? wc_get_product($post_id) : new \WC_Product_Simple();
+            if (!$product instanceof \WC_Product) {
+                return new \WP_Error('not_a_product', sprintf('%d is not a WooCommerce product.', $post_id), ['status' => 404]);
+            }
+            $check = (new ProductApplier())->check($product_fields, $product);
+            if (is_wp_error($check)) {
+                return $check;
+            }
+        }
+
         return true;
     }
 
@@ -330,7 +414,7 @@ final class PostApplier
             $wrote = true;
         }
 
-        foreach (self::TERM_FIELDS as $field => $taxonomy) {
+        foreach (self::term_fields() as $field => $taxonomy) {
             if (!array_key_exists($field, $fields)) {
                 continue;
             }
@@ -355,7 +439,7 @@ final class PostApplier
         }
 
         if (array_key_exists(self::STATUS_FIELD, $fields)) {
-            $status = $this->set_status($post_id, (string) $fields[self::STATUS_FIELD]);
+            $status = $this->write_status($post_id, (string) $fields[self::STATUS_FIELD]);
             if (is_wp_error($status)) {
                 return $status;
             }
@@ -466,18 +550,32 @@ final class PostApplier
 
     /**
      * Write a whole post_content that was produced by re-serialising the block
-     * tree. Still passes the sanitizer, so a block edit is filtered on exactly
-     * the same terms as any other content change.
+     * tree. Applied as it is: the agent's fragment inside it was sanitised at
+     * propose time, and the rest is the site's own markup.
      */
     public function apply_raw_content(int $post_id, string $content): bool|\WP_Error
     {
         $data = wp_slash(['ID' => $post_id, 'post_content' => $content]);
         $result = self::without_kses(static fn () => wp_update_post($data, true));
+        if (is_wp_error($result)) {
+            return $result;
+        }
 
-        return is_wp_error($result) ? $result : true;
+        return self::product_of($post_id) !== null ? (new ProductApplier())->apply($post_id, []) : true;
     }
 
+    /** Approving a create or a translation; ends in the product save where there is one. */
     public function set_status(int $post_id, string $status): bool|\WP_Error
+    {
+        $result = $this->write_status($post_id, $status);
+        if (is_wp_error($result)) {
+            return $result;
+        }
+
+        return self::product_of($post_id) !== null ? (new ProductApplier())->apply($post_id, []) : true;
+    }
+
+    private function write_status(int $post_id, string $status): bool|\WP_Error
     {
         if (!in_array($status, self::ALLOWED_STATUSES, true)) {
             return new \WP_Error('bad_status', 'Unsupported post status.');
@@ -487,6 +585,17 @@ final class PostApplier
         $result = self::without_kses(static fn () => wp_update_post($data, true));
 
         return is_wp_error($result) ? $result : true;
+    }
+
+    /** The WooCommerce product behind a post, when there is one. */
+    private static function product_of(int $post_id): ?\WC_Product
+    {
+        if (!ProductApplier::available() || get_post_type($post_id) !== ProductApplier::POST_TYPE) {
+            return null;
+        }
+        $product = wc_get_product($post_id);
+
+        return $product instanceof \WC_Product ? $product : null;
     }
 
     /**

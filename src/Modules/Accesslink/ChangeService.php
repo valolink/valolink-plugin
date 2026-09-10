@@ -40,6 +40,38 @@ final class ChangeService
         return is_array($configured) && $configured !== [] ? array_values($configured) : ['post', 'page'];
     }
 
+    /**
+     * Prices, stock and SKUs change what customers pay and can order the
+     * moment a change is approved, so like menus they are opt-in per site.
+     */
+    public function commerce_enabled(): bool
+    {
+        return (bool) $this->settings->get_module_setting(
+            AccesslinkModule::MODULE_ID,
+            'allow_commerce_edits',
+            false,
+        );
+    }
+
+    /**
+     * Every field an agent may set here, given the allowed post types and the
+     * commerce switch. The one list sanitising, the guide and the error
+     * messages all read, so they cannot disagree.
+     *
+     * @return array<int, string>
+     */
+    public function allowed_fields(): array
+    {
+        return $this->applier->allowed_fields($this->allowed_post_types(), $this->commerce_enabled());
+    }
+
+    /** WooCommerce is active and the operator lets agents at its products. */
+    public function products_allowed(): bool
+    {
+        return ProductApplier::available()
+            && in_array(ProductApplier::POST_TYPE, $this->allowed_post_types(), true);
+    }
+
     // -------------------------------------------------------------------------
     // Propose
     // -------------------------------------------------------------------------
@@ -107,11 +139,28 @@ final class ChangeService
             );
         }
 
-        $fields = $this->sanitize_fields($input['fields'] ?? []);
+        // Refused by name rather than dropped with the other unknown fields:
+        // an agent that sent a price and got a 201 for the title alone would
+        // report the price as proposed.
+        $raw_fields = is_array($input['fields'] ?? null) ? $input['fields'] : [];
+        $commerce = array_values(array_intersect(array_keys($raw_fields), ProductApplier::COMMERCE_FIELDS));
+        if ($commerce !== [] && ProductApplier::available() && !$this->commerce_enabled()) {
+            return new \WP_Error(
+                'commerce_disabled',
+                sprintf(
+                    'Price, stock and SKU edits are switched off for this site (%s). An operator can enable '
+                        . 'them under Valolink → Accesslink.',
+                    implode(', ', $commerce),
+                ),
+                ['status' => 403],
+            );
+        }
+
+        $fields = $this->sanitize_fields($raw_fields);
         if ($fields === []) {
             return new \WP_Error(
                 'no_fields',
-                'fields must contain at least one of: ' . implode(', ', $this->applier->allowed_fields($this->allowed_post_types())),
+                'fields must contain at least one of: ' . implode(', ', $this->allowed_fields()),
                 ['status' => 400],
             );
         }
@@ -195,7 +244,7 @@ final class ChangeService
             return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 400]);
         }
 
-        $invalid = $this->applier->validate($post->post_type, $fields);
+        $invalid = $this->applier->validate($post->post_type, $fields, $target_id);
         if (is_wp_error($invalid)) {
             return $invalid;
         }
@@ -1076,6 +1125,10 @@ final class ChangeService
 
             $result = $this->applier->apply_raw_content($target_id, (string) $content);
         } elseif ($change['action'] === ChangeRepository::ACTION_UPDATE) {
+            if (array_intersect(array_keys($fields), ProductApplier::COMMERCE_FIELDS) !== [] && !$this->commerce_enabled()) {
+                return $this->fail($id, 'Price and stock edits were switched off after this was proposed.');
+            }
+
             // Staleness gate. Someone editing the post between proposal and
             // approval must not have their work silently overwritten.
             $current = $this->applier->hash($target_id, array_keys($fields));
@@ -1378,7 +1431,7 @@ final class ChangeService
             return [];
         }
 
-        $allowed = $this->applier->allowed_fields($this->allowed_post_types());
+        $allowed = $this->allowed_fields();
         $out = [];
 
         foreach ($allowed as $field) {
@@ -1403,7 +1456,15 @@ final class ChangeService
                 continue;
             }
 
-            if (isset(PostApplier::TERM_FIELDS[$field])) {
+            if (in_array($field, ProductApplier::FIELDS, true)) {
+                // Canonical where it parses, so the queue shows exactly what
+                // will be written; as sent where it does not, for validate()
+                // to refuse with the reason.
+                $out[$field] = ProductApplier::sanitize($field, $value);
+                continue;
+            }
+
+            if (isset(PostApplier::term_fields()[$field])) {
                 // Accepts slugs or names; PostApplier resolves them and refuses
                 // anything that doesn't already exist.
                 $terms = is_array($value) ? $value : [$value];

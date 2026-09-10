@@ -86,7 +86,8 @@ at the end as history, because the *why* of a decision is what stops it being
 re-litigated.
 
 Test site: `staging.valolink.fi` (Polylang 3.8.7, GenerateBlocks, Rank Math,
-Redirection; menus and `gp_elements` allowed). Deployed as a plain file copy, no
+Redirection, WooCommerce 11.1 with HPOS; menus, `gp_elements` and `product`
+allowed; test product 4410). Deployed as a plain file copy, no
 git checkout — from the plugin checkout:
 
 ```
@@ -179,13 +180,17 @@ WooCommerce work widened the write surface:
   change stands alone, so a translation plus its menu entry plus its redirect can
   be approved piecemeal and leave the site half-done. Architectural, and the unlock
   for every multi-entity item here. Second slice after grouped review.
+- [ ] **WooCommerce, beyond simple products.** The first slice ships (see below).
+  Next, in order: **variations** — a variable product's prices and stock live on
+  `product_variation` posts, so a price-list update on a clothing or parts shop
+  cannot be done at all yet; a variations read plus an update keyed by variation
+  id, through the same `ProductApplier`. Then a preview that renders a proposed
+  price, so approving one is checked the way text is; gallery images; attributes;
+  shipping and tax class. Grouped review matters more here than anywhere: a price
+  list is fifty proposals.
 
 #### Open — Tier 3: deferred, with the reason
 
-- [ ] **WooCommerce products.** A `ProductApplier` beside `PostApplier` going through
-  `wc_get_product()` setters and `save()` — price/stock/SKU live in postmeta *and*
-  Woo's `wp_wc_product_meta_lookup`, so `wp_update_post` desynchronises them. Queue,
-  auth, staleness gate and review UI need no changes. Build it when a Woo client asks.
 - [ ] **Contact Form 7.** Read-only value only — knowing what a form collects is
   useful; rewriting a form template risks lead capture.
 - [ ] **Remote approval from EngineLink.** `ChangeService` is already the single
@@ -253,6 +258,25 @@ Kept short; the spec carries the current behaviour.
   used to arrive inert, a created page opened in the theme's default layout);
   allowed post types as checkboxes; and password-protected posts readable and
   listable, since the password gates the public front end only.
+- **WooCommerce products, first slice (2026-09-10).** Product fields on `create`
+  and `update` in WooCommerce's REST names, written by `ProductApplier` through
+  `wc_get_product()` setters and one `save()`. Every product write ends in that
+  save, a description-only change included, so the lookup table, Woo's caches
+  and `woocommerce_update_product` listeners stay in step. Prices, sales, stock
+  and SKU sit behind an *Allow price and stock edits* toggle, off by default like
+  menus; product categories, visibility and featured need only the post type.
+  Rules WooCommerce would otherwise resolve silently are refused with the reason:
+  a sale not below the regular price, a stock status on a stock-managed product,
+  a quantity without stock management. The review card shows the product's
+  current price and stock and renders a proposed price as the shop prints it,
+  with the change in per cent. Orders, coupons and subscriptions stay selectable
+  as post types but carry a warning beside the checkbox. Verified on staging
+  through the real API and review forms: a merchandising update and a product
+  create approved (the create arrived with its lookup row and visibility terms),
+  a price list with a ten-day sale and a stock change approved and read back from
+  postmeta and the lookup table, a stock change parked as stale after a simulated
+  sale, a price queued before the switch went off failing at approval, and every
+  refusal above returned with its reason.
 
 #### Polylang translations — design
 

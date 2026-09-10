@@ -154,6 +154,10 @@ final class QueuePage
                 </p>
             <?php endif; ?>
 
+            <?php if ($change['post_type'] === ProductApplier::POST_TYPE && ProductApplier::available()) : ?>
+                <?php $this->render_product_context($change); ?>
+            <?php endif; ?>
+
             <?php if ($is_translation) : ?>
                 <?php
                 $source_id = (int) ($change['payload']['source_id'] ?? 0);
@@ -328,6 +332,9 @@ final class QueuePage
             $this->render_field_diff($current, $proposed);
             if (in_array($field, ['seo_title', 'seo_description'], true)) {
                 $this->render_seo_preview($applier, (int) $change['target_id'], $field, $proposed);
+            }
+            if (in_array($field, ProductApplier::PRICE_FIELDS, true) && ProductApplier::available()) {
+                $this->render_price_preview($current, $proposed);
             }
         }
     }
@@ -601,6 +608,95 @@ final class QueuePage
         return implode("\n", $lines);
     }
 
+    /**
+     * Post types that are records rather than content. Still offered — a test
+     * site may want everything ticked — but never without saying what ticking
+     * one hands an agent.
+     *
+     * @return array<string, string> slug => warning
+     */
+    private static function sensitive_post_types(): array
+    {
+        return [
+            'shop_order'        => __('Customer data. Orders carry customers\' notes, and a status or title change through Accesslink bypasses WooCommerce\'s order handling.', 'valolink-plugin'),
+            'shop_subscription' => __('Customer data. Subscriptions carry customers\' notes and billing schedules, and edits bypass WooCommerce\'s own handling.', 'valolink-plugin'),
+            'shop_coupon'       => __('Coupon codes are live discounts: the agent can read every code, and a title change renames one.', 'valolink-plugin'),
+        ];
+    }
+
+    /**
+     * What the product is and costs right now, and — when the change touches
+     * price, stock or SKU — a plain statement that approving it changes what
+     * customers pay or can order.
+     */
+    private function render_product_context(array $change): void
+    {
+        $line     = (new ProductApplier())->describe((int) $change['target_id']);
+        $commerce = array_intersect(
+            array_keys((array) ($change['payload']['fields'] ?? [])),
+            ProductApplier::COMMERCE_FIELDS,
+        );
+
+        if ($commerce !== []) {
+            printf(
+                '<p class="notice notice-warning" style="padding:.5em 1em;margin:0 0 1em;">%s%s</p>',
+                esc_html__('WooCommerce product. This changes what customers pay or can order, from the moment it is approved.', 'valolink-plugin'),
+                $line !== '' ? '<br><code>' . esc_html($line) . '</code>' : '',
+            );
+
+            return;
+        }
+
+        if ($line !== '') {
+            printf(
+                '<p class="description">%s <code>%s</code></p>',
+                esc_html__('WooCommerce product:', 'valolink-plugin'),
+                esc_html($line),
+            );
+        }
+    }
+
+    /**
+     * A price as the shop will print it, beside the old one and the change in
+     * per cent. A misplaced decimal point is the mistake that matters here, and
+     * "790" against "79.00" in a text diff hides it where "+900 %" does not.
+     */
+    private function render_price_preview(string $current, string $proposed): void
+    {
+        if ($proposed === '') {
+            if ($current !== '') {
+                echo '<p class="description">' . esc_html__('Removed — the sale ends and the regular price applies.', 'valolink-plugin') . '</p>';
+            }
+
+            return;
+        }
+
+        $line = sprintf(
+            /* translators: %s: formatted price */
+            __('Shows as %s', 'valolink-plugin'),
+            ProductApplier::money($proposed),
+        );
+        $warn = false;
+        if ($current !== '' && (float) $current > 0) {
+            $percent = ((float) $proposed - (float) $current) / (float) $current * 100;
+            $line .= sprintf(
+                /* translators: 1: formatted old price, 2: signed percentage change */
+                __(' — was %1$s, %2$s %%', 'valolink-plugin'),
+                ProductApplier::money($current),
+                ($percent > 0 ? '+' : '') . number_format_i18n($percent, 1),
+            );
+            $warn = abs($percent) >= 50;
+        }
+
+        printf(
+            '<p class="description">%s%s</p>',
+            esc_html($line),
+            $warn
+                ? ' <strong style="color:#b32d2e;">' . esc_html__('A change of half or more — check the decimal point.', 'valolink-plugin') . '</strong>'
+                : '',
+        );
+    }
+
     private function render_field_diff(string $current, string $proposed): void
     {
         if (function_exists('wp_text_diff')) {
@@ -814,6 +910,28 @@ final class QueuePage
                         </p>
                     </td>
                 </tr>
+                <?php if (ProductApplier::available()) : ?>
+                <tr>
+                    <th scope="row"><?php esc_html_e('Allow price and stock edits', 'valolink-plugin'); ?></th>
+                    <td>
+                        <?php // Tells the handler this field was on the form, so saving
+                              // settings while WooCommerce is inactive keeps the value. ?>
+                        <input type="hidden" name="commerce_field" value="1">
+                        <label>
+                            <input type="checkbox" name="allow_commerce_edits" value="1"
+                                <?php checked((bool) $this->settings->get_module_setting(
+                                    AccesslinkModule::MODULE_ID,
+                                    'allow_commerce_edits',
+                                    false,
+                                )); ?>>
+                            <?php esc_html_e('Let agents propose prices, sales, stock and SKUs on WooCommerce products', 'valolink-plugin'); ?>
+                        </label>
+                        <p class="description">
+                            <?php esc_html_e('Off by default. Descriptions, product categories and visibility need only the product type ticked under Allowed post types; these fields change what customers pay and can order, from the moment a change is approved.', 'valolink-plugin'); ?>
+                        </p>
+                    </td>
+                </tr>
+                <?php endif; ?>
                 <tr>
                     <th scope="row"><?php esc_html_e('Notify on new changes', 'valolink-plugin'); ?></th>
                     <td>
@@ -840,6 +958,7 @@ final class QueuePage
                     <th scope="row"><?php esc_html_e('Allowed post types', 'valolink-plugin'); ?></th>
                     <td>
                         <fieldset>
+                            <?php $sensitive = self::sensitive_post_types(); ?>
                             <?php foreach ($candidates as $slug => $label) : ?>
                                 <label style="display:block;margin-bottom:4px;">
                                     <input type="checkbox" name="allowed_post_types[]"
@@ -847,6 +966,9 @@ final class QueuePage
                                         <?php checked(in_array($slug, $types, true)); ?>>
                                     <?php echo esc_html($label); ?>
                                     <code><?php echo esc_html($slug); ?></code>
+                                    <?php if (isset($sensitive[$slug])) : ?>
+                                        <br><span style="color:#b32d2e;margin-left:1.8em;">&#9888; <?php echo esc_html($sensitive[$slug]); ?></span>
+                                    <?php endif; ?>
                                 </label>
                             <?php endforeach; ?>
                         </fieldset>
