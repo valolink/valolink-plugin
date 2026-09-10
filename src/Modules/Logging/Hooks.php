@@ -146,11 +146,22 @@ final class Hooks
             return;
         }
 
+        // An install carries no `plugin` or `theme` key — only an update does —
+        // so for an install the upgrader itself says what it just unpacked.
+        // Reading the missing key warned on every install and logged none.
         $items = [];
         if ($type === 'plugin') {
-            $items = $hook_extra['plugins'] ?? ($hook_extra['plugin'] ? [$hook_extra['plugin']] : []);
+            $items = $hook_extra['plugins'] ?? (isset($hook_extra['plugin']) ? [$hook_extra['plugin']] : []);
+            if ($items === [] && $action === 'install' && $upgrader instanceof \Plugin_Upgrader) {
+                $installed = $upgrader->plugin_info();
+                $items = $installed ? [$installed] : [];
+            }
         } elseif ($type === 'theme') {
-            $items = $hook_extra['themes'] ?? ($hook_extra['theme'] ? [$hook_extra['theme']] : []);
+            $items = $hook_extra['themes'] ?? (isset($hook_extra['theme']) ? [$hook_extra['theme']] : []);
+            if ($items === [] && $action === 'install' && $upgrader instanceof \Theme_Upgrader) {
+                $installed = $upgrader->theme_info();
+                $items = $installed instanceof \WP_Theme ? [$installed->get_stylesheet()] : [];
+            }
         }
 
         if (!$items) {
