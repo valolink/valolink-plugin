@@ -56,11 +56,12 @@ Replace WP login logo with agency logo, inject agency support contact info benea
 
 ## 5. Working Notes for Claude
 
-- **Do not run any git commands.** The user handles all git operations themselves.
+- **Commit as you go, never push.** Small, scoped commits with a clear message; the user pushes and cuts releases (`release.sh`). Changed 2026-09-18 — the old rule was "no git commands at all".
 - This file is loaded every turn — keep it short. Detailed per-module specs live in `ROADMAP.md`.
 - When in doubt about scope, ask before adding. Do not pre-build infrastructure for roadmap modules.
 - Don't introduce a dependency injection container, event bus, or other framework abstraction unless a Phase 1 module concretely needs it.
 - Tests: PHPUnit + WP test suite for the core loader and any non-trivial module logic. Manual smoke test on a real WP install before declaring a module done.
 - Current layout: `valolink-plugin.php` (bootstrap) + `src/` (Loader, Registry, Settings, Context, Updater, `Modules/{Accesslink,AssetVersion,Branding,Email,EngineLink,Logging,Scripts,Security,Staging,Toolbox}`) + `bin/` build tooling + `release.sh`. Shipped as v0.1.x via GitHub releases.
 - **Asset Versioning module** stamps `?ver=<filemtime>` onto local script/style URLs via `script_loader_src` / `style_loader_src` at priority 100000 (last word on the URL). It exists because our nginx templates cache assets with `expires max`, which is only safe when the URL changes as the file does — and WordPress's default version is the *WordPress* version, which does not change when a plugin updates.
+- **One staging decision.** `StagingDetector::is_staging_with($rawStagingSettings)` is the only place that decides whether a site is staging; `StagingModule` and the mu-loader both call it (force flag → environment detector → subdomain rule minus exceptions). The loader used to reimplement it without the subdomain rule, so mail was intercepted while plugins stayed on. The installed loader is refreshed from `admin_init`, not only on activation.
 - **Never strip `?ver=` to hide a version.** SecurityModule's `hide_wp_version` used to do that and it froze every asset in visitors' browsers at an unchangeable URL — the energiatuote.fi cart outage on 2026-09-02. Removed 2026-09-02; the toggle now only touches the generator tag and feed generator. Replacing the value (Asset Versioning) achieves the same disclosure goal without disabling cache busting.

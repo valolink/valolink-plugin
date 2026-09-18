@@ -37,6 +37,13 @@ final class Plugin
 
             if (is_admin()) {
                 (new SettingsPage($settings, $registry))->register();
+                // Keep wp-content/mu-plugins/valolink-staging-loader.php in step with
+                // the plugin's copy. on_activate installs it once; without this a
+                // plugin update left the old loader in place indefinitely (an
+                // MD5 compare, a copy only on mismatch).
+                add_action('admin_init', static function (): void {
+                    MuPluginInstaller::install();
+                });
             }
 
             $loader = new Loader($settings, $registry, Context::detect());

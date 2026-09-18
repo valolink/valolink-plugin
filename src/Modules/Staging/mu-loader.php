@@ -2,9 +2,10 @@
 /**
  * Plugin Name: Valolink Staging Loader
  * Description: Auto-installed by valolink-plugin. Filters active_plugins so configured plugins do not load when staging is active. Safe if the main plugin is missing.
- * Version:     1.0
+ * Version:     1.1
  *
- * Do not edit by hand — overwritten on the next valolink-plugin activation.
+ * Do not edit by hand — overwritten on the next valolink-plugin activation and
+ * refreshed from wp-admin whenever the plugin's copy differs.
  */
 
 if (!defined('ABSPATH')) {
@@ -42,9 +43,10 @@ add_filter('option_active_plugins', static function ($plugins) {
         return $plugins;
     }
 
-    // Force flag short-circuits detector; otherwise load the detector class lazily.
-    $force = !empty($config['force_staging']);
-    if (!$force) {
+    // The force flag needs no classes; otherwise load the detector lazily and
+    // ask it the same question StagingModule asks (StagingDetector::is_staging_with),
+    // so plugin disabling and every other staging feature agree on every host.
+    if (empty($config['force_staging'])) {
         $autoloader = WP_PLUGIN_DIR . '/valolink-plugin/src/Autoloader.php';
         if (!file_exists($autoloader)) {
             return $plugins;
@@ -54,10 +56,11 @@ add_filter('option_active_plugins', static function ($plugins) {
             return $plugins;
         }
         \Valolink\Plugin\Autoloader::register();
-        if (!class_exists('Valolink\\Plugin\\Modules\\Staging\\StagingDetector')) {
+        if (!class_exists('Valolink\\Plugin\\Modules\\Staging\\StagingDetector')
+            || !method_exists('Valolink\\Plugin\\Modules\\Staging\\StagingDetector', 'is_staging_with')) {
             return $plugins;
         }
-        if (!\Valolink\Plugin\Modules\Staging\StagingDetector::is_staging()) {
+        if (!\Valolink\Plugin\Modules\Staging\StagingDetector::is_staging_with(is_array($config) ? $config : [])) {
             return $plugins;
         }
     }

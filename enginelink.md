@@ -124,7 +124,16 @@ Distinct event names with counts, for building filter dropdowns:
 
 ```json
 [
-  { "event": "user_login", "count": 231 },
-  { "event": "plugin_activated", "count": 4 }
+  { "event": "auth.login", "count": 231 },
+  { "event": "plugin.activated", "count": 4 }
 ]
 ```
+
+#### Event names
+
+The set grows, so treat an unknown name as opaque.
+
+- **Posts** — `post.created`, `post.updated`, `post.published`, `post.unpublished`, `post.trashed`, `post.restored`, `post.deleted`. One row per save of any content type — posts, pages, products, media, templates, custom post types. `context.changed` names the post columns that changed (`title`, `content`, `excerpt`, `status`, `slug`, `date`, `author`, `parent`, `order`, `password`, `comments`); it is empty for a save that changed only terms or meta. `content_chars` gives the length before and after when the content changed, and `title_before` the old title. `via` is `cron` or `cli` for a change no signed-in user made.
+- **Menus** — `menu.created`, `menu.updated`, `menu.deleted`, once per menu per request rather than once per item.
+- **Not logged:** saves with nobody signed in outside cron and WP-CLI (a visitor's form stored as a post, Accesslink proposals — which have their own `accesslink_*` rows), WordPress's internal types, menu items, product variations and WooCommerce's order records. The block editor's second save of a post for its meta boxes is folded into the first.
+- **Everything else** — `auth.login`, `auth.login_failed`, `auth.logout`; `plugin.installed`, `.updated`, `.activated`, `.deactivated`, `.deleted`; `theme.installed`, `.updated`, `.switched`; `core.updated`; `user.created`, `user.deleted`; `mail.sent`, `mail.failed`; and `accesslink_proposed`, `_applied`, `_rejected`, `_stale`, `_failed`.

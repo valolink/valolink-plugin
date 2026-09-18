@@ -23,6 +23,69 @@ final class StagingDetector
         'wpsandbox.net',
     ];
 
+    /**
+     * Defaults for the settings the staging decision reads. StagingModule's
+     * defaults() reuses them so the module and the mu-loader agree.
+     */
+    public const DECISION_DEFAULTS = [
+        'force_staging'        => false,
+        'subdomain_staging'    => true,
+        'subdomain_exceptions' => [],
+    ];
+
+    /**
+     * THE staging decision. StagingModule gates every feature on it and the
+     * mu-loader gates plugin disabling on it; nothing else may decide.
+     *
+     * $settings is the Staging module's raw settings array (what is stored under
+     * valolink_settings → modules → staging → settings); defaults are applied here.
+     *
+     * Order: the force flag, then the environment detector (constants, hostname
+     * labels, reserved TLDs, managed hosts, private IP with corroboration), then
+     * the subdomain rule — any non-www subdomain in the site's home URL, minus
+     * the exceptions list.
+     */
+    public static function is_staging_with(array $settings): bool
+    {
+        $settings = array_merge(self::DECISION_DEFAULTS, $settings);
+
+        if (!empty($settings['force_staging'])) {
+            return true;
+        }
+        if (self::is_staging()) {
+            return true;
+        }
+        if (!empty($settings['subdomain_staging'])
+            && self::subdomain_rule_matches(self::home_hostname(), (array) $settings['subdomain_exceptions'])) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Pure form of the subdomain rule, for tests and callers that already have
+     * the host: $home_host lower-cased and port-stripped.
+     */
+    public static function subdomain_rule_matches(string $home_host, array $exceptions): bool
+    {
+        if (!self::has_non_www_subdomain($home_host)) {
+            return false;
+        }
+        $exceptions = array_map(static fn ($e): string => strtolower(trim((string) $e)), $exceptions);
+        return !in_array($home_host, $exceptions, true);
+    }
+
+    /** Host of the `home` option, lower-cased and port-stripped; '' outside WordPress. */
+    public static function home_hostname(): string
+    {
+        if (!function_exists('get_option')) {
+            return '';
+        }
+        $home = (string) get_option('home', '');
+        $host = strtolower((string) (parse_url($home, PHP_URL_HOST) ?? ''));
+        return preg_replace('/:\d+$/', '', $host) ?? $host;
+    }
+
     public static function is_staging(): bool
     {
         static $result = null;

@@ -679,31 +679,19 @@ final class StagingModule implements Module
             return $result;
         }
 
-        if ((bool) $this->setting('force_staging')) {
-            return $result = true;
-        }
-        if (StagingDetector::is_staging()) {
-            return $result = true;
-        }
-        if ($this->is_enabled('subdomain_staging') && $this->check_subdomain_staging()) {
-            return $result = true;
-        }
-
-        return $result = false;
+        // One decision, shared with the mu-loader. Before 2026-09-18 the loader
+        // reimplemented it without the subdomain rule, so a copy at e.g.
+        // staging2.example.fi had its mail intercepted but its plugins left on.
+        $raw = $this->settings->all()['modules'][self::MODULE_ID]['settings'] ?? [];
+        return $result = StagingDetector::is_staging_with(is_array($raw) ? $raw : []);
     }
 
     private function check_subdomain_staging(): bool
     {
-        $home      = (string) get_option('home', '');
-        $home_host = strtolower((string) (parse_url($home, PHP_URL_HOST) ?? ''));
-        $home_host = preg_replace('/:\d+$/', '', $home_host) ?? $home_host;
-
-        if (!StagingDetector::has_non_www_subdomain($home_host)) {
-            return false;
-        }
-
-        $exceptions = array_map('strtolower', (array) $this->setting('subdomain_exceptions', []));
-        return !in_array($home_host, $exceptions, true);
+        return StagingDetector::subdomain_rule_matches(
+            StagingDetector::home_hostname(),
+            (array) $this->setting('subdomain_exceptions', []),
+        );
     }
 
     /** Admin / cron / CLI / REST / login screen always bypass redirect-based features. */
@@ -770,7 +758,7 @@ final class StagingModule implements Module
     private static function defaults(): array
     {
         return [
-            'force_staging'           => false,
+            'force_staging'           => StagingDetector::DECISION_DEFAULTS['force_staging'],
             'block_indexing'          => true,
             'intercept_mail'          => true,
             'intercept_mail_extra'    => '',
@@ -778,8 +766,8 @@ final class StagingModule implements Module
             'require_login'           => false,
             'coming_soon_enabled'     => false,
             'coming_soon_page_id'     => 0,
-            'subdomain_staging'       => true,
-            'subdomain_exceptions'    => [],
+            'subdomain_staging'       => StagingDetector::DECISION_DEFAULTS['subdomain_staging'],
+            'subdomain_exceptions'    => StagingDetector::DECISION_DEFAULTS['subdomain_exceptions'],
             'disable_plugins_enabled' => false,
             'disabled_plugins'        => [],
             'block_auto_updates'      => true,
