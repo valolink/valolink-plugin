@@ -18,6 +18,8 @@ final class StagingModule implements Module
     public const SAVE_ACTION        = 'valolink_save_staging';
     public const REGEN_TOKEN_ACTION = 'valolink_regen_staging_token';
     public const REGEN_TOKEN_NONCE  = 'valolink_regen_staging_token';
+    public const DECLARE_ACTION     = 'valolink_staging_declare_current';
+    public const DECLARE_NONCE      = 'valolink_staging_declare_current';
     public const BYPASS_COOKIE_NAME = 'valolink_staging_preview';
     public const BYPASS_PARAM       = 'valolink_preview';
     public const BYPASS_COOKIE_TTL  = 86400;
@@ -61,6 +63,13 @@ final class StagingModule implements Module
         add_action('admin_menu', [$this, 'add_settings_page']);
         add_action('admin_post_' . self::SAVE_ACTION, [$this, 'handle_save']);
         add_action('admin_post_' . self::REGEN_TOKEN_ACTION, [$this, 'handle_regen_token']);
+        add_action('admin_post_' . self::DECLARE_ACTION, [$this, 'handle_declare_current']);
+
+        // Module on, production host not declared: no safety can apply, so say so
+        // on every admin screen. No fallback to heuristics — declare or switch off.
+        if (!StagingDetector::is_declared($this->raw_settings()) && !(bool) $this->setting('force_staging')) {
+            add_action('admin_notices', [$this, 'render_undeclared_notice']);
+        }
 
         if (!$this->is_effectively_staging()) {
             return;
@@ -124,14 +133,16 @@ final class StagingModule implements Module
             return;
         }
 
-        $detected   = StagingDetector::is_staging();
+        $decision   = StagingDetector::decision($this->raw_settings());
         $forced     = (bool) $this->setting('force_staging');
-        $subdomain  = $this->is_enabled('subdomain_staging') && $this->check_subdomain_staging();
-        $active     = $detected || $forced || $subdomain;
+        $declared   = StagingDetector::is_declared($this->raw_settings());
+        $active     = $decision['staging'];
         $updated    = isset($_GET['updated']) && $_GET['updated'] === '1';
+        $blocked    = isset($_GET['declare_blocked']) && $_GET['declare_blocked'] === '1';
         $token      = $this->ensure_bypass_token();
         $bypass_url = add_query_arg(self::BYPASS_PARAM, $token, home_url('/'));
-        $exceptions = implode("\n", (array) $this->setting('subdomain_exceptions', []));
+        $home_looks_like_clone = StagingDetector::looks_like_staging($decision['home_host'])
+            || StagingDetector::has_non_www_subdomain($decision['home_host']);
 
         $saved_disabled = $this->setting('disabled_plugins', null);
         $checked_plugins = $saved_disabled !== null
@@ -150,14 +161,28 @@ final class StagingModule implements Module
                 </p></div>
             <?php endif; ?>
 
-            <?php $this->render_misconfig_warnings($detected, $subdomain); ?>
+            <?php if ($blocked) : ?>
+                <div class="notice notice-error"><p>
+                    <?php printf(
+                        /* translators: %s: current home host */
+                        esc_html__('Refused: %s looks like a staging copy. Declare the production host on the production site. If this really is production, tick the confirmation box and try again.', 'valolink-plugin'),
+                        '<code>' . esc_html($decision['home_host']) . '</code>'
+                    ); ?>
+                </p></div>
+            <?php endif; ?>
+
+            <?php $this->render_misconfig_warnings($decision, $home_looks_like_clone); ?>
 
             <div class="card" style="padding:12px 18px;max-width:none;display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
                 <div>
-                    <strong><?php esc_html_e('Detected', 'valolink-plugin'); ?>:</strong>
-                    <?php echo $detected
-                        ? '<span style="color:#118a4c;">' . esc_html__('yes', 'valolink-plugin') . '</span>'
-                        : '<span style="color:#646970;">' . esc_html__('no', 'valolink-plugin') . '</span>'; ?>
+                    <strong><?php esc_html_e('This site', 'valolink-plugin'); ?>:</strong>
+                    <code><?php echo esc_html($decision['home_host'] !== '' ? $decision['home_host'] : '—'); ?></code>
+                </div>
+                <div>
+                    <strong><?php esc_html_e('Declared production', 'valolink-plugin'); ?>:</strong>
+                    <?php echo $declared
+                        ? '<code>' . esc_html($decision['declared_host'] !== '' ? $decision['declared_host'] : '(hash only)') . '</code>'
+                        : '<span style="color:#b32d2e;">' . esc_html__('not declared', 'valolink-plugin') . '</span>'; ?>
                 </div>
                 <div>
                     <strong><?php esc_html_e('Forced', 'valolink-plugin'); ?>:</strong>
@@ -166,18 +191,42 @@ final class StagingModule implements Module
                         : '<span style="color:#646970;">' . esc_html__('no', 'valolink-plugin') . '</span>'; ?>
                 </div>
                 <div>
-                    <strong><?php esc_html_e('Subdomain', 'valolink-plugin'); ?>:</strong>
-                    <?php echo $subdomain
-                        ? '<span style="color:#b32d2e;">' . esc_html__('yes', 'valolink-plugin') . '</span>'
-                        : '<span style="color:#646970;">' . esc_html__('no', 'valolink-plugin') . '</span>'; ?>
-                </div>
-                <div>
-                    <strong><?php esc_html_e('Active', 'valolink-plugin'); ?>:</strong>
-                    <?php echo $active
-                        ? '<span style="color:#b32d2e;font-weight:600;">' . esc_html__('STAGING', 'valolink-plugin') . '</span>'
-                        : '<span style="color:#118a4c;font-weight:600;">' . esc_html__('PRODUCTION', 'valolink-plugin') . '</span>'; ?>
+                    <strong><?php esc_html_e('Mode', 'valolink-plugin'); ?>:</strong>
+                    <?php if ($active) : ?>
+                        <span style="color:#b32d2e;font-weight:600;"><?php esc_html_e('STAGING', 'valolink-plugin'); ?></span>
+                        <em>(<?php echo esc_html($decision['reason'] === StagingDetector::REASON_FORCED ? __('forced', 'valolink-plugin') : __('home host differs from the declared production host', 'valolink-plugin')); ?>)</em>
+                    <?php elseif (!$declared) : ?>
+                        <span style="color:#b32d2e;font-weight:600;"><?php esc_html_e('UNDECLARED — no safeties active', 'valolink-plugin'); ?></span>
+                    <?php else : ?>
+                        <span style="color:#118a4c;font-weight:600;"><?php esc_html_e('PRODUCTION', 'valolink-plugin'); ?></span>
+                    <?php endif; ?>
                 </div>
             </div>
+
+            <h2><?php esc_html_e('Production site', 'valolink-plugin'); ?></h2>
+            <p class="description">
+                <?php esc_html_e('Declare the production host once, on the production site. Every database copy whose home URL no longer matches it is treated as staging. The declaration is stored as a hash, so a search-replace during cloning cannot rewrite it.', 'valolink-plugin'); ?>
+            </p>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:8px 0 16px;">
+                <input type="hidden" name="action" value="<?php echo esc_attr(self::DECLARE_ACTION); ?>">
+                <?php wp_nonce_field(self::DECLARE_NONCE); ?>
+                <?php submit_button(
+                    sprintf(
+                        /* translators: %s: current home host */
+                        __('Use current site URL (%s)', 'valolink-plugin'),
+                        $decision['home_host'] !== '' ? $decision['home_host'] : '—'
+                    ),
+                    $home_looks_like_clone ? 'secondary' : 'primary',
+                    'submit',
+                    false
+                ); ?>
+                <?php if ($home_looks_like_clone) : ?>
+                    <label style="margin-left:12px;">
+                        <input type="checkbox" name="confirm_clone_host" value="1">
+                        <?php esc_html_e('This host looks like a clone, but it really is production.', 'valolink-plugin'); ?>
+                    </label>
+                <?php endif; ?>
+            </form>
 
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="<?php echo esc_attr(self::SAVE_ACTION); ?>">
@@ -190,10 +239,10 @@ final class StagingModule implements Module
                         <td>
                             <label>
                                 <input type="checkbox" name="force_staging" value="1" <?php checked($forced); ?>>
-                                <?php esc_html_e('Treat this site as staging even if auto-detection says otherwise.', 'valolink-plugin'); ?>
+                                <?php esc_html_e('Treat this site as staging even if it is the declared production host.', 'valolink-plugin'); ?>
                             </label>
                             <p class="description">
-                                <?php esc_html_e('Useful for hiding a live site temporarily, or for sites we host on production domains.', 'valolink-plugin'); ?>
+                                <?php esc_html_e('Useful for hiding a live site temporarily.', 'valolink-plugin'); ?>
                             </p>
                         </td>
                     </tr>
@@ -263,24 +312,24 @@ final class StagingModule implements Module
                         __('Only safe offline gateways (BACS, Cheque, COD) remain active when WooCommerce is installed.', 'valolink-plugin')); ?>
                 </tbody></table>
 
-                <h2><?php esc_html_e('Detection', 'valolink-plugin'); ?></h2>
+                <h2><?php esc_html_e('Production host', 'valolink-plugin'); ?></h2>
                 <table class="form-table" role="presentation"><tbody>
-                    <?php $this->checkbox_row('subdomain_staging',
-                        __('Treat own subdomains as staging', 'valolink-plugin'),
-                        __('Any non-www subdomain of the home URL is automatically treated as staging.', 'valolink-plugin')); ?>
                     <tr>
                         <th scope="row">
-                            <label for="valolink-subdomain-exceptions"><?php esc_html_e('Subdomain exceptions', 'valolink-plugin'); ?></label>
+                            <label for="valolink-production-host"><?php esc_html_e('Declared production host', 'valolink-plugin'); ?></label>
                         </th>
                         <td>
-                            <textarea
-                                id="valolink-subdomain-exceptions"
-                                name="subdomain_exceptions"
-                                rows="4"
-                                class="large-text code"
-                                style="max-width:400px;"
-                            ><?php echo esc_textarea($exceptions); ?></textarea>
-                            <p class="description"><?php esc_html_e('One hostname per line. These will not be treated as staging (e.g. shop.example.com).', 'valolink-plugin'); ?></p>
+                            <input
+                                id="valolink-production-host"
+                                type="text"
+                                name="production_host"
+                                class="regular-text code"
+                                value="<?php echo esc_attr($decision['declared_host']); ?>"
+                                placeholder="example.fi"
+                            >
+                            <p class="description">
+                                <?php esc_html_e('Host only; scheme, port and a leading "www." are ignored. Leave empty to clear the declaration — the module then does nothing except remind you. The button above fills this in from the current site.', 'valolink-plugin'); ?>
+                            </p>
                         </td>
                     </tr>
                 </tbody></table>
@@ -385,13 +434,11 @@ final class StagingModule implements Module
 
         $bool = static fn(string $name): bool => !empty($_POST[$name]);
 
-        $raw_exceptions = sanitize_textarea_field(wp_unslash($_POST['subdomain_exceptions'] ?? ''));
-        $exceptions = array_values(array_filter(
-            array_map('trim', explode("\n", $raw_exceptions)),
-            static fn(string $s): bool => $s !== '',
-        ));
+        $declaration = StagingDetector::declaration_for(
+            sanitize_text_field((string) wp_unslash($_POST['production_host'] ?? ''))
+        );
 
-        $this->settings->set_module_settings(self::MODULE_ID, [
+        $this->settings->set_module_settings(self::MODULE_ID, $declaration + [
             'force_staging'           => $bool('force_staging'),
             'block_indexing'          => $bool('block_indexing'),
             'intercept_mail'          => $bool('intercept_mail'),
@@ -400,8 +447,6 @@ final class StagingModule implements Module
             'require_login'           => $bool('require_login'),
             'coming_soon_enabled'     => $bool('coming_soon_enabled'),
             'coming_soon_page_id'     => max(0, (int) ($_POST['coming_soon_page_id'] ?? 0)),
-            'subdomain_staging'       => $bool('subdomain_staging'),
-            'subdomain_exceptions'    => $exceptions,
             'disable_plugins_enabled' => $bool('disable_plugins_enabled'),
             'disabled_plugins'        => PluginMultiCheckbox::sanitize($_POST['disabled_plugins'] ?? null),
             'block_auto_updates'      => $bool('block_auto_updates'),
@@ -422,6 +467,38 @@ final class StagingModule implements Module
         check_admin_referer(self::REGEN_TOKEN_NONCE);
 
         $this->settings->set_module_settings(self::MODULE_ID, ['bypass_token' => bin2hex(random_bytes(6))]);
+
+        wp_safe_redirect(add_query_arg(
+            ['page' => self::SUBPAGE_SLUG, 'updated' => '1'],
+            admin_url('admin.php'),
+        ));
+        exit;
+    }
+
+    /**
+     * "Use current site URL": declares the host of the `home` option as
+     * production. Refused when that host looks like a clone unless the
+     * confirmation box was ticked — declaring a staging copy as production
+     * would switch every safety off on it.
+     */
+    public function handle_declare_current(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die(esc_html__('Insufficient permissions.', 'valolink-plugin'), '', ['response' => 403]);
+        }
+        check_admin_referer(self::DECLARE_NONCE);
+
+        $home = StagingDetector::home_hostname();
+        $looks_like_clone = StagingDetector::looks_like_staging($home) || StagingDetector::has_non_www_subdomain($home);
+        if ($home === '' || ($looks_like_clone && empty($_POST['confirm_clone_host']))) {
+            wp_safe_redirect(add_query_arg(
+                ['page' => self::SUBPAGE_SLUG, 'declare_blocked' => '1'],
+                admin_url('admin.php'),
+            ));
+            exit;
+        }
+
+        $this->settings->set_module_settings(self::MODULE_ID, StagingDetector::declaration_for($home));
 
         wp_safe_redirect(add_query_arg(
             ['page' => self::SUBPAGE_SLUG, 'updated' => '1'],
@@ -624,16 +701,45 @@ final class StagingModule implements Module
             }
         }
         ?>
+        $decision = StagingDetector::decision($this->raw_settings());
+        ?>
         <div class="notice notice-warning">
             <p>
                 <strong><?php esc_html_e('Staging mode active', 'valolink-plugin'); ?></strong>
-                <?php if ((bool) $this->setting('force_staging')) : ?>
+                <?php if ($decision['reason'] === StagingDetector::REASON_FORCED) : ?>
                     <em>(<?php esc_html_e('forced', 'valolink-plugin'); ?>)</em>
+                <?php else : ?>
+                    <em>(<?php printf(
+                        /* translators: 1: this site's home host, 2: declared production host */
+                        esc_html__('this site is %1$s, production is declared as %2$s', 'valolink-plugin'),
+                        '<code>' . esc_html($decision['home_host']) . '</code>',
+                        '<code>' . esc_html($decision['declared_host'] !== '' ? $decision['declared_host'] : '…') . '</code>'
+                    ); ?>)</em>
                 <?php endif; ?>
                 <?php if ($active) : ?>
                     — <?php echo esc_html(implode(', ', $active)); ?>
                 <?php endif; ?>
                 · <a href="<?php echo esc_url(admin_url('admin.php?page=' . self::SUBPAGE_SLUG)); ?>"><?php esc_html_e('configure', 'valolink-plugin'); ?></a>
+                <?php if ($decision['reason'] === StagingDetector::REASON_MISMATCH) : ?>
+                    · <a href="<?php echo esc_url(admin_url('admin.php?page=' . self::SUBPAGE_SLUG)); ?>"><?php esc_html_e('this is production — re-declare', 'valolink-plugin'); ?></a>
+                <?php endif; ?>
+            </p>
+        </div>
+        <?php
+    }
+
+    /** Module on, nothing declared: every admin screen says so until someone declares or switches the module off. */
+    public function render_undeclared_notice(): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+        ?>
+        <div class="notice notice-error">
+            <p>
+                <strong><?php esc_html_e('Valolink Staging: production host not declared.', 'valolink-plugin'); ?></strong>
+                <?php esc_html_e('The module is on, but until the production host is declared it cannot tell a clone from production, so none of its safeties are active here.', 'valolink-plugin'); ?>
+                <a href="<?php echo esc_url(admin_url('admin.php?page=' . self::SUBPAGE_SLUG)); ?>"><?php esc_html_e('Declare it', 'valolink-plugin'); ?></a>
             </p>
         </div>
         <?php
@@ -643,9 +749,20 @@ final class StagingModule implements Module
     // Helpers
     // -------------------------------------------------------------------------
 
-    private function render_misconfig_warnings(bool $detected, bool $subdomain): void
+    /** @param array{staging: bool, reason: string, home_host: string, declared_host: string} $decision */
+    private function render_misconfig_warnings(array $decision, bool $home_looks_like_clone): void
     {
         $warnings = [];
+
+        if ($decision['reason'] === StagingDetector::REASON_UNDECLARED) {
+            $warnings[] = __('No production host is declared. The module does nothing until it is — declare it on the production site, then clone.', 'valolink-plugin');
+        }
+        if ($decision['reason'] === StagingDetector::REASON_MATCH && $home_looks_like_clone) {
+            $warnings[] = __('This site is the declared production host, but its hostname looks like a staging copy. If a clone was declared as production by mistake, clear the declaration here and declare it on the real production site.', 'valolink-plugin');
+        }
+        if ($decision['reason'] === StagingDetector::REASON_MISMATCH && !$home_looks_like_clone) {
+            $warnings[] = __('Staging mode is active because the home URL no longer matches the declared production host, yet this hostname does not look like a clone. If the production domain changed, re-declare it with the button above.', 'valolink-plugin');
+        }
 
         if ($this->is_enabled('disable_live_gateways') && !class_exists('WooCommerce')) {
             $warnings[] = __('Disable live WooCommerce gateways is on, but WooCommerce is not active here. Nothing to filter.', 'valolink-plugin');
@@ -659,8 +776,10 @@ final class StagingModule implements Module
         if ($this->is_enabled('coming_soon_enabled') && (int) $this->setting('coming_soon_page_id') <= 0) {
             $warnings[] = __('Coming-soon redirect is on, but no destination page is selected — visitors will not be redirected anywhere.', 'valolink-plugin');
         }
-        if ((bool) $this->setting('force_staging') && !$detected && !$subdomain) {
-            $warnings[] = __('Staging is forced on a host that does not look like staging. Confirm you mean to apply staging behavior here.', 'valolink-plugin');
+        if ((bool) $this->setting('force_staging') && $decision['reason'] === StagingDetector::REASON_FORCED
+            && StagingDetector::is_declared($this->raw_settings())
+            && hash_equals(StagingDetector::host_hash($decision['home_host']), (string) ($this->raw_settings()[StagingDetector::KEY_HOST_HASH] ?? ''))) {
+            $warnings[] = __('Staging is forced on the declared production site. Visitors get the staging behaviour until this is switched off.', 'valolink-plugin');
         }
 
         foreach ($warnings as $msg) {
@@ -679,19 +798,16 @@ final class StagingModule implements Module
             return $result;
         }
 
-        // One decision, shared with the mu-loader. Before 2026-09-18 the loader
-        // reimplemented it without the subdomain rule, so a copy at e.g.
-        // staging2.example.fi had its mail intercepted but its plugins left on.
-        $raw = $this->settings->all()['modules'][self::MODULE_ID]['settings'] ?? [];
-        return $result = StagingDetector::is_staging_with(is_array($raw) ? $raw : []);
+        // One decision, shared with the mu-loader: force flag, or the home host
+        // no longer hashing to the declared production host. No heuristics.
+        return $result = StagingDetector::is_staging_with($this->raw_settings());
     }
 
-    private function check_subdomain_staging(): bool
+    /** @return array<string, mixed> The stored settings array, without defaults — what the loader reads too. */
+    private function raw_settings(): array
     {
-        return StagingDetector::subdomain_rule_matches(
-            StagingDetector::home_hostname(),
-            (array) $this->setting('subdomain_exceptions', []),
-        );
+        $raw = $this->settings->all()['modules'][self::MODULE_ID]['settings'] ?? [];
+        return is_array($raw) ? $raw : [];
     }
 
     /** Admin / cron / CLI / REST / login screen always bypass redirect-based features. */
@@ -758,7 +874,9 @@ final class StagingModule implements Module
     private static function defaults(): array
     {
         return [
-            'force_staging'           => StagingDetector::DECISION_DEFAULTS['force_staging'],
+            'force_staging'           => false,
+            'production_host'         => '',
+            'production_host_hash'    => '',
             'block_indexing'          => true,
             'intercept_mail'          => true,
             'intercept_mail_extra'    => '',
@@ -766,8 +884,6 @@ final class StagingModule implements Module
             'require_login'           => false,
             'coming_soon_enabled'     => false,
             'coming_soon_page_id'     => 0,
-            'subdomain_staging'       => StagingDetector::DECISION_DEFAULTS['subdomain_staging'],
-            'subdomain_exceptions'    => StagingDetector::DECISION_DEFAULTS['subdomain_exceptions'],
             'disable_plugins_enabled' => false,
             'disabled_plugins'        => [],
             'block_auto_updates'      => true,

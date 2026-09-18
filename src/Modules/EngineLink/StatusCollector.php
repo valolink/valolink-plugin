@@ -19,7 +19,36 @@ final class StatusCollector
             'users'          => $this->users(),
             'database'       => $this->database(),
             'health'         => $this->health(),
+            'staging'        => $this->staging(),
         ];
+    }
+
+    /**
+     * The Staging module's declaration and verdict, so EngineLink can list
+     * undeclared production sites and unprotected clones. Never throws.
+     *
+     * @return array{module_enabled: bool|null, declared: bool|null, production_host: string|null, home_host: string|null, active: bool|null, reason: string|null}
+     */
+    private function staging(): array
+    {
+        try {
+            $settings = get_option('valolink_settings');
+            $module   = is_array($settings) && is_array($settings['modules']['staging'] ?? null) ? $settings['modules']['staging'] : [];
+            $enabled  = !empty($module['enabled']);
+            $raw      = is_array($module['settings'] ?? null) ? $module['settings'] : [];
+            $decision = \Valolink\Plugin\Modules\Staging\StagingDetector::decision($raw);
+
+            return [
+                'module_enabled'  => $enabled,
+                'declared'        => \Valolink\Plugin\Modules\Staging\StagingDetector::is_declared($raw),
+                'production_host' => $decision['declared_host'] !== '' ? $decision['declared_host'] : null,
+                'home_host'       => $decision['home_host'] !== '' ? $decision['home_host'] : null,
+                'active'          => $enabled && $decision['staging'],
+                'reason'          => $enabled ? $decision['reason'] : 'module_off',
+            ];
+        } catch (\Throwable) {
+            return ['module_enabled' => null, 'declared' => null, 'production_host' => null, 'home_host' => null, 'active' => null, 'reason' => null];
+        }
     }
 
     private function wordpress(): array

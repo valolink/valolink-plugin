@@ -81,9 +81,23 @@ Full snapshot of the site's current state. This is the main endpoint EngineLink 
     "loopback_ok": true,
     "scheduled_events_ok": true,
     "https_ok": true
+  },
+  "staging": {
+    "module_enabled": true,
+    "declared": true,
+    "production_host": "example.fi",
+    "home_host": "staging2.example.fi",
+    "active": true,
+    "reason": "mismatch"
   }
 }
 ```
+
+`staging` reports the Staging module's declared-production-host model: `reason` is one of
+`forced`, `undeclared`, `mismatch`, `match`, or `module_off`. A production site with
+`declared: false` has no staging safeties on any of its clones; a clone with `active: false`
+is unprotected. `production_host` is the plaintext copy and may have been rewritten by a
+search-replace on a clone — the hash decides, this field is for display.
 
 Use `null` for any field that cannot be determined rather than omitting it. EngineLink handles nulls.
 

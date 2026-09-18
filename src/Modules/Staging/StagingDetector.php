@@ -4,12 +4,39 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\Staging;
 
+/**
+ * The staging decision.
+ *
+ * A site declares its production host once, on production. The declaration is
+ * stored as a SHA-256 hash (search-replace cannot rewrite it) plus a plaintext
+ * copy for display. Any copy of the database whose `home` option no longer
+ * hashes to the declaration is a clone, and the staging safeties apply.
+ *
+ *   force_staging                 → staging
+ *   no declaration                → not staging (the module nags instead)
+ *   hash(home host) ≠ declaration → staging
+ *   otherwise                     → production
+ *
+ * The mu-loader mirrors this inline (no classes at bootstrap); the test in
+ * tests/staging-decision.php proves the two agree. The old heuristics
+ * (hostname labels, reserved TLDs, managed hosts, private IPs) survive only as
+ * looks_like_staging(), which is advisory: it warns when someone is about to
+ * declare a host that looks like a clone. It never decides.
+ */
 final class StagingDetector
 {
-    /** Leftmost hostname label keywords that indicate a non-production environment. */
+    public const KEY_HOST      = 'production_host';
+    public const KEY_HOST_HASH = 'production_host_hash';
+    public const KEY_FORCE     = 'force_staging';
+
+    public const REASON_FORCED     = 'forced';
+    public const REASON_UNDECLARED = 'undeclared';
+    public const REASON_MISMATCH   = 'mismatch';
+    public const REASON_MATCH      = 'match';
+
     private const STAGING_LABELS = [
         'staging', 'stage', 'dev', 'develop', 'development',
-        'local', 'test', 'sandbox', 'preprod',
+        'local', 'test', 'sandbox', 'preprod', 'kopio', 'testi',
     ];
 
     /** TLDs reserved for local/testing use (RFC 2606, RFC 6761). */
@@ -23,186 +50,161 @@ final class StagingDetector
         'wpsandbox.net',
     ];
 
-    /**
-     * Defaults for the settings the staging decision reads. StagingModule's
-     * defaults() reuses them so the module and the mu-loader agree.
-     */
-    public const DECISION_DEFAULTS = [
-        'force_staging'        => false,
-        'subdomain_staging'    => true,
-        'subdomain_exceptions' => [],
-    ];
+    // -------------------------------------------------------------------------
+    // The decision
 
-    /**
-     * THE staging decision. StagingModule gates every feature on it and the
-     * mu-loader gates plugin disabling on it; nothing else may decide.
-     *
-     * $settings is the Staging module's raw settings array (what is stored under
-     * valolink_settings → modules → staging → settings); defaults are applied here.
-     *
-     * Order: the force flag, then the environment detector (constants, hostname
-     * labels, reserved TLDs, managed hosts, private IP with corroboration), then
-     * the subdomain rule — any non-www subdomain in the site's home URL, minus
-     * the exceptions list.
-     */
+    /** @param array<string, mixed> $settings The Staging module's raw settings array. */
     public static function is_staging_with(array $settings): bool
     {
-        $settings = array_merge(self::DECISION_DEFAULTS, $settings);
-
-        if (!empty($settings['force_staging'])) {
-            return true;
-        }
-        if (self::is_staging()) {
-            return true;
-        }
-        if (!empty($settings['subdomain_staging'])
-            && self::subdomain_rule_matches(self::home_hostname(), (array) $settings['subdomain_exceptions'])) {
-            return true;
-        }
-        return false;
+        return self::decision($settings)['staging'];
     }
 
     /**
-     * Pure form of the subdomain rule, for tests and callers that already have
-     * the host: $home_host lower-cased and port-stripped.
+     * @param  array<string, mixed> $settings
+     * @return array{staging: bool, reason: string, home_host: string, declared_host: string}
      */
-    public static function subdomain_rule_matches(string $home_host, array $exceptions): bool
+    public static function decision(array $settings): array
     {
-        if (!self::has_non_www_subdomain($home_host)) {
-            return false;
+        $home     = self::home_hostname();
+        $declared = self::declared_host($settings);
+
+        if (!empty($settings[self::KEY_FORCE])) {
+            return ['staging' => true, 'reason' => self::REASON_FORCED, 'home_host' => $home, 'declared_host' => $declared];
         }
-        $exceptions = array_map(static fn ($e): string => strtolower(trim((string) $e)), $exceptions);
-        return !in_array($home_host, $exceptions, true);
+
+        $hash = self::declared_hash($settings);
+        if ($hash === '') {
+            return ['staging' => false, 'reason' => self::REASON_UNDECLARED, 'home_host' => $home, 'declared_host' => $declared];
+        }
+
+        if ($home === '' || !hash_equals($hash, self::host_hash($home))) {
+            return ['staging' => true, 'reason' => self::REASON_MISMATCH, 'home_host' => $home, 'declared_host' => $declared];
+        }
+
+        return ['staging' => false, 'reason' => self::REASON_MATCH, 'home_host' => $home, 'declared_host' => $declared];
     }
 
-    /** Host of the `home` option, lower-cased and port-stripped; '' outside WordPress. */
+    /** @param array<string, mixed> $settings */
+    public static function is_declared(array $settings): bool
+    {
+        return self::declared_hash($settings) !== '';
+    }
+
+    /** Plaintext declared host, for display only ('' when undeclared). It may have been rewritten by a search-replace; the hash decides. */
+    public static function declared_host(array $settings): string
+    {
+        $host = $settings[self::KEY_HOST] ?? '';
+        return is_string($host) ? $host : '';
+    }
+
+    private static function declared_hash(array $settings): string
+    {
+        $hash = $settings[self::KEY_HOST_HASH] ?? '';
+        return is_string($hash) && preg_match('/^[0-9a-f]{64}$/', $hash) ? $hash : '';
+    }
+
+    /**
+     * Settings fragment that declares $host_or_url as production.
+     *
+     * @return array{production_host: string, production_host_hash: string}
+     */
+    public static function declaration_for(string $host_or_url): array
+    {
+        $host = self::normalise_host($host_or_url);
+        return [
+            self::KEY_HOST      => $host,
+            self::KEY_HOST_HASH => $host === '' ? '' : self::host_hash($host),
+        ];
+    }
+
+    /**
+     * Canonical host for comparison: host part of a URL or a bare host,
+     * lower-cased, trailing dot and port stripped, leading "www." stripped.
+     * MUST stay identical to the inline copy in mu-loader.php.
+     */
+    public static function normalise_host(string $host_or_url): string
+    {
+        $value = strtolower(trim($host_or_url));
+        if ($value === '') {
+            return '';
+        }
+        if (str_contains($value, '://')) {
+            $value = (string) (parse_url($value, PHP_URL_HOST) ?? '');
+        } else {
+            $value = explode('/', $value)[0];
+        }
+        $value = preg_replace('/:\d+$/', '', $value) ?? $value;
+        $value = rtrim($value, '.');
+        if (str_starts_with($value, 'www.')) {
+            $value = substr($value, 4);
+        }
+        return $value;
+    }
+
+    public static function host_hash(string $normalised_host): string
+    {
+        return hash('sha256', $normalised_host);
+    }
+
+    /** Normalised host of the `home` option; '' outside WordPress or when unset. */
     public static function home_hostname(): string
     {
         if (!function_exists('get_option')) {
             return '';
         }
-        $home = (string) get_option('home', '');
-        $host = strtolower((string) (parse_url($home, PHP_URL_HOST) ?? ''));
-        return preg_replace('/:\d+$/', '', $host) ?? $host;
+        return self::normalise_host((string) get_option('home', ''));
     }
 
-    public static function is_staging(): bool
-    {
-        static $result = null;
-        if ($result !== null) {
-            return $result;
-        }
-        return $result = self::detect();
-    }
+    // -------------------------------------------------------------------------
+    // Advisory only — warns, never decides
 
-    private static function detect(): bool
+    /** Does $host (or the current request host) look like a clone? */
+    public static function looks_like_staging(?string $host = null): bool
     {
-        // WP_ENVIRONMENT_TYPE is authoritative when defined.
-        // WP core recognises: production, staging, development, local.
-        if (defined('WP_ENVIRONMENT_TYPE')) {
-            return WP_ENVIRONMENT_TYPE !== 'production';
+        if (defined('WP_ENVIRONMENT_TYPE') && WP_ENVIRONMENT_TYPE !== 'production') {
+            return true;
         }
-
-        if (self::check_constants()) {
+        if (defined('WP_LOCAL_DEV') && WP_LOCAL_DEV) {
             return true;
         }
 
-        if (self::check_hostname()) {
-            return true;
-        }
-
-        // Private SERVER_ADDR is a weak signal — require at least one corroborating signal
-        // (WP_DEBUG or search-engine indexing explicitly disabled) to avoid false positives
-        // on containerised production environments.
-        if (self::check_server_ip()) {
-            $debug   = defined('WP_DEBUG') && WP_DEBUG === true;
-            $no_index = function_exists('get_option')
-                && in_array(get_option('blog_public'), ['0', 0], true);
-            if ($debug || $no_index) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static function check_constants(): bool
-    {
-        return (defined('WP_LOCAL_DEV') && WP_LOCAL_DEV)
-            || (defined('VALOLINK_STAGING') && VALOLINK_STAGING);
-    }
-
-    private static function check_hostname(): bool
-    {
-        $host = self::current_hostname();
+        $host = $host === null ? self::current_hostname() : strtolower(trim($host));
+        $host = preg_replace('/:\d+$/', '', $host) ?? $host;
         if ($host === '') {
             return false;
         }
-
         if ($host === 'localhost') {
             return true;
         }
 
-        // Strip port number.
-        $host = preg_replace('/:\d+$/', '', $host) ?? $host;
-
-        // Check TLD (segment after the final dot).
         $dot_pos = strrpos($host, '.');
-        if ($dot_pos !== false) {
-            $tld = substr($host, $dot_pos + 1);
-            if (in_array($tld, self::STAGING_TLDS, true)) {
-                return true;
-            }
-        }
-
-        // Check leftmost label only (avoids false positives like "staging-solutions.com").
-        $leftmost = explode('.', $host)[0];
-        if (in_array($leftmost, self::STAGING_LABELS, true)) {
+        if ($dot_pos !== false && in_array(substr($host, $dot_pos + 1), self::STAGING_TLDS, true)) {
             return true;
         }
-
-        // Check known managed-host staging domains.
+        if (in_array(explode('.', $host)[0], self::STAGING_LABELS, true)) {
+            return true;
+        }
         foreach (self::STAGING_HOST_SUFFIXES as $suffix) {
             if ($host === $suffix || str_ends_with($host, '.' . $suffix)) {
                 return true;
             }
         }
-
         return false;
     }
 
-    private static function check_server_ip(): bool
-    {
-        $ip = isset($_SERVER['SERVER_ADDR']) && is_string($_SERVER['SERVER_ADDR'])
-            ? $_SERVER['SERVER_ADDR']
-            : '';
-
-        if ($ip === '' || !filter_var($ip, FILTER_VALIDATE_IP)) {
-            return false;
-        }
-
-        // Returns false (validation fails) when the IP is in a private or reserved range.
-        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
-    }
-
     /**
-     * Returns true when $host has a non-www subdomain prefix.
+     * True when $host has a non-www subdomain prefix.
      * E.g. "pohja.demolink.fi" → true, "www.demolink.fi" → false, "demolink.fi" → false.
-     * $host should already be lower-cased and port-stripped.
      */
     public static function has_non_www_subdomain(string $host): bool
     {
         if ($host === '') {
             return false;
         }
-
         $parts = explode('.', $host);
-
-        // Need at least 3 labels (subdomain + domain + tld).
         if (count($parts) < 3) {
             return false;
         }
-
         return $parts[0] !== 'www';
     }
 
@@ -214,15 +216,12 @@ final class StagingDetector
         if (isset($_SERVER['SERVER_NAME']) && is_string($_SERVER['SERVER_NAME'])) {
             return strtolower(trim($_SERVER['SERVER_NAME']));
         }
-
-        // CLI fallback: parse the registered site URL.
         if (function_exists('get_option')) {
             $siteurl = (string) get_option('siteurl', '');
             if ($siteurl !== '') {
                 return strtolower((string) (parse_url($siteurl, PHP_URL_HOST) ?? ''));
             }
         }
-
         return '';
     }
 }
