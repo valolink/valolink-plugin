@@ -700,7 +700,6 @@ final class StagingModule implements Module
                 $active[] = sprintf(_n('%d plugin disabled', '%d plugins disabled', $count, 'valolink-plugin'), $count);
             }
         }
-        ?>
         $decision = StagingDetector::decision($this->raw_settings());
         ?>
         <div class="notice notice-warning">

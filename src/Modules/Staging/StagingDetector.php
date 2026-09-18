@@ -155,6 +155,33 @@ final class StagingDetector
         return self::normalise_host((string) get_option('home', ''));
     }
 
+    /**
+     * Backward compatibility for mu-loaders older than 2.0 — DO NOT REMOVE.
+     *
+     * The loader is a file in wp-content/mu-plugins that a plugin update does
+     * not touch until the next wp-admin visit refreshes it, and the 1.0 loader
+     * has no try/catch. It calls this method by name on every request; removing
+     * it fatals every page of a site with a stale loader (seen on the mirror on
+     * 2026-09-18). Returns the current decision from the stored settings, so a
+     * stale loader still gets the right answer. tests/fixtures/mu-loader-1.0.php
+     * pins this.
+     */
+    public static function is_staging(): bool
+    {
+        try {
+            if (!function_exists('get_option')) {
+                return false;
+            }
+            $settings = get_option('valolink_settings');
+            $raw = is_array($settings) && is_array($settings['modules']['staging']['settings'] ?? null)
+                ? $settings['modules']['staging']['settings']
+                : [];
+            return self::is_staging_with($raw);
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Advisory only — warns, never decides
 

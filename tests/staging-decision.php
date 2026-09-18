@@ -70,6 +70,21 @@ foreach ($cases as [$home, $settings, $expected, $reason, $why]) {
     if (!$ok || !$agree) { $fail++; }
 }
 
+// The 1.0 loader (no try/catch, calls StagingDetector::is_staging()) is still
+// installed on sites the plugin updates over. It must keep working.
+define('WP_PLUGIN_DIR', dirname(dirname(__DIR__)));           // <this>/valolink-plugin/src/Autoloader.php
+if (!is_file(WP_PLUGIN_DIR . '/valolink-plugin/src/Autoloader.php')) { fwrite(STDERR, "fixture needs the repo directory to be named valolink-plugin\n"); exit(1); }
+$GLOBALS['captured_filter'] = null;
+require __DIR__ . '/fixtures/mu-loader-1.0.php';
+$old_loader = $GLOBALS['captured_filter'];
+foreach ($cases as [$home, $settings, $expected, $reason, $why]) {
+    $GLOBALS['wp_options']['home'] = $home;
+    $GLOBALS['wp_options']['valolink_settings'] = ['modules' => ['staging' => ['enabled' => true, 'settings' => $settings + ['disable_plugins_enabled' => true, 'disabled_plugins' => $DISABLED]]]];
+    $says = $old_loader($PLUGINS) !== $PLUGINS;
+    printf("%s old 1.0 loader agrees  %-34s %s\n", $says === $expected ? 'ok  ' : 'FAIL', $home === '' ? '(no home)' : $home, $why);
+    if ($says !== $expected) { $fail++; }
+}
+
 // The loader must fail open on garbage.
 $GLOBALS['wp_options']['valolink_settings'] = 'corrupt';
 $r = $loader($PLUGINS); $fail += ($r === $PLUGINS) ? 0 : 1; printf("%s loader fails open on a corrupt option\n", $r === $PLUGINS ? 'ok  ' : 'FAIL');

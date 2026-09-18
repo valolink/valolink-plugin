@@ -27,7 +27,7 @@ final class StatusCollector
      * The Staging module's declaration and verdict, so EngineLink can list
      * undeclared production sites and unprotected clones. Never throws.
      *
-     * @return array{module_enabled: bool|null, declared: bool|null, production_host: string|null, home_host: string|null, active: bool|null, reason: string|null}
+     * @return array{module_enabled: bool|null, loader_version: string|null, declared: bool|null, production_host: string|null, home_host: string|null, active: bool|null, reason: string|null}
      */
     private function staging(): array
     {
@@ -38,8 +38,17 @@ final class StatusCollector
             $raw      = is_array($module['settings'] ?? null) ? $module['settings'] : [];
             $decision = \Valolink\Plugin\Modules\Staging\StagingDetector::decision($raw);
 
+            $loader_version = null;
+            if (defined('WPMU_PLUGIN_DIR')) {
+                $loader = WPMU_PLUGIN_DIR . '/' . \Valolink\Plugin\Modules\Staging\MuPluginInstaller::FILENAME;
+                if (is_file($loader) && preg_match('/^\s*\*\s*Version:\s*([0-9.]+)/m', (string) file_get_contents($loader, false, null, 0, 2048), $m)) {
+                    $loader_version = $m[1];
+                }
+            }
+
             return [
                 'module_enabled'  => $enabled,
+                'loader_version'  => $loader_version,
                 'declared'        => \Valolink\Plugin\Modules\Staging\StagingDetector::is_declared($raw),
                 'production_host' => $decision['declared_host'] !== '' ? $decision['declared_host'] : null,
                 'home_host'       => $decision['home_host'] !== '' ? $decision['home_host'] : null,
@@ -47,7 +56,7 @@ final class StatusCollector
                 'reason'          => $enabled ? $decision['reason'] : 'module_off',
             ];
         } catch (\Throwable) {
-            return ['module_enabled' => null, 'declared' => null, 'production_host' => null, 'home_host' => null, 'active' => null, 'reason' => null];
+            return ['module_enabled' => null, 'loader_version' => null, 'declared' => null, 'production_host' => null, 'home_host' => null, 'active' => null, 'reason' => null];
         }
     }
 

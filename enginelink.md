@@ -84,6 +84,7 @@ Full snapshot of the site's current state. This is the main endpoint EngineLink 
   },
   "staging": {
     "module_enabled": true,
+    "loader_version": "2.0",
     "declared": true,
     "production_host": "example.fi",
     "home_host": "staging2.example.fi",
@@ -97,7 +98,9 @@ Full snapshot of the site's current state. This is the main endpoint EngineLink 
 `forced`, `undeclared`, `mismatch`, `match`, or `module_off`. A production site with
 `declared: false` has no staging safeties on any of its clones; a clone with `active: false`
 is unprotected. `production_host` is the plaintext copy and may have been rewritten by a
-search-replace on a clone — the hash decides, this field is for display.
+search-replace on a clone — the hash decides, this field is for display. `loader_version` is
+the header version of the installed `mu-plugins/valolink-staging-loader.php` (null when
+missing); anything below 2.0 is stale and refreshes on the site's next wp-admin visit.
 
 Use `null` for any field that cannot be determined rather than omitting it. EngineLink handles nulls.
 
