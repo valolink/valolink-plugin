@@ -8,6 +8,7 @@ use Valolink\Plugin\Admin\SettingsPage;
 use Valolink\Plugin\Modules\Accesslink\AccesslinkModule;
 use Valolink\Plugin\Modules\AssetVersion\AssetVersionModule;
 use Valolink\Plugin\Modules\Branding\BrandingModule;
+use Valolink\Plugin\Modules\Comments\CommentsModule;
 use Valolink\Plugin\Modules\Email\EmailModule;
 use Valolink\Plugin\Modules\EngineLink\EngineLinkModule;
 use Valolink\Plugin\Modules\Logging\LoggingModule;
@@ -158,6 +159,14 @@ final class Plugin
             class: SecurityModule::class,
             default_enabled: false,
             constructor_args: [$settings],
+        ));
+
+        $registry->register(new ModuleManifest(
+            id: CommentsModule::MODULE_ID,
+            label: static fn (): string => __('Comments', 'valolink-plugin'),
+            description: static fn (): string => __('Comment mode on the front end for editors and administrators: click a part of a page, write, send. Comments pin to what they were written on and can be read through Accesslink with the block they concern.', 'valolink-plugin'),
+            class: CommentsModule::class,
+            default_enabled: true,
         ));
 
         $registry->register(new ModuleManifest(

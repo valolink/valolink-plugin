@@ -1267,7 +1267,12 @@ final class ChangeService
             'post_id'   => $target_id,
         ]);
 
-        return $this->repo->find($id) ?? [];
+        $applied = $this->repo->find($id) ?? [];
+        // Whoever filed work against this change (the comments module resolves
+        // the comment it was made for) hears that it is live.
+        do_action('valolink_accesslink_applied', $applied);
+
+        return $applied;
     }
 
     /**

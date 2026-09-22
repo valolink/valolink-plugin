@@ -417,6 +417,14 @@ One row, same shape.
 
 Capability-gated (`publish_posts`), **not** key-gated. With no logged-in user these return `403` — that is intended, not a bug. Remote approval from EngineLink will need its own approver credential, which is deliberately not built yet.
 
+### GET /comments · GET /comments/{id} · POST /comments/{id}/replies
+
+Front-end comments from the Comments module (`src/Modules/Comments`), present only when that module is enabled and its table exists; otherwise `404` and no guide section. A comment is what a logged-in editor wrote on the page itself, pinned to a heading, paragraph or button in comment mode (admin bar → Kommentoi).
+
+`GET /comments?status=open&post_id=12` lists top-level comments with their replies. Each carries `quote` (the text it was written on), `block_path` + `block_name` when that text was found in a block of the post (the usual `update_text` target), `selector` (the element chain as a CSS-ish path) when it was not, and `resolution` (`exact`, `moved`, `near`, `detached`: how the page last found it). Statuses: `open`, `addressed` (a change is pending for it), `resolved`.
+
+Send `comment_id` in `POST /changes` to link a proposal to a comment: the comment goes `addressed`, and when the change is approved and applied (`valolink_accesslink_applied` action) it goes `resolved` by itself. `POST /comments/{id}/replies` `{text}` adds a reply under the agent's name (`X-Accesslink-Agent`). Agents never resolve or delete comments.
+
 ---
 
 ## Content filtering

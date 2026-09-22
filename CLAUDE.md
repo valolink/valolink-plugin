@@ -51,6 +51,9 @@ Detect staging/local environments reliably (multiple heuristics: hostname patter
 ### EngineLink module (shipped — pull, not push)
 Read-only inventory served over REST: `/ping` + `/status` (WP core version, theme, plugins with update state, PHP env, users, DB size, health). EngineLink pulls on its own 6-hourly cron and on demand; Bearer-key auth as described in §3. The Logging module adds `/logs` + `/log-events` on the same namespace. Spec: `enginelink.md`.
 
+### Comments module (shipped)
+Front-end comment mode for logged-in editors (`edit_posts`): admin-bar toggles, comments pinned to page elements with a resolution ladder in `assets/comments/comments.js` (element chain → quote → nearest ancestor → detached), own table `wp_valolink_comments`, REST under `valolink/v1/comments` (cookie auth). Accesslink reads them (`/comments`) with block path + quote, links proposals with `comment_id`, and the `valolink_accesslink_applied` action resolves them when the change is live. Resolved comments purge after 90 days.
+
 ### Module E — Agency Branding
 Replace WP login logo with agency logo, inject agency support contact info beneath the login form. Must coexist with 2FA/security plugins on the login screen.
 

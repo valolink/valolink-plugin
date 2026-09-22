@@ -95,6 +95,11 @@ final class GuideBuilder
                 'summary' => 'The site\'s own fields, proposed as acf:<name>; which are writable and how.',
                 'when'    => $this->uses_acf(),
             ],
+            'comments' => [
+                'label'   => 'Front-end comments',
+                'summary' => 'What a reviewer wrote on the page itself, with the block it concerns; propose for a comment, reply to it.',
+                'when'    => class_exists(\Valolink\Plugin\Modules\Comments\CommentTable::class) && \Valolink\Plugin\Modules\Comments\CommentTable::exists(),
+            ],
             'queue' => [
                 'label'   => 'Checking on your proposals',
                 'summary' => 'Statuses, and reading why something was rejected.',
@@ -133,6 +138,7 @@ final class GuideBuilder
             'elements'     => $this->section_elements(),
             'menus'        => $this->section_menus(),
             'fields'       => $this->section_fields(),
+            'comments'     => $this->section_comments(),
             'queue'        => $this->section_queue(),
             'notes'        => $this->section_notes(),
             default        => [],
@@ -833,6 +839,42 @@ final class GuideBuilder
         }
 
         return false;
+    }
+
+    /** @return array<int, string> */
+    private function section_comments(): array
+    {
+        $base = $this->base();
+
+        $md = [];
+        $md[] = '## Front-end comments';
+        $md[] = '';
+        $md[] = 'People who edit this site can write comments on the page itself: a note pinned';
+        $md[] = 'to a heading, a paragraph, a button. They are the site owner\'s instructions,';
+        $md[] = 'in their own words, about a specific spot. Read them before proposing anything';
+        $md[] = 'on a page, and treat an open one as the work to do.';
+        $md[] = '';
+        $md[] = "- `GET {$base}/comments?status=open` — every open comment; `post_id` narrows to one";
+        $md[] = '  page; `status` all, open, addressed or resolved.';
+        $md[] = "- `GET {$base}/comments/{id}` — one comment with its thread.";
+        $md[] = '';
+        $md[] = 'Each carries `quote` (the text it was written on), `block_path` and `block_name`';
+        $md[] = 'when that text lives in a block of the post (then `update_text` at that path is';
+        $md[] = 'the usual answer), and `selector` (where on the page it sits) when it does not,';
+        $md[] = 'which means a theme part, a plugin or a script rendered it and Accesslink cannot';
+        $md[] = 'change it: say so in a reply and leave it to the operator. `resolution` tells';
+        $md[] = 'how the page last found the comment: exact, moved, near (its element is gone,';
+        $md[] = 'the pin sits on a parent) or detached.';
+        $md[] = '';
+        $md[] = 'Send `comment_id` in a proposal made for a comment: the comment then shows';
+        $md[] = '"change pending" and is resolved by itself when the change is approved. Reply';
+        $md[] = "with `POST {$base}/comments/{id}/replies` `{text}` to ask what was meant or to say";
+        $md[] = 'what you proposed; the reply appears in the thread under your agent name. Do';
+        $md[] = 'not resolve or delete comments: the person who wrote them does, or the approval';
+        $md[] = 'does.';
+        $md[] = '';
+
+        return $md;
     }
 
     private function section_queue(): array

@@ -41,6 +41,7 @@ mkdir -p "$DEST" "$DIST"
 cp "$MAIN" "$DEST/"
 cp "$ROOT/uninstall.php" "$DEST/"
 cp -R "$ROOT/src" "$DEST/"
+cp -R "$ROOT/assets" "$DEST/"
 [ -f "$ROOT/readme.txt" ] && cp "$ROOT/readme.txt" "$DEST/"
 
 # Stamp the resolved version into the shipped copy (header + constant).

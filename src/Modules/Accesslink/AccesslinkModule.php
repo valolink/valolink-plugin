@@ -223,6 +223,24 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        // Front-end comments: what a reviewer wrote on the page, with the block
+        // it concerns; the agent proposes with comment_id and may reply.
+        register_rest_route(self::REST_NAMESPACE, '/comments', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_comments'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+        register_rest_route(self::REST_NAMESPACE, '/comments/(?P<id>\d+)', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_comment'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+        register_rest_route(self::REST_NAMESPACE, '/comments/(?P<id>\d+)/replies', [
+            'methods'             => \WP_REST_Server::CREATABLE,
+            'callback'            => [$this, 'handle_comment_reply'],
+            'permission_callback' => [$auth, 'check'],
+        ]);
+
         // Lookups for the two fields whose valid values an agent cannot guess:
         // term slugs (creating terms is refused) and attachment ids (uploading
         // is not possible).
@@ -695,7 +713,115 @@ final class AccesslinkModule implements Module
             return $result;
         }
 
+        // A proposal made for a front-end comment: the comment shows "change
+        // pending" and is resolved when the change goes live.
+        $comment_id = (int) ($body['comment_id'] ?? 0);
+        if ($comment_id > 0 && !empty($result['id']) && $this->comments() !== null) {
+            $repo = $this->comments();
+            $comment = $repo->find($comment_id);
+            if ($comment !== null && $comment['parent_id'] === null) {
+                $repo->update($comment_id, ['change_id' => (int) $result['id'], 'status' => \Valolink\Plugin\Modules\Comments\CommentRepository::STATUS_ADDRESSED]);
+            }
+        }
+
         return new \WP_REST_Response($this->shape($result), 201);
+    }
+
+    /** The comments module's store, when the module and its table exist. */
+    private function comments(): ?\Valolink\Plugin\Modules\Comments\CommentRepository
+    {
+        if (!class_exists(\Valolink\Plugin\Modules\Comments\CommentTable::class) || !\Valolink\Plugin\Modules\Comments\CommentTable::exists()) {
+            return null;
+        }
+
+        return new \Valolink\Plugin\Modules\Comments\CommentRepository();
+    }
+
+    /** Front-end comments for the agent: what a reviewer wrote, on which page and block. */
+    public function handle_comments(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $repo = $this->comments();
+        if ($repo === null) {
+            return new \WP_Error('no_comments', 'This site has no comments module.', ['status' => 404]);
+        }
+        $status  = (string) ($request->get_param('status') ?? 'open');
+        $post_id = (int) ($request->get_param('post_id') ?? 0);
+        $list    = $repo->list($post_id > 0 ? $post_id : null, $status === 'all' ? 'all' : $status);
+
+        return new \WP_REST_Response(['comments' => array_map([$this, 'shape_comment'], $list)]);
+    }
+
+    public function handle_comment(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $repo = $this->comments();
+        $comment = $repo?->find((int) $request['id']);
+        if ($repo === null || $comment === null || $comment['parent_id'] !== null) {
+            return new \WP_Error('not_found', 'No such comment.', ['status' => 404]);
+        }
+        $comment['replies'] = $repo->replies($comment['id']);
+
+        return new \WP_REST_Response($this->shape_comment($comment));
+    }
+
+    /** An agent's reply in a comment's thread: a question, or what was proposed. */
+    public function handle_comment_reply(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $repo = $this->comments();
+        $comment = $repo?->find((int) $request['id']);
+        if ($repo === null || $comment === null || $comment['parent_id'] !== null) {
+            return new \WP_Error('not_found', 'No such comment.', ['status' => 404]);
+        }
+        $body = $request->get_json_params();
+        $text = trim(sanitize_textarea_field((string) (is_array($body) ? ($body['text'] ?? '') : '')));
+        if ($text === '') {
+            return new \WP_Error('no_text', 'text is required.', ['status' => 400]);
+        }
+        $agent = sanitize_text_field((string) $request->get_header('x-accesslink-agent')) ?: 'agent';
+        $id = $repo->insert([
+            'parent_id'   => $comment['id'],
+            'post_id'     => $comment['post_id'],
+            'url'         => $comment['url'],
+            'status'      => $comment['status'],
+            'text'        => mb_substr($text, 0, 2000),
+            'author_id'   => 0,
+            'author_name' => mb_substr($agent, 0, 100),
+        ]);
+        $repo->update($comment['id'], []);
+
+        return new \WP_REST_Response($repo->find($id), 201);
+    }
+
+    /** @param array<string, mixed> $c @return array<string, mixed> */
+    private function shape_comment(array $c): array
+    {
+        $anchor = is_array($c['anchor'] ?? null) ? $c['anchor'] : [];
+        $chain  = is_array($anchor['chain'] ?? null) ? $anchor['chain'] : [];
+        $selector = implode(' > ', array_map(
+            static fn (array $s): string => ($s['tag'] ?? '') . (!empty($s['id']) ? '#' . $s['id'] : '') . (!empty($s['classes']) ? '.' . implode('.', $s['classes']) : ''),
+            $chain,
+        ));
+
+        return [
+            'id'          => $c['id'],
+            'status'      => $c['status'],
+            'post_id'     => $c['post_id'],
+            'url'         => $c['url'],
+            'block_path'  => $c['block_path'],
+            'block_name'  => $c['block_name'],
+            'quote'       => $c['quote'],
+            'selector'    => $selector !== '' ? $selector : null,
+            'resolution'  => $c['resolution'],
+            'text'        => $c['text'],
+            'author'      => $c['author_name'],
+            'created_at'  => $c['created_at'],
+            'change_id'   => $c['change_id'],
+            'resolved_at' => $c['resolved_at'],
+            'resolved_by' => $c['resolved_by'],
+            'replies'     => array_map(
+                static fn (array $r): array => ['id' => $r['id'], 'author' => $r['author_name'], 'text' => $r['text'], 'created_at' => $r['created_at']],
+                is_array($c['replies'] ?? null) ? $c['replies'] : [],
+            ),
+        ];
     }
 
     public function handle_list(\WP_REST_Request $request): \WP_REST_Response
