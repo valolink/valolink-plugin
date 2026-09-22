@@ -300,15 +300,19 @@ final class ChangeService
         if (!array_key_exists($key, $input)) {
             return new \WP_Error('no_' . $key, sprintf('%s is required.', $key), ['status' => 400]);
         }
-        // The fragment is the only agent-authored markup in a block edit; the
-        // rest of the document is the site's own and is never filtered.
-        $html = ContentSanitizer::filter((string) $input[$key]);
-
         $reader = new BlockReader();
         $block = $reader->get_at((string) $post->post_content, $path);
         if ($block === null) {
             return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path), ['status' => 404]);
         }
+
+        // The fragment is the only agent-authored markup in a block edit; the
+        // rest of the document is the site's own and is never filtered. In a
+        // Custom HTML block the <script> and <style> are the content, so they
+        // stay, and the summary tells the reviewer the block carries code.
+        $is_html_block = ($block['name'] ?? '') === 'core/html';
+        $html = ContentSanitizer::filter((string) $input[$key], $is_html_block);
+        $code_note = ContentSanitizer::has_code($html) ? ' — sisältää script/style' : '';
 
         // Dry-run the replacement now rather than at approval, so a structural
         // failure reaches the agent instead of the reviewer's queue.
@@ -344,7 +348,7 @@ final class ChangeService
                 'block_name'    => $block['name'],
                 'previous_html' => $block['html'],
             ],
-            'summary'         => $this->summarize($post->post_title . ' — ' . $block['name']),
+            'summary'         => $this->summarize($post->post_title . ' — ' . $block['name'] . $code_note),
             'note'            => $note,
             'requested_by'    => $requested_by,
             'idempotency_key' => $idempotency_key,
@@ -442,13 +446,14 @@ final class ChangeService
 
         $block = $path === '' ? null : $reader->get_at($content, $path);
         $where = $block['name'] ?? ($path === '' ? 'document ' . (string) ($payload['position'] ?? '') : $path);
+        $code_note = ContentSanitizer::has_code((string) ($payload['markup'] ?? '')) ? ' — sisältää script/style' : '';
         $id = $this->repo->insert([
             'action'          => $action,
             'target_id'       => $target_id,
             'post_type'       => $post->post_type,
             'base_hash'       => $this->content_hash($post),
             'payload'         => $payload,
-            'summary'         => $this->summarize($post->post_title . ' — ' . $where),
+            'summary'         => $this->summarize($post->post_title . ' — ' . $where . $code_note),
             'note'            => $note,
             'requested_by'    => $requested_by,
             'idempotency_key' => $idempotency_key,

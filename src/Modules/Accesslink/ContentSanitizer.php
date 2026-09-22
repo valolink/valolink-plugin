@@ -44,9 +44,63 @@ final class ContentSanitizer
         'data-name'       => true,
     ];
 
-    public static function filter(string $content): string
+    /** A Custom HTML block (core/html), delimiters included, as one capture. */
+    private const HTML_BLOCK = '/(<!--\s*wp:html(?:\s[^>]*)?-->.*?<!--\s*\/wp:html\s*-->)/is';
+
+    /** A script or style element with its contents. */
+    private const CODE = '/<(script|style)\b[^>]*>.*?<\/\1\s*>/is';
+
+    /**
+     * Filter agent-authored markup.
+     *
+     * A Custom HTML block is the one place on a page where <script> and
+     * <style> are the content rather than an intrusion: that is what the
+     * block exists for, and a site's small custom widgets live there. Inside
+     * such a block they are kept verbatim, the rest of the block is filtered
+     * as usual, and the proposal's summary says the block carries code, so
+     * the reviewer reads it before approving. Everywhere else the two are
+     * stripped as before.
+     *
+     * @param bool $html_block The fragment is the content of a core/html
+     *   block (a block edit addressed by path); markup and whole documents
+     *   are recognised by their delimiters instead.
+     */
+    public static function filter(string $content, bool $html_block = false): string
     {
-        return wp_kses($content, self::allowed_html());
+        if ($html_block) {
+            return self::filter_keeping_code($content);
+        }
+        $out = '';
+        foreach (preg_split(self::HTML_BLOCK, $content, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY) ?: [] as $piece) {
+            $out .= preg_match(self::HTML_BLOCK, $piece) && str_starts_with(ltrim($piece), '<!--')
+                ? self::filter_keeping_code($piece)
+                : wp_kses($piece, self::allowed_html());
+        }
+
+        return $out;
+    }
+
+    /** Whether the markup carries a <script> or <style>, for the reviewer. */
+    public static function has_code(string $content): bool
+    {
+        return (bool) preg_match(self::CODE, $content);
+    }
+
+    private static function filter_keeping_code(string $content): string
+    {
+        $kept = [];
+        $stripped = (string) preg_replace_callback(self::CODE, static function (array $m) use (&$kept): string {
+            $kept[] = $m[0];
+
+            return '<!--valolink-code-' . (count($kept) - 1) . '-->';
+        }, $content);
+        $filtered = wp_kses($stripped, self::allowed_html());
+
+        return (string) preg_replace_callback(
+            '/<!--valolink-code-(\d+)-->/',
+            static fn (array $m): string => $kept[(int) $m[1]] ?? '',
+            $filtered,
+        );
     }
 
     /** @return array<string, array<string, bool>> */
