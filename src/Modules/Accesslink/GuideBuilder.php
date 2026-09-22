@@ -424,6 +424,17 @@ final class GuideBuilder
         $md[] = 'Such a proposal is marked "sisältää script/style" in the queue, and the reviewer';
         $md[] = 'reads the code before approving — write the note accordingly.';
         $md[] = '';
+        $md[] = '### Seeing the result before you file it';
+        $md[] = '';
+        $md[] = "- `POST {$base}/preview` with the same body you would send to";
+        $md[] = '  `/changes` (any block action) returns the page as it would be with the change';
+        $md[] = '  applied: `blocks` with their paths as `/content/{id}/blocks` lists them, `text`';
+        $md[] = '  as a visitor would read the page, and `issues` if the edit would break a block.';
+        $md[] = '  Nothing is queued. Add `?html=1` for the rendered HTML.';
+        $md[] = "- `GET {$base}/changes/{id}/preview` shows a proposal already in the";
+        $md[] = '  queue the same way. Read your change as a visitor would before you file it,';
+        $md[] = '  and after, if the reviewer asks what it does.';
+        $md[] = '';
 
         if ($this->uses_generateblocks()) {
             $md[] = '### GenerateBlocks on this site';

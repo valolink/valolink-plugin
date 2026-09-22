@@ -207,6 +207,22 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        // The result of a change, as the page would be with it applied: its
+        // blocks with paths and the rendered text, without queueing anything
+        // (POST /preview with a proposal's body), or for a queued proposal
+        // (GET /changes/{id}/preview). The agent's equivalent of the
+        // reviewer's Preview link, which needs a logged-in user.
+        register_rest_route(self::REST_NAMESPACE, '/preview', [
+            'methods'             => \WP_REST_Server::CREATABLE,
+            'callback'            => [$this, 'handle_preview'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+        register_rest_route(self::REST_NAMESPACE, '/changes/(?P<id>\d+)/preview', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_preview_change'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
         // Lookups for the two fields whose valid values an agent cannot guess:
         // term slugs (creating terms is refused) and attachment ids (uploading
         // is not possible).
@@ -701,6 +717,136 @@ final class AccesslinkModule implements Module
         }
 
         return new \WP_REST_Response($this->shape($change));
+    }
+
+    /**
+     * Dry-run a block change and show the page as it would be. The body is a
+     * proposal's body (action, target_id, path, text/html/markup, position,
+     * target_path); nothing is queued. The fragment is sanitised exactly as a
+     * proposal's would be, so what the agent previews is what it would file.
+     */
+    public function handle_preview(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $body = $request->get_json_params();
+        if (!is_array($body)) {
+            return new \WP_Error('bad_body', 'Expected a JSON object.', ['status' => 400]);
+        }
+        $action = (string) ($body['action'] ?? '');
+        $block_actions = array_merge(
+            [ChangeRepository::ACTION_UPDATE_TEXT, ChangeRepository::ACTION_UPDATE_BLOCK],
+            ChangeRepository::STRUCTURAL_ACTIONS,
+        );
+        if (!in_array($action, $block_actions, true)) {
+            return new \WP_Error('bad_action', 'preview covers block changes: ' . implode(', ', $block_actions) . '.', ['status' => 400]);
+        }
+        $post = get_post((int) ($body['target_id'] ?? 0));
+        if (!$post instanceof \WP_Post) {
+            return new \WP_Error('not_found', 'No post with that id.', ['status' => 404]);
+        }
+        if (!in_array($post->post_type, $this->service()->allowed_post_types(), true)) {
+            return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 403]);
+        }
+
+        $reader = new BlockReader();
+        $path = trim((string) ($body['path'] ?? ''));
+        $payload = ['path' => $path];
+        if (in_array($action, [ChangeRepository::ACTION_UPDATE_TEXT, ChangeRepository::ACTION_UPDATE_BLOCK], true)) {
+            $block = $path === '' ? null : $reader->get_at((string) $post->post_content, $path);
+            if ($block === null) {
+                return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path), ['status' => 404]);
+            }
+            $key = $action === ChangeRepository::ACTION_UPDATE_TEXT ? 'text' : 'html';
+            $payload['html'] = ContentSanitizer::filter((string) ($body[$key] ?? ''), ($block['name'] ?? '') === 'core/html');
+        } elseif ($action === ChangeRepository::ACTION_INSERT_BLOCK) {
+            $payload['markup']   = ContentSanitizer::filter((string) ($body['markup'] ?? ''));
+            $payload['position'] = (string) ($body['position'] ?? 'after');
+        } elseif ($action === ChangeRepository::ACTION_MOVE_BLOCK) {
+            $payload['target_path'] = trim((string) ($body['target_path'] ?? ''));
+            $payload['position']    = (string) ($body['position'] ?? 'after');
+        }
+
+        $content = $this->service()->proposed_content(['action' => $action, 'payload' => $payload], $post);
+        if (is_wp_error($content)) {
+            return new \WP_REST_Response(['ok' => false, 'issues' => [$content->get_error_message()]]);
+        }
+        if ($content === null) {
+            return new \WP_Error('bad_action', 'That action does not change the post body.', ['status' => 400]);
+        }
+        $issues = (new BlockValidator())->check_diff((string) $post->post_content, $content);
+
+        return new \WP_REST_Response(
+            ['ok' => $issues === [], 'issues' => $issues] + $this->render_preview($post, $content, (bool) $request->get_param('html')),
+        );
+    }
+
+    /** A queued proposal, as the page would be with it applied. */
+    public function handle_preview_change(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $change = (new ChangeRepository())->find((int) $request['id']);
+        if ($change === null) {
+            return new \WP_Error('not_found', 'No such change.', ['status' => 404]);
+        }
+        $post = get_post((int) $change['target_id']);
+        if (!$post instanceof \WP_Post) {
+            return new \WP_Error('not_found', 'The change\'s post no longer exists.', ['status' => 404]);
+        }
+        $content = $this->service()->proposed_content($change, $post);
+        if (is_wp_error($content)) {
+            return new \WP_REST_Response(['id' => (int) $change['id'], 'status' => $change['status'], 'ok' => false, 'issues' => [$content->get_error_message()]]);
+        }
+        if ($content === null) {
+            return new \WP_Error('no_body_change', 'This change sets fields, not the post body; read the change itself.', ['status' => 400]);
+        }
+
+        return new \WP_REST_Response(
+            ['id' => (int) $change['id'], 'status' => $change['status'], 'ok' => true, 'issues' => []]
+                + $this->render_preview($post, $content, (bool) $request->get_param('html')),
+        );
+    }
+
+    /**
+     * The page with a content applied, in the forms an agent reads: the block
+     * list with paths (as GET /content/{id}/blocks gives it), the rendered
+     * text as a visitor would read it, and on request the rendered HTML.
+     *
+     * @return array<string, mixed>
+     */
+    private function render_preview(\WP_Post $post, string $content, bool $with_html): array
+    {
+        $flat = (new BlockReader())->flatten($content);
+
+        // Render through the same filters the theme uses, with the post in
+        // place for blocks that read it; then back out.
+        $previous = $GLOBALS['post'] ?? null;
+        $preview = clone $post;
+        $preview->post_content = $content;
+        $GLOBALS['post'] = $preview;
+        setup_postdata($preview);
+        $html = (string) apply_filters('the_content', $content);
+        wp_reset_postdata();
+        $GLOBALS['post'] = $previous;
+
+        $text = preg_replace('/<(?:br|hr)\b[^>]*>/i', "\n", $html);
+        $text = preg_replace('/<\/(?:p|div|h[1-6]|li|tr|section|article|header|footer|blockquote|figcaption)>/i', "\n", (string) $text);
+        $text = wp_strip_all_tags((string) $text);
+        $text = html_entity_decode((string) $text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = (string) preg_replace('/[ \t]+/', ' ', $text);
+        $text = (string) preg_replace('/\n\s*\n+/', "\n\n", trim($text));
+
+        $out = [
+            'target_id' => $post->ID,
+            'title'     => $post->post_title,
+            'blocks'    => $flat['blocks'] ?? [],
+            'total'     => $flat['total'] ?? 0,
+            'truncated' => $flat['truncated'] ?? false,
+            'text'      => mb_substr($text, 0, ContentReader::CONTENT_MAX_CHARS),
+        ];
+        if ($with_html) {
+            $out['html'] = mb_substr($html, 0, ContentReader::CONTENT_MAX_CHARS);
+            $out['html_truncated'] = mb_strlen($html) > ContentReader::CONTENT_MAX_CHARS;
+        }
+
+        return $out;
     }
 
     public function handle_approve(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
