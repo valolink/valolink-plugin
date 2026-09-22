@@ -98,8 +98,8 @@ final class PostApplier
      */
     private const INTERNAL_TAXONOMIES = [
         'category', 'post_tag', 'post_format', 'nav_menu', 'link_category',
-        'product_cat', 'product_tag', 'product_type', 'product_visibility', 'product_shipping_class',
-        'wp_theme', 'wp_template_part_area', 'wp_pattern_category',
+        'product_cat', 'product_tag', 'product_type', 'product_visibility', 'product_shipping_class', 'product_brand',
+        'wp_theme', 'wp_template_part_area', 'wp_pattern_category', 'gblocks_pattern_collections',
         'language', 'post_translations', 'term_language', 'term_translations',
     ];
 

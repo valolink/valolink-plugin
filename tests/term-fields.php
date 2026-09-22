@@ -56,14 +56,16 @@ $GLOBALS['taxonomies'] = [
     'no_ui_tax'      => tax('no_ui_tax', true, false),
     'tags'           => tax('tags'),
     'product_cat'    => tax('product_cat'),
+    'product_brand'  => tax('product_brand'),
     'language'       => tax('language'),
+    'gblocks_pattern_collections' => tax('gblocks_pattern_collections'),
 ];
 
 $custom = PostApplier::custom_term_fields();
 check('the site\'s own public taxonomies become fields under their own names', $custom === ['kohteen_tyyppi' => 'kohteen_tyyppi', 'renean_rooli' => 'renean_rooli']);
 check('categories and tags keep their aliases', PostApplier::term_fields()['categories'] === 'category' && PostApplier::term_fields()['tags'] === 'post_tag');
 check('a taxonomy named like an existing field is skipped, not shadowing it', !isset($custom['tags']));
-check('plumbing taxonomies are never fields', !isset($custom['post_format'], $custom['nav_menu'], $custom['product_cat'], $custom['language']));
+check('plumbing taxonomies are never fields', !isset($custom['post_format'], $custom['nav_menu'], $custom['product_cat'], $custom['language'], $custom['product_brand'], $custom['gblocks_pattern_collections']));
 check('non-public or UI-less taxonomies are never fields', !isset($custom['hidden_tax'], $custom['no_ui_tax']));
 
 $GLOBALS['taxonomies'] = ['category' => tax('category'), 'post_tag' => tax('post_tag')];
