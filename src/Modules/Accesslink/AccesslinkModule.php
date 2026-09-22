@@ -727,16 +727,9 @@ final class AccesslinkModule implements Module
         return new \WP_REST_Response($this->shape($result), 201);
     }
 
-    /**
-     * The comments module's store, when the operator has opened the comments
-     * to agents (off by default) and the module's table exists. One gate for
-     * reading, replying and linking a proposal to a comment.
-     */
+    /** The comments module's store, when the module and its table exist. */
     private function comments(): ?\Valolink\Plugin\Modules\Comments\CommentRepository
     {
-        if (!$this->service()->comments_enabled()) {
-            return null;
-        }
         if (!class_exists(\Valolink\Plugin\Modules\Comments\CommentTable::class) || !\Valolink\Plugin\Modules\Comments\CommentTable::exists()) {
             return null;
         }
@@ -744,12 +737,38 @@ final class AccesslinkModule implements Module
         return new \Valolink\Plugin\Modules\Comments\CommentRepository();
     }
 
+    /**
+     * The reviewer's reply, written on the change card, to every comment this
+     * change was proposed for. Under the reviewer's own name: this is the
+     * person who decided, answering the person who asked.
+     */
+    private function reply_to_linked_comments(int $change_id, string $text): void
+    {
+        $repo = $this->comments();
+        if ($repo === null) {
+            return;
+        }
+        $user = wp_get_current_user();
+        foreach ($repo->by_change($change_id) as $comment) {
+            $repo->insert([
+                'parent_id'   => $comment['id'],
+                'post_id'     => $comment['post_id'],
+                'url'         => $comment['url'],
+                'status'      => $comment['status'],
+                'text'        => mb_substr($text, 0, 2000),
+                'author_id'   => (int) $user->ID,
+                'author_name' => $user->display_name,
+            ]);
+            $repo->update($comment['id'], []);
+        }
+    }
+
     /** Front-end comments for the agent: what a reviewer wrote, on which page and block. */
     public function handle_comments(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
         $repo = $this->comments();
         if ($repo === null) {
-            return new \WP_Error('no_comments', 'Front-end comments are not open to agents on this site.', ['status' => 404]);
+            return new \WP_Error('no_comments', 'This site has no front-end comments.', ['status' => 404]);
         }
         $status  = (string) ($request->get_param('status') ?? 'open');
         $post_id = (int) ($request->get_param('post_id') ?? 0);
@@ -773,6 +792,9 @@ final class AccesslinkModule implements Module
     /** An agent's reply in a comment's thread: a question, or what was proposed. */
     public function handle_comment_reply(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
     {
+        if (!$this->service()->comment_replies_enabled()) {
+            return new \WP_Error('replies_closed', 'Replying to comments is not open to agents on this site. Put what you would have asked in the proposal note instead.', ['status' => 403]);
+        }
         $repo = $this->comments();
         $comment = $repo?->find((int) $request['id']);
         if ($repo === null || $comment === null || $comment['parent_id'] !== null) {
@@ -1044,13 +1066,25 @@ final class AccesslinkModule implements Module
 
         // Explicit allowlist — anything unrecognised must not fall through to
         // one of the two destructive branches.
-        if (!in_array($decision, ['approve', 'reject'], true)) {
+        if (!in_array($decision, ['approve', 'reject', 'reply'], true)) {
             $this->redirect_back('failed');
         }
 
         $reason = isset($_POST['review_note'])
             ? sanitize_textarea_field(wp_unslash($_POST['review_note']))
             : null;
+
+        // A reply written on the card goes to the comment this change was
+        // proposed for, with the decision or on its own.
+        $reply = isset($_POST['comment_reply'])
+            ? trim(sanitize_textarea_field(wp_unslash($_POST['comment_reply'])))
+            : '';
+        if ($reply !== '') {
+            $this->reply_to_linked_comments($id, $reply);
+        }
+        if ($decision === 'reply') {
+            $this->redirect_back($reply !== '' ? 'replied' : 'failed');
+        }
 
         $service = $this->service();
         $result  = $decision === 'approve' ? $service->approve($id) : $service->reject($id, $reason);
@@ -1099,7 +1133,7 @@ final class AccesslinkModule implements Module
                 : '',
             'writes_enabled'     => !empty($_POST['writes_enabled']),
             'allow_menu_edits'   => !empty($_POST['allow_menu_edits']),
-            'allow_comments'     => !empty($_POST['allow_comments']),
+            'allow_comment_replies' => !empty($_POST['allow_comment_replies']),
             'allowed_post_types' => $types !== [] ? $types : ['post', 'page'],
             'instructions'       => $instructions,
         ];

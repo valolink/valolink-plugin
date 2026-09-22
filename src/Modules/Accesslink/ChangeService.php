@@ -471,14 +471,14 @@ final class ChangeService
     }
 
     /**
-     * Front-end comments are often the customer's own words, so an agent reads
-     * and answers them only where the operator has said so.
+     * Front-end comments are often the customer's own words. Agents always
+     * read them; they answer in the thread only where the operator has said so.
      */
-    public function comments_enabled(): bool
+    public function comment_replies_enabled(): bool
     {
         return (bool) $this->settings->get_module_setting(
             AccesslinkModule::MODULE_ID,
-            'allow_comments',
+            'allow_comment_replies',
             false,
         );
     }

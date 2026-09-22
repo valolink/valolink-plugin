@@ -245,6 +245,11 @@ final class QueuePage
                 <?php endif; ?>
             </p>
 
+            <?php $linked = $this->linked_comments((int) $change['id']); ?>
+            <?php if ($linked !== []) : ?>
+                <?php $this->render_comment_thread($linked); ?>
+            <?php endif; ?>
+
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <?php wp_nonce_field(AccesslinkModule::REVIEW_NONCE); ?>
                 <input type="hidden" name="action" value="<?php echo esc_attr(AccesslinkModule::REVIEW_ACTION); ?>">
@@ -253,12 +258,23 @@ final class QueuePage
                     <input type="text" name="review_note" class="regular-text"
                            placeholder="<?php esc_attr_e('Reason, if rejecting — the agent reads this', 'valolink-plugin'); ?>">
                 </p>
+                <?php if ($linked !== []) : ?>
+                    <p>
+                        <textarea name="comment_reply" class="large-text" rows="2"
+                                  placeholder="<?php esc_attr_e('Reply to the comment — appears in its thread under your name, with the decision or on its own', 'valolink-plugin'); ?>"></textarea>
+                    </p>
+                <?php endif; ?>
                 <button class="button button-primary" name="decision" value="approve">
                     <?php esc_html_e('Approve', 'valolink-plugin'); ?>
                 </button>
                 <button class="button" name="decision" value="reject">
                     <?php esc_html_e('Reject', 'valolink-plugin'); ?>
                 </button>
+                <?php if ($linked !== []) : ?>
+                    <button class="button" name="decision" value="reply">
+                        <?php esc_html_e('Reply only', 'valolink-plugin'); ?>
+                    </button>
+                <?php endif; ?>
             </form>
         </div>
         <?php
@@ -742,6 +758,7 @@ final class QueuePage
             'saved'    => [__('Settings saved.', 'valolink-plugin'), 'success'],
             'notes'    => [__('Agent notes updated.', 'valolink-plugin'), 'success'],
             'keyregen' => [__('API key regenerated.', 'valolink-plugin'), 'success'],
+            'replied'  => [__('Reply posted to the comment.', 'valolink-plugin'), 'success'],
         ];
 
         if (!isset($map[$msg])) {
@@ -926,19 +943,19 @@ final class QueuePage
                     </td>
                 </tr>
                 <tr>
-                    <th scope="row"><?php esc_html_e('Allow comment access', 'valolink-plugin'); ?></th>
+                    <th scope="row"><?php esc_html_e('Allow agent replies to comments', 'valolink-plugin'); ?></th>
                     <td>
                         <label>
-                            <input type="checkbox" name="allow_comments" value="1"
+                            <input type="checkbox" name="allow_comment_replies" value="1"
                                 <?php checked((bool) $this->settings->get_module_setting(
                                     AccesslinkModule::MODULE_ID,
-                                    'allow_comments',
+                                    'allow_comment_replies',
                                     false,
                                 )); ?>>
-                            <?php esc_html_e('Let agents read front-end comments and reply in their threads', 'valolink-plugin'); ?>
+                            <?php esc_html_e('Let agents reply in the threads of front-end comments', 'valolink-plugin'); ?>
                         </label>
                         <p class="description">
-                            <?php esc_html_e('Off by default. Front-end comments are written by whoever edits this site, often the customer. With this off an agent never sees them and never answers them; with it on, an agent can file a proposal for a comment and its replies appear in the thread under the agent name.', 'valolink-plugin'); ?>
+                            <?php esc_html_e('Off by default. Front-end comments are often written by the customer, and an agent should not answer them unless you want it to. Agents always see the comments and can file proposals for them; with this off, the guide tells them to put questions in the proposal note, which you read here next to the comment.', 'valolink-plugin'); ?>
                         </p>
                     </td>
                 </tr>
@@ -1048,5 +1065,57 @@ final class QueuePage
             </p>
         </form>
         <?php
+    }
+
+    // -------------------------------------------------------------------------
+    // Front-end comments linked to a change
+    // -------------------------------------------------------------------------
+
+    /**
+     * The comments this change was proposed for, when the Comments module is
+     * on. Shown and answered on the card, so the person approving does not
+     * have to go to the page to say what they decided.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function linked_comments(int $change_id): array
+    {
+        if (!class_exists(\Valolink\Plugin\Modules\Comments\CommentTable::class) || !\Valolink\Plugin\Modules\Comments\CommentTable::exists()) {
+            return [];
+        }
+
+        return (new \Valolink\Plugin\Modules\Comments\CommentRepository())->by_change($change_id);
+    }
+
+    /** @param array<int, array<string, mixed>> $comments */
+    private function render_comment_thread(array $comments): void
+    {
+        foreach ($comments as $c) :
+            ?>
+            <div style="border-left:3px solid #f0a020;padding:.25em 1em;margin:0 0 1em;background:#fafafa;">
+                <p style="margin:.25em 0;color:#666;font-size:12px;">
+                    <?php esc_html_e('Comment on the page', 'valolink-plugin'); ?>
+                    <?php if (!empty($c['quote'])) : ?>
+                        — <em>“<?php echo esc_html(mb_substr((string) $c['quote'], 0, 160)); ?>”</em>
+                    <?php endif; ?>
+                    <?php if (!empty($c['url'])) : ?>
+                        · <a target="_blank" rel="noopener" href="<?php echo esc_url((string) $c['url']); ?>"><?php esc_html_e('open page', 'valolink-plugin'); ?></a>
+                    <?php endif; ?>
+                </p>
+                <p style="margin:.25em 0;">
+                    <strong><?php echo esc_html((string) $c['author_name']); ?></strong>
+                    <span style="color:#666;font-size:12px;"><?php echo esc_html((string) $c['created_at']); ?> UTC</span><br>
+                    <?php echo nl2br(esc_html((string) $c['text'])); ?>
+                </p>
+                <?php foreach ((array) ($c['replies'] ?? []) as $r) : ?>
+                    <p style="margin:.25em 0 .25em 1.5em;border-left:2px solid #ddd;padding-left:.75em;">
+                        <strong><?php echo esc_html((string) $r['author_name']); ?></strong>
+                        <span style="color:#666;font-size:12px;"><?php echo esc_html((string) $r['created_at']); ?> UTC</span><br>
+                        <?php echo nl2br(esc_html((string) $r['text'])); ?>
+                    </p>
+                <?php endforeach; ?>
+            </div>
+            <?php
+        endforeach;
     }
 }

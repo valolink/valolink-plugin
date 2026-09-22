@@ -98,8 +98,7 @@ final class GuideBuilder
             'comments' => [
                 'label'   => 'Front-end comments',
                 'summary' => 'What a reviewer wrote on the page itself, with the block it concerns; propose for a comment, reply to it.',
-                'when'    => $this->service->comments_enabled()
-                    && class_exists(\Valolink\Plugin\Modules\Comments\CommentTable::class)
+                'when'    => class_exists(\Valolink\Plugin\Modules\Comments\CommentTable::class)
                     && \Valolink\Plugin\Modules\Comments\CommentTable::exists(),
             ],
             'queue' => [
@@ -869,11 +868,19 @@ final class GuideBuilder
         $md[] = 'the pin sits on a parent) or detached.';
         $md[] = '';
         $md[] = 'Send `comment_id` in a proposal made for a comment: the comment then shows';
-        $md[] = '"change pending" and is resolved by itself when the change is approved. Reply';
-        $md[] = "with `POST {$base}/comments/{id}/replies` `{text}` to ask what was meant or to say";
-        $md[] = 'what you proposed; the reply appears in the thread under your agent name. Do';
-        $md[] = 'not resolve or delete comments: the person who wrote them does, or the approval';
-        $md[] = 'does.';
+        $md[] = '"change pending" and is resolved by itself when the change is approved. The';
+        $md[] = 'reviewer sees the comment next to your proposal and can answer it from there.';
+        if ($this->service->comment_replies_enabled()) {
+            $md[] = "Reply with `POST {$base}/comments/{id}/replies` `{text}` to ask what was meant";
+            $md[] = 'or to say what you proposed; the reply appears in the thread under your agent';
+            $md[] = 'name.';
+        } else {
+            $md[] = 'Replying to comments is not open to agents on this site: put what you would';
+            $md[] = 'have asked or explained in the proposal\'s `note`, which the reviewer reads';
+            $md[] = 'next to the comment.';
+        }
+        $md[] = 'Do not resolve or delete comments: the person who wrote them does, or the';
+        $md[] = 'approval does.';
         $md[] = '';
 
         return $md;

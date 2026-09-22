@@ -94,6 +94,25 @@ final class CommentRepository
         return array_map(fn (array $r): array => $this->shape($r), (array) $rows);
     }
 
+    /**
+     * The comments a change was proposed for, with their replies.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function by_change(int $change_id): array
+    {
+        global $wpdb;
+        $rows = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$this->table} WHERE change_id = %d AND parent_id IS NULL ORDER BY created_at ASC", $change_id), ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL
+        $out = [];
+        foreach ((array) $rows as $row) {
+            $shaped = $this->shape($row);
+            $shaped['replies'] = $this->replies((int) $row['id']);
+            $out[] = $shaped;
+        }
+
+        return $out;
+    }
+
     public function count_open(int $post_id): int
     {
         global $wpdb;
