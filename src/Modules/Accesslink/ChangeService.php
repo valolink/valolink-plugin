@@ -470,6 +470,19 @@ final class ChangeService
         return $this->repo->find($id) ?? [];
     }
 
+    /**
+     * Front-end comments are often the customer's own words, so an agent reads
+     * and answers them only where the operator has said so.
+     */
+    public function comments_enabled(): bool
+    {
+        return (bool) $this->settings->get_module_setting(
+            AccesslinkModule::MODULE_ID,
+            'allow_comments',
+            false,
+        );
+    }
+
     /** Menus are site structure rather than content, so they are opt-in per site. */
     public function menus_enabled(): bool
     {

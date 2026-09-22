@@ -925,6 +925,23 @@ final class QueuePage
                         </p>
                     </td>
                 </tr>
+                <tr>
+                    <th scope="row"><?php esc_html_e('Allow comment access', 'valolink-plugin'); ?></th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="allow_comments" value="1"
+                                <?php checked((bool) $this->settings->get_module_setting(
+                                    AccesslinkModule::MODULE_ID,
+                                    'allow_comments',
+                                    false,
+                                )); ?>>
+                            <?php esc_html_e('Let agents read front-end comments and reply in their threads', 'valolink-plugin'); ?>
+                        </label>
+                        <p class="description">
+                            <?php esc_html_e('Off by default. Front-end comments are written by whoever edits this site, often the customer. With this off an agent never sees them and never answers them; with it on, an agent can file a proposal for a comment and its replies appear in the thread under the agent name.', 'valolink-plugin'); ?>
+                        </p>
+                    </td>
+                </tr>
                 <?php if (ProductApplier::available()) : ?>
                 <tr>
                     <th scope="row"><?php esc_html_e('Allow price and stock edits', 'valolink-plugin'); ?></th>

@@ -419,7 +419,7 @@ Capability-gated (`publish_posts`), **not** key-gated. With no logged-in user th
 
 ### GET /comments · GET /comments/{id} · POST /comments/{id}/replies
 
-Front-end comments from the Comments module (`src/Modules/Comments`), present only when that module is enabled and its table exists; otherwise `404` and no guide section. A comment is what a logged-in editor wrote on the page itself, pinned to a heading, paragraph or button in comment mode (admin bar → Kommentoi).
+Front-end comments from the Comments module (`src/Modules/Comments`), present only when that module is enabled, its table exists and the operator has ticked **Allow comment access** in Accesslink settings (off by default, because the comments are often the customer's own words); otherwise `404` and no guide section. A comment is what a logged-in editor wrote on the page itself, pinned to a heading, paragraph or button in comment mode (admin bar → Kommentoi).
 
 `GET /comments?status=open&post_id=12` lists top-level comments with their replies. Each carries `quote` (the text it was written on), `block_path` + `block_name` when that text was found in a block of the post (the usual `update_text` target), `selector` (the element chain as a CSS-ish path) when it was not, and `resolution` (`exact`, `moved`, `near`, `detached`: how the page last found it). Statuses: `open`, `addressed` (a change is pending for it), `resolved`.
 

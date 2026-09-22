@@ -98,7 +98,9 @@ final class GuideBuilder
             'comments' => [
                 'label'   => 'Front-end comments',
                 'summary' => 'What a reviewer wrote on the page itself, with the block it concerns; propose for a comment, reply to it.',
-                'when'    => class_exists(\Valolink\Plugin\Modules\Comments\CommentTable::class) && \Valolink\Plugin\Modules\Comments\CommentTable::exists(),
+                'when'    => $this->service->comments_enabled()
+                    && class_exists(\Valolink\Plugin\Modules\Comments\CommentTable::class)
+                    && \Valolink\Plugin\Modules\Comments\CommentTable::exists(),
             ],
             'queue' => [
                 'label'   => 'Checking on your proposals',

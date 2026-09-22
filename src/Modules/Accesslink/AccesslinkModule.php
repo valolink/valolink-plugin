@@ -727,9 +727,16 @@ final class AccesslinkModule implements Module
         return new \WP_REST_Response($this->shape($result), 201);
     }
 
-    /** The comments module's store, when the module and its table exist. */
+    /**
+     * The comments module's store, when the operator has opened the comments
+     * to agents (off by default) and the module's table exists. One gate for
+     * reading, replying and linking a proposal to a comment.
+     */
     private function comments(): ?\Valolink\Plugin\Modules\Comments\CommentRepository
     {
+        if (!$this->service()->comments_enabled()) {
+            return null;
+        }
         if (!class_exists(\Valolink\Plugin\Modules\Comments\CommentTable::class) || !\Valolink\Plugin\Modules\Comments\CommentTable::exists()) {
             return null;
         }
@@ -742,7 +749,7 @@ final class AccesslinkModule implements Module
     {
         $repo = $this->comments();
         if ($repo === null) {
-            return new \WP_Error('no_comments', 'This site has no comments module.', ['status' => 404]);
+            return new \WP_Error('no_comments', 'Front-end comments are not open to agents on this site.', ['status' => 404]);
         }
         $status  = (string) ($request->get_param('status') ?? 'open');
         $post_id = (int) ($request->get_param('post_id') ?? 0);
@@ -1092,6 +1099,7 @@ final class AccesslinkModule implements Module
                 : '',
             'writes_enabled'     => !empty($_POST['writes_enabled']),
             'allow_menu_edits'   => !empty($_POST['allow_menu_edits']),
+            'allow_comments'     => !empty($_POST['allow_comments']),
             'allowed_post_types' => $types !== [] ? $types : ['post', 'page'],
             'instructions'       => $instructions,
         ];
