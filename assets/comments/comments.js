@@ -73,8 +73,13 @@
       if (cur.id) break;
       cur = cur.parentElement;
     }
-    let quote = selection || fullText(el).slice(0, 400);
-    if (!quote && el.tagName === "IMG") quote = el.getAttribute("alt") || el.getAttribute("src") || "";
+    let quote = selection || elText(el).slice(0, 400);
+    if (!quote) {
+      // A card, an icon, a background image: name what is in it, or on it.
+      const img = el.querySelector && el.querySelector("img");
+      if (img) quote = elText(img);
+      else { const bg = getComputedStyle(el).backgroundImage.match(/url\(["']?([^"')]+)/); if (bg) quote = bg[1]; }
+    }
     const prev = el.previousElementSibling ? fullText(el.previousElementSibling).slice(-60) : "";
     const next = el.nextElementSibling ? fullText(el.nextElementSibling).slice(0, 60) : "";
     return { quote, prefix: prev, suffix: next, tag: el.tagName.toLowerCase(), selection: !!selection, chain };
@@ -98,23 +103,34 @@
     return cands[0] || null;
   }
 
+  // What a quote is compared against: an image is its alt or source, a
+  // background image its URL, anything else its text.
+  function elText(el) {
+    if (el.tagName === "IMG") return norm(el.getAttribute("alt") || el.getAttribute("src") || "");
+    return fullText(el);
+  }
+
+  // The element the chain found is trusted; the quote only confirms the
+  // content is still what the comment was written on, at any length.
   function quoteMatches(el, quote) {
     if (!quote) return true;
-    const t = fullText(el);
+    const t = elText(el);
     const q = norm(quote);
-    return t === q || (q.length >= 12 && t.includes(q)) || (t.length >= 12 && q.includes(t));
+    if (t === q || t.includes(q)) return true;
+    if (!t && el.tagName !== "IMG") { const bg = getComputedStyle(el).backgroundImage; return bg.includes(q); }
+    return t.length >= 12 && q.includes(t);
   }
 
   function findByQuote(quote, tag) {
     const q = norm(quote);
     if (q.length < 12) return null;
-    const sel = tag ? tag : TEXT_TAGS;
+    const sel = tag ? tag : TEXT_TAGS + ",img";
     let best = null;
     for (const el of document.querySelectorAll(sel)) {
       if (isOurs(el)) continue;
-      const t = fullText(el);
+      const t = elText(el);
       if (t === q) return el;
-      if (t.includes(q) && (!best || t.length < fullText(best).length)) best = el;
+      if (t.includes(q) && (!best || t.length < elText(best).length)) best = el;
     }
     return best;
   }
