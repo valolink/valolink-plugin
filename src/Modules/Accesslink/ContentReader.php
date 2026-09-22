@@ -175,6 +175,13 @@ final class ContentReader
             }
         }
 
+        // The site's own fields, each with its label, type, choices, whether
+        // it can be written and its current value, in the `acf:` names an
+        // update sends back.
+        if (AcfFields::applies_to($post->post_type)) {
+            $out['acf'] = (new AcfFields())->read($id);
+        }
+
         // Anything already queued against this post — proposing a second edit
         // on top of a pending one is how you get a stale rejection later.
         $out['pending_changes'] = $this->pending_for($id);

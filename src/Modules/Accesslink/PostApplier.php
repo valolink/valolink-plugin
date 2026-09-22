@@ -72,6 +72,9 @@ final class PostApplier
         if (LayoutMeta::available()) {
             $fields = array_merge($fields, LayoutMeta::FIELDS);
         }
+        if (AcfFields::available()) {
+            $fields = array_merge($fields, AcfFields::field_names($post_types ?? []));
+        }
         if (ElementReader::available()
             && ($post_types === null || in_array(ElementReader::POST_TYPE, $post_types, true))) {
             $fields = array_merge($fields, ElementReader::WRITABLE);
@@ -123,6 +126,17 @@ final class PostApplier
      *
      * @return array<string, string> field => taxonomy
      */
+    /**
+     * The `acf:` entries of a field map.
+     *
+     * @param array<string, mixed> $fields
+     * @return array<string, mixed>
+     */
+    private static function acf_fields(array $fields): array
+    {
+        return array_filter($fields, static fn ($key): bool => AcfFields::is_acf((string) $key), ARRAY_FILTER_USE_KEY);
+    }
+
     public static function custom_term_fields(): array
     {
         if (!function_exists('get_taxonomies')) {
@@ -200,6 +214,10 @@ final class PostApplier
             return LayoutMeta::applies_to($post->post_type)
                 ? (new LayoutMeta())->read_field($post_id, $field)
                 : '';
+        }
+
+        if (AcfFields::is_acf($field)) {
+            return AcfFields::available() ? (new AcfFields())->read_field($post_id, $field) : '';
         }
 
         if (in_array($field, ElementReader::WRITABLE, true)) {
@@ -411,6 +429,17 @@ final class PostApplier
             }
         }
 
+        $acf = self::acf_fields($fields);
+        if ($acf !== []) {
+            if (!AcfFields::available()) {
+                return new \WP_Error('acf_unavailable', 'This site has no ACF fields.', ['status' => 400]);
+            }
+            $check = (new AcfFields())->normalise($post_type, $acf);
+            if (is_wp_error($check)) {
+                return $check;
+            }
+        }
+
         $element = array_intersect_key($fields, array_flip(ElementReader::WRITABLE));
         if ($element !== []) {
             if ($post_type !== ElementReader::POST_TYPE || !ElementReader::available()) {
@@ -523,6 +552,19 @@ final class PostApplier
                 return $normalised;
             }
             (new LayoutMeta())->write($post_id, $normalised);
+            $wrote = true;
+        }
+
+        $acf = self::acf_fields($fields);
+        if ($acf !== []) {
+            if (!AcfFields::available()) {
+                return new \WP_Error('acf_unavailable', 'This site has no ACF fields.');
+            }
+            $normalised = (new AcfFields())->normalise((string) get_post_type($post_id), $acf);
+            if (is_wp_error($normalised)) {
+                return $normalised;
+            }
+            (new AcfFields())->write($post_id, $normalised);
             $wrote = true;
         }
 

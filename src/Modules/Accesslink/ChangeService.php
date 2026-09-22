@@ -1497,6 +1497,13 @@ final class ChangeService
                 continue;
             }
 
+            if (AcfFields::is_acf($field)) {
+                // Cleaned by the field's type where the field is known, so the
+                // queue shows what approval writes; validate() refuses the rest.
+                $out[$field] = AcfFields::sanitize($field, $value, $this->allowed_post_types());
+                continue;
+            }
+
             $out[$field] = sanitize_text_field((string) $value);
         }
 

@@ -90,6 +90,11 @@ final class GuideBuilder
                 'summary' => 'Reading a menu as a tree and proposing a new one.',
                 'when'    => $this->service->menus_enabled(),
             ],
+            'fields' => [
+                'label'   => 'Custom fields (ACF)',
+                'summary' => 'The site\'s own fields, proposed as acf:<name>; which are writable and how.',
+                'when'    => $this->uses_acf(),
+            ],
             'queue' => [
                 'label'   => 'Checking on your proposals',
                 'summary' => 'Statuses, and reading why something was rejected.',
@@ -127,6 +132,7 @@ final class GuideBuilder
             'translations' => $this->section_translations(),
             'elements'     => $this->section_elements(),
             'menus'        => $this->section_menus(),
+            'fields'       => $this->section_fields(),
             'queue'        => $this->section_queue(),
             'notes'        => $this->section_notes(),
             default        => [],
@@ -769,6 +775,66 @@ final class GuideBuilder
     }
 
     /** @return array<int, string> */
+    /** @return array<int, string> */
+    private function section_fields(): array
+    {
+        $base = $this->base();
+
+        $md = [];
+        $md[] = '## Custom fields (ACF)';
+        $md[] = '';
+        $md[] = 'This site defines its own fields with Advanced Custom Fields. They are set like';
+        $md[] = 'any other field on an `update` (or a `create`), named `acf:<field name>`. A post\'s';
+        $md[] = "current values are under `acf` on `GET {$base}/content/{id}`, each with its";
+        $md[] = 'label, type, choices and whether it can be written; read them before proposing.';
+        $md[] = '';
+        foreach ($this->service->allowed_post_types() as $type) {
+            $fields = AcfFields::fields_for($type);
+            if ($fields === []) {
+                continue;
+            }
+            $md[] = "### {$type}";
+            $md[] = '';
+            foreach ($fields as $name => $field) {
+                $ftype   = (string) ($field['type'] ?? '');
+                $choices = is_array($field['choices'] ?? null) ? array_map('strval', array_keys($field['choices'])) : [];
+                $md[] = sprintf(
+                    '- `acf:%s` — %s (%s%s)%s',
+                    $name,
+                    (string) ($field['label'] ?? $name),
+                    $ftype,
+                    $choices !== [] ? '; choices: ' . implode(', ', $choices) : '',
+                    AcfFields::writable($field) ? '' : ' — read-only here',
+                );
+            }
+            $md[] = '';
+        }
+        $md[] = 'Values by type: text as text; `wysiwyg` as HTML, filtered like post content;';
+        $md[] = '`true_false` as true or false; `select`, `radio` and `button_group` one of the';
+        $md[] = 'choices; `checkbox` an array of choices; dates as YYYY-MM-DD, date-times as';
+        $md[] = 'YYYY-MM-DD HH:MM:SS, times as HH:MM:SS, colours as #rrggbb. Repeaters, flexible';
+        $md[] = 'content, groups, relationships, post objects, images, files, galleries, taxonomy';
+        $md[] = 'and user fields are read-only here: a wrong value corrupts them silently, so a';
+        $md[] = 'change to one goes to the operator with the post\'s edit link.';
+        $md[] = '';
+
+        return $md;
+    }
+
+    private function uses_acf(): bool
+    {
+        if (!AcfFields::available()) {
+            return false;
+        }
+        foreach ($this->service->allowed_post_types() as $type) {
+            if (AcfFields::applies_to($type)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function section_queue(): array
     {
         $base = $this->base();
