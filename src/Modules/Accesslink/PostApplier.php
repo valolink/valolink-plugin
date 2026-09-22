@@ -66,7 +66,7 @@ final class PostApplier
         if ($this->seo->can_write()) {
             $fields = array_merge($fields, SeoAdapterFactory::FIELDS);
         }
-        $fields = array_merge($fields, array_keys(self::TERM_FIELDS));
+        $fields = array_merge($fields, array_keys(self::TERM_FIELDS), array_keys(self::custom_term_fields()));
         $fields[] = self::MEDIA_FIELD;
         $fields[] = self::STATUS_FIELD;
         if (LayoutMeta::available()) {
@@ -88,14 +88,67 @@ final class PostApplier
     }
 
     /**
-     * Taxonomy fields across post types: the blog's categories and tags, and
-     * WooCommerce's product ones where it is active.
+     * Taxonomies that are WordPress's or WooCommerce's own plumbing, never a
+     * field: formats, menus, link categories, product internals, the block
+     * editor's, and Polylang's. Everything else public with an admin UI is a
+     * site's own classification and an agent may assign its existing terms.
+     */
+    private const INTERNAL_TAXONOMIES = [
+        'category', 'post_tag', 'post_format', 'nav_menu', 'link_category',
+        'product_cat', 'product_tag', 'product_type', 'product_visibility', 'product_shipping_class',
+        'wp_theme', 'wp_template_part_area', 'wp_pattern_category',
+        'language', 'post_translations', 'term_language', 'term_translations',
+    ];
+
+    /**
+     * Taxonomy fields across post types: the blog's categories and tags,
+     * WooCommerce's product ones where it is active, and the site's own
+     * taxonomies (a portfolio's "kohteen_tyyppi", a team's "rooli") under
+     * their own names.
      *
      * @return array<string, string> field => taxonomy
      */
     public static function term_fields(): array
     {
-        return ProductApplier::available() ? self::TERM_FIELDS + ProductApplier::TERM_FIELDS : self::TERM_FIELDS;
+        $fields = self::TERM_FIELDS + self::custom_term_fields();
+
+        return ProductApplier::available() ? $fields + ProductApplier::TERM_FIELDS : $fields;
+    }
+
+    /**
+     * The site's own taxonomies, field name = taxonomy name. Registered by a
+     * theme or a plugin, public and with an admin UI, so an operator can find
+     * them in wp-admin and reason about them; a name that collides with an
+     * existing field is skipped rather than shadowing it.
+     *
+     * @return array<string, string> field => taxonomy
+     */
+    public static function custom_term_fields(): array
+    {
+        if (!function_exists('get_taxonomies')) {
+            return [];
+        }
+        $reserved = array_merge(
+            self::POST_FIELDS,
+            SeoAdapterFactory::FIELDS,
+            array_keys(self::TERM_FIELDS),
+            array_keys(ProductApplier::TERM_FIELDS),
+            [self::MEDIA_FIELD, self::STATUS_FIELD],
+        );
+        $out = [];
+        foreach (get_taxonomies(['public' => true, 'show_ui' => true], 'objects') as $name => $taxonomy) {
+            $name = (string) $name;
+            if (in_array($name, self::INTERNAL_TAXONOMIES, true) || in_array($name, $reserved, true)) {
+                continue;
+            }
+            if (!preg_match('/^[a-z][a-z0-9_-]{0,31}$/', $name)) {
+                continue;
+            }
+            $out[$name] = $name;
+        }
+        ksort($out);
+
+        return $out;
     }
 
     /**

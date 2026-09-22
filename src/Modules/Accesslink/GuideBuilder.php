@@ -340,7 +340,12 @@ final class GuideBuilder
         }
 
         $md[] = '';
-        $md[] = '- `categories`, `tags` — arrays of existing term slugs, e.g. `["palvelut"]`.';
+        $custom = array_keys(PostApplier::custom_term_fields());
+        $md[] = '- `categories`, `tags`'
+            . ($custom !== [] ? ', and this site\'s own taxonomies under their own names: `' . implode('`, `', $custom) . '`' : '')
+            . ' — arrays of existing term slugs, e.g. `["palvelut"]`. A post\'s current terms come back under the'
+            . " same field names on `GET {$base}/content/{id}`, only for the taxonomies its post type has; a taxonomy"
+            . ' the post type does not have is refused. Sending the full array replaces the assignment, so drop a term by leaving it out.';
         $md[] = "  Read what exists from `GET {$base}/taxonomies`. Accesslink will **not** create new";
         $md[] = '  terms; an unknown slug is refused with the list of valid ones. This is on purpose —';
         $md[] = '  inventing near-duplicate terms quietly wrecks a taxonomy.';
