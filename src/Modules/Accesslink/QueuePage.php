@@ -875,8 +875,23 @@ final class QueuePage
                     <th scope="row"><?php esc_html_e('API key', 'valolink-plugin'); ?></th>
                     <td>
                         <code><?php echo $key !== '' ? esc_html($key) : esc_html__('not generated', 'valolink-plugin'); ?></code>
+                        <?php if ($key !== '') : ?>
+                            <?php
+                            // "accesslink <host> <key>" on the clipboard is the shape the operator's
+                            // shell function (alkey) recognises and saves into majorlink's .env.
+                            $clip = 'accesslink ' . (string) wp_parse_url(home_url(), PHP_URL_HOST) . ' ' . $key;
+                            ?>
+                            <button type="button" class="button button-small" style="margin-left:.5em"
+                                    data-copy="<?php echo esc_attr($clip); ?>"
+                                    onclick="navigator.clipboard.writeText(this.dataset.copy).then(() => { this.textContent = '<?php echo esc_js(__('Copied', 'valolink-plugin')); ?>'; });">
+                                <?php esc_html_e('Copy for majorlink', 'valolink-plugin'); ?>
+                            </button>
+                        <?php endif; ?>
                         <p class="description">
                             <?php esc_html_e('Propose-only. This key cannot approve anything — approving needs a logged-in user who can publish.', 'valolink-plugin'); ?>
+                            <?php if ($key !== '') : ?>
+                                <?php esc_html_e('Copy for majorlink puts the host and the key on the clipboard; run alkey in a terminal to save them.', 'valolink-plugin'); ?>
+                            <?php endif; ?>
                         </p>
                     </td>
                 </tr>
