@@ -151,6 +151,12 @@ final class EngineLinkModule implements Module
             'callback'            => [$this, 'handle_status'],
             'permission_callback' => [$auth, 'check'],
         ]);
+
+        register_rest_route(self::REST_NAMESPACE, '/pages', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_pages'],
+            'permission_callback' => [$auth, 'check'],
+        ]);
     }
 
     public function handle_ping(): \WP_REST_Response
@@ -164,6 +170,11 @@ final class EngineLinkModule implements Module
     public function handle_status(): \WP_REST_Response
     {
         return new \WP_REST_Response((new StatusCollector())->collect());
+    }
+
+    public function handle_pages(): \WP_REST_Response
+    {
+        return new \WP_REST_Response((new PageLister())->collect());
     }
 
     // -------------------------------------------------------------------------

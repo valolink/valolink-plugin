@@ -108,6 +108,35 @@ Do not include credentials, secret keys, or file system paths anywhere in the re
 
 ---
 
+### GET /wp-json/enginelink/v1/pages
+
+The site's published pages, for EngineLink's content workflow
+(EngineLink repo, `docs/projects/content-workflow.md` §5). EngineLink uses the
+list to know which pages exist and then reads each page's public URL as a
+visitor sees it; the text never comes from here. `post_content` is left out on
+purpose: what the theme, page builders and ACF render is not in it.
+
+Published pages only, passworded ones excluded, every language (Polylang),
+ordered by menu order then title, at most 500 (`truncated` says when more exist).
+
+```json
+{
+  "plugin_version": "0.2.7",
+  "total": 2,
+  "truncated": false,
+  "pages": [
+    { "id": 12, "url": "https://example.fi/", "title": "Etusivu", "parent": 0, "menu_order": 0, "modified": "2026-09-20T08:14:03+00:00", "lang": "fi", "front": true },
+    { "id": 40, "url": "https://example.fi/palvelut/", "title": "Palvelut", "parent": 0, "menu_order": 1, "modified": "2026-08-02T11:40:00+00:00", "lang": null, "front": false }
+  ]
+}
+```
+
+`lang` is the Polylang slug, or `null` without Polylang. `modified` is the page's
+GMT modification time. Sites on a plugin without this route answer 404, and
+EngineLink falls back to `wp/v2/pages`, the sitemap and the front page's links.
+
+---
+
 ### GET /wp-json/enginelink/v1/logs
 
 Provided by the Logging module. Returns rows from the plugin's custom log table, newest first. EngineLink proxies this behind `GET /api/websites/[id]/logs` for the website detail page's Logs tab.
