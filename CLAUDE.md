@@ -51,6 +51,8 @@ Detect staging/local environments reliably (multiple heuristics: hostname patter
 ### EngineLink module (shipped — pull, not push)
 Read-only inventory served over REST: `/ping` + `/status` (WP core version, theme, plugins with update state, PHP env, users, DB size, health). EngineLink pulls on its own 6-hourly cron and on demand; Bearer-key auth as described in §3. The Logging module adds `/logs` + `/log-events` on the same namespace. Spec: `enginelink.md`.
 
+This module is EngineLink's side of the plugin, not a plugin feature of its own (decision 2026-09-25). When EngineLink needs something from a site, it gets a route here, shaped by what EngineLink needs; Accesslink is for agents proposing changes and is not the way in for EngineLink. New routes go into `enginelink.md` in the same commit. First planned: `GET /pages`, the published pages for EngineLink's content workflow (EngineLink repo, `docs/projects/content-workflow.md` §5).
+
 ### Comments module (shipped)
 Front-end comment mode for logged-in editors (`edit_posts`): admin-bar toggles, comments pinned to page elements with a resolution ladder in `assets/comments/comments.js` (element chain → quote → nearest ancestor → detached), own table `wp_valolink_comments`, REST under `valolink/v1/comments` (cookie auth). Accesslink reads them (`/comments`) with block path + quote, agent replies sit behind the off-by-default `allow_comment_replies` setting, the reviewer answers a linked comment from the queue card, links proposals with `comment_id`, and the `valolink_accesslink_applied` action resolves them when the change is live. Resolved comments purge after 90 days.
 
