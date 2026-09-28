@@ -101,8 +101,25 @@ an hour. Safe fixtures: post 4316, page 4064, draft page 742.
 
 #### The review gate
 
-Nothing open. Both items that were here closed on 2026-09-10, before the
-WooCommerce work widened the write surface:
+- [ ] **A whole-body `update` filters the site's own markup.** `sanitize_fields()`
+  runs `ContentSanitizer::filter()` over the entire proposed `post_content`, so
+  every block the agent carried over unchanged is filtered as if the agent had
+  written it — the "site's own markup is never filtered" rule below holds for
+  block actions only. Found on delicatessen.fi page 642 (2026-09-28): replacing
+  one FAQ block would have stripped `style="background-color:rgba(0, 0, 0, 0)"`
+  from three untouched `<mark>` highlights, because `safecss_filter_attr()`
+  refuses any value with parentheses outside its function allowlist. A bare
+  `<mark>` renders with the browser's yellow background, and that exact style
+  is what the editor's inline text-colour tool writes, so it is on most
+  GenerateBlocks pages. Worked around by rewriting the three as
+  `transparent` in the proposal. Fix: filter only the blocks that differ from
+  the current post (a block whose serialised markup is byte-identical to one
+  already in the document passes through raw), and consider letting `rgb()` /
+  `rgba()` / `hsl()` / `hsla()` through `safecss_filter_attr_allow_css` inside
+  the sanitizer alone. Add the case to `tests/content-sanitizer.php`.
+
+Two earlier items closed on 2026-09-10, before the WooCommerce work widened the
+write surface:
 
 - [x] **A non-admin reviewer degraded content on approval.** Filtering ran at
   apply time by the reviewer's capability, so the queue could show one thing and
