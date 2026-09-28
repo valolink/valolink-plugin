@@ -50,6 +50,16 @@ final class ContentSanitizer
     /** A script or style element with its contents. */
     private const CODE = '/<(script|style)\b[^>]*>.*?<\/\1\s*>/is';
 
+    /** A block delimiter, opening or closing — the seams a document is compared at. */
+    private const DELIMITER = '/(<!--\s+\/?wp:.*?-->)/s';
+
+    /**
+     * A colour function with plain arguments: numbers, units, commas, slashes,
+     * keywords like `none` or `deg`. No parentheses, quotes, backslashes or
+     * `&=}`, so nothing inside it can open a url() or an expression.
+     */
+    private const COLOUR_FUNCTION = '/\b(?:rgba?|hsla?)\([\w.,%\s\/+-]*\)/i';
+
     /**
      * Filter agent-authored markup.
      *
@@ -61,23 +71,105 @@ final class ContentSanitizer
      * the reviewer reads it before approving. Everywhere else the two are
      * stripped as before.
      *
+     * A whole-body update is where most of the document is *not* the agent's:
+     * it carries the page over and changes one part. Filtering all of it
+     * rewrote the site's own markup — `background-color:rgba(0, 0, 0, 0)` on
+     * the editor's highlights fails core's CSS check, and a bare <mark> is
+     * yellow. So when the current document is given, every piece of the
+     * proposal that the current document already contains, in the same kind
+     * of context, passes through as it is; only new or changed pieces are
+     * filtered. Pieces are what lies between block delimiters, plus the
+     * delimiters themselves, and a Custom HTML block as one unit. Passing a
+     * piece through adds nothing the site does not already serve.
+     *
      * @param bool $html_block The fragment is the content of a core/html
      *   block (a block edit addressed by path); markup and whole documents
      *   are recognised by their delimiters instead.
+     * @param string|null $current The document this one replaces, for an
+     *   update of a whole post body; null for anything new.
      */
-    public static function filter(string $content, bool $html_block = false): string
+    public static function filter(string $content, bool $html_block = false, ?string $current = null): string
     {
-        if ($html_block) {
-            return self::filter_keeping_code($content);
+        add_filter('safecss_filter_attr_allow_css', [self::class, 'allow_colour_functions'], 10, 2);
+        try {
+            return $html_block
+                ? self::filter_keeping_code($content)
+                : self::filter_document($content, $current ?? '');
+        } finally {
+            remove_filter('safecss_filter_attr_allow_css', [self::class, 'allow_colour_functions'], 10);
         }
+    }
+
+    /**
+     * Let rgb(), rgba(), hsl() and hsla() through core's inline-CSS check.
+     * Core allows var(), calc() and a few others but refuses any other
+     * parenthesis, and the editor's text-colour tool writes exactly
+     * `background-color:rgba(0, 0, 0, 0)`. Registered only while this class
+     * filters, so the rest of the site keeps core's rule.
+     */
+    public static function allow_colour_functions(bool $allow, string $css_test_string): bool
+    {
+        if ($allow) {
+            return true;
+        }
+        $stripped = (string) preg_replace(self::COLOUR_FUNCTION, '', $css_test_string);
+
+        // The same test core applies, on what is left.
+        return $stripped !== $css_test_string && !preg_match('%[\\\\(&=}]|/\*%', $stripped);
+    }
+
+    private static function filter_document(string $content, string $current): string
+    {
+        [$known_html, $known] = self::pieces_of($current);
+
         $out = '';
-        foreach (preg_split(self::HTML_BLOCK, $content, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY) ?: [] as $piece) {
-            $out .= preg_match(self::HTML_BLOCK, $piece) && str_starts_with(ltrim($piece), '<!--')
-                ? self::filter_keeping_code($piece)
-                : wp_kses($piece, self::allowed_html());
+        foreach (self::split_html_blocks($content) as $piece) {
+            if (self::is_html_block($piece)) {
+                $out .= isset($known_html[$piece]) ? $piece : self::filter_keeping_code($piece);
+                continue;
+            }
+            foreach (preg_split(self::DELIMITER, $piece, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY) ?: [] as $token) {
+                $out .= isset($known[$token]) ? $token : wp_kses($token, self::allowed_html());
+            }
         }
 
         return $out;
+    }
+
+    /**
+     * The current document's pieces, as sets: its Custom HTML blocks whole,
+     * and everything else split at block delimiters. Kept apart, so markup
+     * that lives inside an HTML block — where code is allowed — cannot pass
+     * through raw anywhere else.
+     *
+     * @return array{0: array<string, true>, 1: array<string, true>}
+     */
+    private static function pieces_of(string $current): array
+    {
+        $known_html = [];
+        $known = [];
+        foreach (self::split_html_blocks($current) as $piece) {
+            if (self::is_html_block($piece)) {
+                $known_html[$piece] = true;
+                continue;
+            }
+            foreach (preg_split(self::DELIMITER, $piece, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY) ?: [] as $token) {
+                $known[$token] = true;
+            }
+        }
+
+        return [$known_html, $known];
+    }
+
+    /** @return array<int, string> */
+    private static function split_html_blocks(string $content): array
+    {
+        return preg_split(self::HTML_BLOCK, $content, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY) ?: [];
+    }
+
+    private static function is_html_block(string $piece): bool
+    {
+        return preg_match(self::HTML_BLOCK, $piece) === 1 && str_starts_with(ltrim($piece), '<!--');
     }
 
     /** Whether the markup carries a <script> or <style>, for the reviewer. */

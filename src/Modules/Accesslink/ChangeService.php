@@ -156,7 +156,15 @@ final class ChangeService
             );
         }
 
-        $fields = $this->sanitize_fields($raw_fields);
+        // An update's body is compared with the post it replaces, so only what
+        // the agent changed is filtered (see ContentSanitizer::filter).
+        $current_post = $action === ChangeRepository::ACTION_UPDATE
+            ? get_post((int) ($input['target_id'] ?? 0))
+            : null;
+        $fields = $this->sanitize_fields(
+            $raw_fields,
+            $current_post instanceof \WP_Post ? (string) $current_post->post_content : null,
+        );
         if ($fields === []) {
             return new \WP_Error(
                 'no_fields',
@@ -1448,7 +1456,7 @@ final class ChangeService
      * taxonomy slug lists and an attachment id — so the switch is explicit
      * rather than a single cast.
      */
-    private function sanitize_fields(mixed $raw): array
+    private function sanitize_fields(mixed $raw, ?string $current_content = null): array
     {
         if (!is_array($raw)) {
             return [];
@@ -1467,8 +1475,9 @@ final class ChangeService
                 // Agent-authored markup is sanitised here, once, whoever ends
                 // up approving it. It used to be filtered at apply time by the
                 // reviewer's capability, which made the queue show one thing
-                // and an Editor's approval apply another.
-                $out[$field] = ContentSanitizer::filter((string) $value);
+                // and an Editor's approval apply another. What the post
+                // already contains is not the agent's and passes through.
+                $out[$field] = ContentSanitizer::filter((string) $value, false, $current_content);
                 continue;
             }
 

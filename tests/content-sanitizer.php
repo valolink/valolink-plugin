@@ -16,6 +16,17 @@ function wp_kses_allowed_html(string $context): array
 {
     return ['p' => ['class' => true], 'div' => ['class' => true], 'strong' => [], 'a' => ['href' => true]];
 }
+// The colour rule is a filter on core's CSS check; the stand-in wp_kses never
+// runs that check, so these only have to exist. allow_colour_functions() is
+// exercised directly below.
+function add_filter(string $hook, callable $callback, int $priority = 10, int $args = 1): bool
+{
+    return true;
+}
+function remove_filter(string $hook, callable $callback, int $priority = 10): bool
+{
+    return true;
+}
 function wp_kses(string $content, array $allowed): string
 {
     return (string) preg_replace_callback(
@@ -68,6 +79,41 @@ check('several html blocks each keep their code', str_contains($out, 'one()') &&
 
 // 5. The reviewer's flag.
 check('has_code sees script or style', ContentSanitizer::has_code($code) && !ContentSanitizer::has_code('<p>Hei</p>'));
+
+// 6. A whole-body update: what the current post already has passes through,
+// only the agent's new or changed pieces are filtered. <mark> is outside the
+// stand-in allowlist, standing in for markup kses would damage.
+$site = '<!-- wp:paragraph --><p><mark class="m">Vanha</mark></p><!-- /wp:paragraph -->';
+$current = "{$site}\n\n<!-- wp:html --><script>widget()</script><!-- /wp:html -->";
+$added = '<!-- wp:paragraph --><p><mark class="m">Uusi</mark><script>bad()</script></p><!-- /wp:paragraph -->';
+$update = ContentSanitizer::filter("{$current}\n\n{$added}", false, $current);
+check('unchanged site markup passes through', str_contains($update, $site));
+check('unchanged html block passes through', str_contains($update, '<script>widget()</script>'));
+check('the agent\'s new markup is still filtered', str_contains($update, '<p>Uusi') && substr_count($update, '<mark') === 1 && substr_count($update, '<script') === 1);
+check('without the current document everything is filtered', !str_contains(ContentSanitizer::filter("{$current}\n\n{$added}"), '<mark'));
+
+// 7. Markup from inside an HTML block does not pass through raw elsewhere:
+// code is allowed there and nowhere else.
+$moved = '<!-- wp:paragraph --><p>x</p><script>widget()</script><!-- /wp:paragraph -->';
+check('html-block content moved out of its block is filtered', !str_contains(ContentSanitizer::filter($moved, false, $current), '<script'));
+
+// 8. A changed piece is filtered whole, even where most of it matches.
+$edited = str_replace('Vanha', 'Muokattu', $site);
+check('an edited piece is filtered', !str_contains(ContentSanitizer::filter($edited, false, $current), '<mark'));
+
+// 9. Colour functions pass core's CSS check; nothing else is let through.
+// Arguments are core's test string, which already has var(), calc() etc. removed.
+check('rgba() allowed', ContentSanitizer::allow_colour_functions(false, 'background-color:rgba(0, 0, 0, 0)'));
+check('rgb() / hsl() / hsla() allowed', ContentSanitizer::allow_colour_functions(false, 'color:rgb(10 20 30 / 50%)')
+    && ContentSanitizer::allow_colour_functions(false, 'color:hsl(120deg, 50%, 40%)')
+    && ContentSanitizer::allow_colour_functions(false, 'color:hsla(120, 50%, 40%, .5)'));
+check('core\'s own yes is kept', ContentSanitizer::allow_colour_functions(true, 'color:red'));
+check('other functions still refused', !ContentSanitizer::allow_colour_functions(false, 'background:image(x)')
+    && !ContentSanitizer::allow_colour_functions(false, 'width:expression(alert(1))'));
+check('nothing smuggled inside or beside a colour', !ContentSanitizer::allow_colour_functions(false, 'color:rgb(url(x))')
+    && !ContentSanitizer::allow_colour_functions(false, 'color:rgb(0,0,0)\\')
+    && !ContentSanitizer::allow_colour_functions(false, 'color:rgb(0,0,0);x:a(')
+    && !ContentSanitizer::allow_colour_functions(false, 'color:rgb("0")'));
 
 if ($failures > 0) {
     fwrite(STDERR, "{$failures} failure(s)\n");
