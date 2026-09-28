@@ -47,11 +47,19 @@ final class ContentSanitizer
     /** A Custom HTML block (core/html), delimiters included, as one capture. */
     private const HTML_BLOCK = '/(<!--\s*wp:html(?:\s[^>]*)?-->.*?<!--\s*\/wp:html\s*-->)/is';
 
-    /** A script or style element with its contents. */
-    private const CODE = '/<(script|style)\b[^>]*>.*?<\/\1\s*>/is';
+    /**
+     * A script, style or iframe element with its contents. An iframe is an
+     * embed — a map, a booking widget, a video — and a Custom HTML block is
+     * where a site keeps those; `post` kses has no iframe, so without this a
+     * page carrying a map lost it the moment an agent proposed the page.
+     */
+    private const CODE = '/<(script|style|iframe)\b[^>]*>.*?<\/\1\s*>/is';
 
     /** A block delimiter, opening or closing — the seams a document is compared at. */
     private const DELIMITER = '/(<!--\s+\/?wp:.*?-->)/s';
+
+    /** One whole delimiter, in the block parser's own grammar (WP_Block_Parser::next_token). */
+    private const BLOCK_DELIMITER = '/^<!--\s+(?P<closer>\/)?wp:(?P<name>(?:[a-z][a-z0-9_-]*\/)?[a-z][a-z0-9_-]*)\s+(?P<attrs>{(?:(?:[^}]+|}+(?=})|(?!}\s+\/?-->).)*+)?}\s+)?(?P<void>\/)?-->$/s';
 
     /**
      * A colour function with plain arguments: numbers, units, commas, slashes,
@@ -63,8 +71,8 @@ final class ContentSanitizer
     /**
      * Filter agent-authored markup.
      *
-     * A Custom HTML block is the one place on a page where <script> and
-     * <style> are the content rather than an intrusion: that is what the
+     * A Custom HTML block is the one place on a page where <script>,
+     * <style> and <iframe> are the content rather than an intrusion: that is what the
      * block exists for, and a site's small custom widgets live there. Inside
      * such a block they are kept verbatim, the rest of the block is filtered
      * as usual, and the proposal's summary says the block carries code, so
@@ -129,11 +137,54 @@ final class ContentSanitizer
                 continue;
             }
             foreach (preg_split(self::DELIMITER, $piece, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY) ?: [] as $token) {
-                $out .= isset($known[$token]) ? $token : wp_kses($token, self::allowed_html());
+                if (isset($known[$token])) {
+                    $out .= $token;
+                } elseif (preg_match(self::BLOCK_DELIMITER, $token, $m) === 1) {
+                    $out .= self::filter_delimiter($token, $m);
+                } else {
+                    $out .= wp_kses($token, self::allowed_html());
+                }
             }
         }
 
         return $out;
+    }
+
+    /**
+     * A block delimiter on its own must not go through wp_kses(). Core hooks
+     * pre_kses to parse its input as blocks and serialise them back, and an
+     * opener with no closer parses as a void block: `<!-- wp:paragraph -->`
+     * comes back as `<!-- wp:paragraph /-->`, and every container on a new
+     * page is emptied, its content spilling out as loose HTML. That shipped
+     * in 0.2.7 and broke every create and insert_block.
+     *
+     * What kses does to a delimiter in a whole document is filter its
+     * attribute values, through filter_block_kses_value(). That is done here
+     * directly, and the delimiter is rebuilt only when filtering changed
+     * something, so clean attributes keep their exact JSON.
+     *
+     * @param array<int|string, string> $m BLOCK_DELIMITER's match.
+     */
+    private static function filter_delimiter(string $token, array $m): string
+    {
+        if (($m['attrs'] ?? '') === '') {
+            return $token;
+        }
+        $closer = $m['closer'] ?? '';
+        $void   = $m['void'] ?? '';
+
+        $attrs = json_decode($m['attrs'], true);
+        if (!is_array($attrs)) {
+            // The block parser reads unparseable attributes as none at all.
+            return '<!-- ' . $closer . 'wp:' . $m['name'] . ' ' . $void . '-->';
+        }
+
+        $filtered = filter_block_kses_value($attrs, self::allowed_html(), wp_allowed_protocols(), ['blockName' => $m['name']]);
+        if ($filtered === $attrs) {
+            return $token;
+        }
+
+        return '<!-- ' . $closer . 'wp:' . $m['name'] . ' ' . serialize_block_attributes($filtered) . ' ' . $void . '-->';
     }
 
     /**
@@ -172,7 +223,7 @@ final class ContentSanitizer
         return preg_match(self::HTML_BLOCK, $piece) === 1 && str_starts_with(ltrim($piece), '<!--');
     }
 
-    /** Whether the markup carries a <script> or <style>, for the reviewer. */
+    /** Whether the markup carries a <script>, <style> or <iframe>, for the reviewer. */
     public static function has_code(string $content): bool
     {
         return (bool) preg_match(self::CODE, $content);

@@ -320,7 +320,7 @@ final class ChangeService
         // stay, and the summary tells the reviewer the block carries code.
         $is_html_block = ($block['name'] ?? '') === 'core/html';
         $html = ContentSanitizer::filter((string) $input[$key], $is_html_block);
-        $code_note = ContentSanitizer::has_code($html) ? ' — sisältää script/style' : '';
+        $code_note = ContentSanitizer::has_code($html) ? ' — sisältää script/style/iframe' : '';
 
         // Dry-run the replacement now rather than at approval, so a structural
         // failure reaches the agent instead of the reviewer's queue.
@@ -454,7 +454,7 @@ final class ChangeService
 
         $block = $path === '' ? null : $reader->get_at($content, $path);
         $where = $block['name'] ?? ($path === '' ? 'document ' . (string) ($payload['position'] ?? '') : $path);
-        $code_note = ContentSanitizer::has_code((string) ($payload['markup'] ?? '')) ? ' — sisältää script/style' : '';
+        $code_note = ContentSanitizer::has_code((string) ($payload['markup'] ?? '')) ? ' — sisältää script/style/iframe' : '';
         $id = $this->repo->insert([
             'action'          => $action,
             'target_id'       => $target_id,

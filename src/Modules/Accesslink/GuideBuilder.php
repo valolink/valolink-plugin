@@ -437,9 +437,9 @@ final class GuideBuilder
         $md[] = 'No `<div>`, no `<svg>`, no block-level elements — those make the block invalid.';
         $md[] = '';
         $md[] = 'The exception is a Custom HTML block (`core/html`): its content is raw HTML and';
-        $md[] = 'may carry `<script>` and `<style>`, which are kept as written. It has no single';
+        $md[] = 'may carry `<script>`, `<style>` and `<iframe>` embeds, which are kept as written. It has no single';
         $md[] = 'wrapper, so edit it with `update_block` and the whole `html`, not `update_text`.';
-        $md[] = 'Such a proposal is marked "sisältää script/style" in the queue, and the reviewer';
+        $md[] = 'Such a proposal is marked "sisältää script/style/iframe" in the queue, and the reviewer';
         $md[] = 'reads the code before approving — write the note accordingly.';
         $md[] = '';
         $md[] = '### Seeing the result before you file it';
