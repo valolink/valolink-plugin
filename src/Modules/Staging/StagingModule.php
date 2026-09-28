@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Valolink\Plugin\Modules\Staging;
 
 use Valolink\Plugin\Admin\Field\PluginMultiCheckbox;
+use Valolink\Plugin\Admin\NoticeAudience;
 use Valolink\Plugin\Admin\SettingsPage;
 use Valolink\Plugin\Context;
 use Valolink\Plugin\Module;
@@ -677,7 +678,7 @@ final class StagingModule implements Module
 
     public function render_admin_notice(): void
     {
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can('manage_options') || !(new NoticeAudience($this->settings))->includes_current_user()) {
             return;
         }
         $active = [];
@@ -730,7 +731,7 @@ final class StagingModule implements Module
     /** Module on, nothing declared: every admin screen says so until someone declares or switches the module off. */
     public function render_undeclared_notice(): void
     {
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can('manage_options') || !(new NoticeAudience($this->settings))->includes_current_user()) {
             return;
         }
         ?>

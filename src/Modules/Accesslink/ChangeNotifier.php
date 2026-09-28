@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\Accesslink;
 
+use Valolink\Plugin\Admin\NoticeAudience;
 use Valolink\Plugin\Settings;
 
 /**
@@ -125,7 +126,11 @@ final class ChangeNotifier
     public function render_admin_notice(): void
     {
         try {
-            if (!ChangeTable::exists() || !current_user_can(ChangeService::APPROVE_CAP)) {
+            if (
+                !ChangeTable::exists()
+                || !current_user_can(ChangeService::APPROVE_CAP)
+                || !(new NoticeAudience($this->settings))->includes_current_user()
+            ) {
                 return;
             }
 

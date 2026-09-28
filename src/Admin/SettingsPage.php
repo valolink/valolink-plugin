@@ -50,6 +50,7 @@ final class SettingsPage
         $update_info     = $this->plugin_update_info();
         $updater_enabled = defined('VALOLINK_PLUGIN_GITHUB_REPO') && VALOLINK_PLUGIN_GITHUB_REPO !== 'OWNER/REPO';
         $current_version = defined('VALOLINK_PLUGIN_VERSION') ? VALOLINK_PLUGIN_VERSION : '?';
+        $audience        = new NoticeAudience($this->settings);
         ?>
         <div class="wrap">
             <h1><?php echo esc_html__('Valolink Plugin', 'valolink-plugin'); ?></h1>
@@ -142,6 +143,30 @@ final class SettingsPage
                     </table>
                 <?php endif; ?>
 
+                <h2><?php esc_html_e('Admin notices', 'valolink-plugin'); ?></h2>
+                <p class="description">
+                    <?php printf(
+                        /* translators: %s: email domain, e.g. valolink.fi */
+                        esc_html__('The plugin\'s own notices (pending Accesslink changes, staging mode) are shown only to the users ticked here. Until a selection is saved, that is everyone with an @%s address.', 'valolink-plugin'),
+                        esc_html(NoticeAudience::DEFAULT_DOMAIN),
+                    ); ?>
+                </p>
+                <input type="hidden" name="valolink_notice_users_present" value="1">
+                <fieldset style="margin-top:8px;">
+                    <?php foreach ($audience->candidates() as $user) : ?>
+                        <label style="display:block;margin:4px 0;">
+                            <input
+                                type="checkbox"
+                                name="valolink_notice_users[]"
+                                value="<?php echo esc_attr((string) $user->ID); ?>"
+                                <?php checked($audience->includes($user)); ?>
+                            >
+                            <?php echo esc_html($user->display_name); ?>
+                            <span style="color:#646970;">&lt;<?php echo esc_html($user->user_email); ?>&gt;</span>
+                        </label>
+                    <?php endforeach; ?>
+                </fieldset>
+
                 <?php submit_button(__('Save Changes', 'valolink-plugin')); ?>
             </form>
         </div>
@@ -166,6 +191,13 @@ final class SettingsPage
                 $manifest->id,
                 in_array($manifest->id, $submitted, true),
             );
+        }
+
+        if (!empty($_POST['valolink_notice_users_present'])) {
+            $users = isset($_POST['valolink_notice_users']) && is_array($_POST['valolink_notice_users'])
+                ? array_map('absint', wp_unslash($_POST['valolink_notice_users']))
+                : [];
+            (new NoticeAudience($this->settings))->save($users);
         }
 
         wp_safe_redirect(add_query_arg(
