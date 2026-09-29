@@ -69,42 +69,34 @@ final class SettingsPage
                 </tr>
                 <tr>
                     <th scope="row"><?php esc_html_e('Updates', 'valolink-plugin'); ?></th>
-                    <td>
+                    <td id="valolink-updates" aria-live="polite">
                         <?php if (!$updater_enabled) : ?>
                             <p><em><?php esc_html_e('Auto-updater is not configured for this site.', 'valolink-plugin'); ?></em></p>
-                        <?php elseif ($update_info['available']) : ?>
-                            <p>
-                                <strong style="color:#b32d2e;">
-                                    <?php printf(
-                                        esc_html__('Update available: %s', 'valolink-plugin'),
-                                        esc_html($update_info['new_version']),
-                                    ); ?>
-                                </strong>
+                        <?php else : ?>
+                            <p data-valolink-status>
+                                <?php if ($update_info['available']) : ?>
+                                    <strong style="color:#b32d2e;">
+                                        <?php printf(
+                                            esc_html__('Update available: %s', 'valolink-plugin'),
+                                            esc_html($update_info['new_version']),
+                                        ); ?>
+                                    </strong>
+                                <?php elseif ($update_info['known']) : ?>
+                                    <span style="color:#118a4c;">✓ <?php esc_html_e('Up to date.', 'valolink-plugin'); ?></span>
+                                <?php else : ?>
+                                    <em><?php esc_html_e('Update status not yet checked.', 'valolink-plugin'); ?></em>
+                                <?php endif; ?>
                             </p>
                             <p>
-                                <a href="<?php echo esc_url($this->update_now_url()); ?>" class="button button-primary">
+                                <a href="<?php echo esc_url($this->update_now_url()); ?>" class="button button-primary" data-valolink-update
+                                   <?php echo $update_info['available'] ? '' : 'style="display:none"'; ?>>
                                     <?php esc_html_e('Update now', 'valolink-plugin'); ?>
                                 </a>
-                                <a href="<?php echo esc_url($this->check_updates_url()); ?>" class="button">
-                                    <?php esc_html_e('Check again', 'valolink-plugin'); ?>
+                                <a href="<?php echo esc_url($this->check_updates_url()); ?>" class="button" data-valolink-check>
+                                    <?php $update_info['known'] ? esc_html_e('Check again', 'valolink-plugin') : esc_html_e('Check for updates', 'valolink-plugin'); ?>
                                 </a>
                             </p>
-                        <?php elseif ($update_info['known']) : ?>
-                            <p>
-                                <span style="color:#118a4c;">✓ <?php esc_html_e('Up to date.', 'valolink-plugin'); ?></span>
-                            </p>
-                            <p>
-                                <a href="<?php echo esc_url($this->check_updates_url()); ?>" class="button">
-                                    <?php esc_html_e('Check for updates', 'valolink-plugin'); ?>
-                                </a>
-                            </p>
-                        <?php else : ?>
-                            <p><em><?php esc_html_e('Update status not yet checked.', 'valolink-plugin'); ?></em></p>
-                            <p>
-                                <a href="<?php echo esc_url($this->check_updates_url()); ?>" class="button">
-                                    <?php esc_html_e('Check for updates', 'valolink-plugin'); ?>
-                                </a>
-                            </p>
+                            <?php $this->render_update_script(); ?>
                         <?php endif; ?>
                     </td>
                 </tr>
@@ -237,13 +229,126 @@ final class SettingsPage
         return ['available' => false, 'known' => false, 'new_version' => ''];
     }
 
+    /** The classic update screen — the no-JS fallback — flagged to offer the way back here. */
     private function update_now_url(): string
     {
         $basename = defined('VALOLINK_PLUGIN_BASENAME') ? VALOLINK_PLUGIN_BASENAME : '';
         return wp_nonce_url(
-            self_admin_url('update.php?action=upgrade-plugin&plugin=' . urlencode($basename)),
+            self_admin_url('update.php?action=upgrade-plugin&plugin=' . urlencode($basename) . '&' . Updater::RETURN_FLAG . '=1'),
             'upgrade-plugin_' . $basename,
         );
+    }
+
+    /**
+     * Check and update without leaving this page. Checking used to reload
+     * wp-admin into the plugins list, and updating ended there too, where
+     * this plugin's row had to be found by eye every time.
+     *
+     * The update is core's own `update-plugin` admin-ajax action, the one the
+     * plugins list runs for its inline "Update now": it updates in place and
+     * leaves the plugin active, where the classic update screen deactivates
+     * it and reactivates it from an iframe. When it answers, this page
+     * reloads, which is the first request served by the new version.
+     *
+     * The links keep working hrefs, so with the script absent or failing
+     * they are the old round trips (which now come back here).
+     */
+    private function render_update_script(): void
+    {
+        $config = [
+            'ajaxUrl'      => admin_url('admin-ajax.php'),
+            'checkAction'  => Updater::AJAX_CHECK_ACTION,
+            'checkNonce'   => wp_create_nonce(Updater::AJAX_CHECK_ACTION),
+            'updateNonce'  => wp_create_nonce('updates'),
+            'plugin'       => defined('VALOLINK_PLUGIN_BASENAME') ? VALOLINK_PLUGIN_BASENAME : '',
+            'slug'         => defined('VALOLINK_PLUGIN_BASENAME') ? dirname(VALOLINK_PLUGIN_BASENAME) : '',
+            'pageUrl'      => admin_url('admin.php?page=' . self::MENU_SLUG),
+            'i18n'         => [
+                'checking'  => __('Checking…', 'valolink-plugin'),
+                'available' => __('Update available: %s', 'valolink-plugin'),
+                'upToDate'  => __('Up to date.', 'valolink-plugin'),
+                'again'     => __('Check again', 'valolink-plugin'),
+                'updating'  => __('Updating…', 'valolink-plugin'),
+                'updated'   => __('Updated to %s. Reloading…', 'valolink-plugin'),
+                'failed'    => __('The update did not finish: %s', 'valolink-plugin'),
+                'classic'   => __('Try on the update screen', 'valolink-plugin'),
+                'error'     => __('Could not reach the site.', 'valolink-plugin'),
+            ],
+        ];
+        ?>
+        <script>
+        (function () {
+            const cfg = <?php echo wp_json_encode($config); ?>;
+            const cell = document.getElementById('valolink-updates');
+            if (!cell || !window.fetch) return;
+            const status = cell.querySelector('[data-valolink-status]');
+            const check = cell.querySelector('[data-valolink-check]');
+            const update = cell.querySelector('[data-valolink-update]');
+            const fallback = update.getAttribute('href');
+
+            const say = (text, colour, strong) => {
+                status.replaceChildren();
+                const el = document.createElement(strong ? 'strong' : 'span');
+                el.textContent = text;
+                if (colour) el.style.color = colour;
+                status.append(el);
+            };
+            const post = (data) => fetch(cfg.ajaxUrl, {
+                method: 'POST',
+                credentials: 'same-origin',
+                body: new URLSearchParams(data),
+            }).then((r) => r.json());
+
+            check.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (check.getAttribute('aria-disabled') === 'true') return;
+                check.setAttribute('aria-disabled', 'true');
+                say(cfg.i18n.checking);
+                post({ action: cfg.checkAction, _ajax_nonce: cfg.checkNonce })
+                    .then((res) => {
+                        if (!res.success) throw new Error((res.data && res.data.message) || cfg.i18n.error);
+                        if (res.data.available) {
+                            say(cfg.i18n.available.replace('%s', res.data.new_version), '#b32d2e', true);
+                            update.style.display = '';
+                            update.focus();
+                        } else {
+                            say('✓ ' + cfg.i18n.upToDate, '#118a4c');
+                            update.style.display = 'none';
+                            check.focus();
+                        }
+                        check.textContent = cfg.i18n.again;
+                    })
+                    .catch((err) => say(err.message || cfg.i18n.error, '#b32d2e'))
+                    .finally(() => check.removeAttribute('aria-disabled'));
+            });
+
+            update.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (update.getAttribute('aria-disabled') === 'true') return;
+                update.setAttribute('aria-disabled', 'true');
+                check.setAttribute('aria-disabled', 'true');
+                say(cfg.i18n.updating);
+                post({ action: 'update-plugin', plugin: cfg.plugin, slug: cfg.slug, _ajax_nonce: cfg.updateNonce })
+                    .then((res) => {
+                        if (!res.success) {
+                            throw new Error((res.data && (res.data.errorMessage || res.data.message)) || cfg.i18n.error);
+                        }
+                        say(cfg.i18n.updated.replace('%s', res.data.newVersion || ''), '#118a4c', true);
+                        window.location.replace(cfg.pageUrl);
+                    })
+                    .catch((err) => {
+                        say(cfg.i18n.failed.replace('%s', err.message || cfg.i18n.error), '#b32d2e');
+                        const link = document.createElement('a');
+                        link.href = fallback;
+                        link.textContent = cfg.i18n.classic;
+                        status.append(' ', link);
+                        update.removeAttribute('aria-disabled');
+                        check.removeAttribute('aria-disabled');
+                    });
+            });
+        })();
+        </script>
+        <?php
     }
 
     private function check_updates_url(): string

@@ -15,6 +15,12 @@ final class Updater
 {
     public const CHECK_ACTION = 'valolink_plugin_check_updates';
 
+    /** admin-ajax action for the in-place check on the Valolink page. */
+    public const AJAX_CHECK_ACTION = 'valolink_plugin_ajax_check_updates';
+
+    /** Query flag on the classic update URL: offer a way back to the Valolink page when done. */
+    public const RETURN_FLAG = 'valolink_return';
+
     private string $basename;
     private string $slug;
     private string $cache_key;
@@ -41,7 +47,9 @@ final class Updater
         // "Check for updates" link in the Plugins list + its handler + a confirmation notice.
         add_filter('plugin_action_links_' . $this->basename, [$this, 'action_links']);
         add_action('admin_post_' . self::CHECK_ACTION, [$this, 'handle_check']);
+        add_action('wp_ajax_' . self::AJAX_CHECK_ACTION, [$this, 'handle_ajax_check']);
         add_action('admin_notices', [$this, 'maybe_checked_notice']);
+        add_filter('update_plugin_complete_actions', [$this, 'return_action'], 10, 2);
     }
 
     public function action_links($links)
@@ -62,12 +70,77 @@ final class Updater
         }
         check_admin_referer(self::CHECK_ACTION);
 
+        $this->refresh();
+
+        // Back to wherever the link was — the Valolink page or the plugins
+        // list — rather than always the plugins list, where the operator then
+        // has to find this plugin's row again. This is the no-JS path; the
+        // Valolink page checks in place over admin-ajax.
+        $back = wp_get_referer() ?: self_admin_url('plugins.php');
+        wp_safe_redirect(add_query_arg('valolink_plugin_checked', '1', remove_query_arg(['valolink_plugin_checked', 'updated'], $back)));
+        exit;
+    }
+
+    /**
+     * The same check without leaving the page: the Valolink settings page
+     * calls this and redraws its Updates row from the answer.
+     */
+    public function handle_ajax_check(): void
+    {
+        if (!current_user_can('update_plugins')) {
+            wp_send_json_error(['message' => __('Insufficient permissions.', 'valolink-plugin')], 403);
+        }
+        check_ajax_referer(self::AJAX_CHECK_ACTION);
+
+        $this->refresh();
+
+        wp_send_json_success($this->status());
+    }
+
+    /**
+     * What WordPress now knows about this plugin's update, as the settings
+     * page shows it.
+     *
+     * @return array{available: bool, known: bool, new_version: string}
+     */
+    public function status(): array
+    {
+        $transient = get_site_transient('update_plugins');
+        if (is_object($transient)) {
+            if (!empty($transient->response[$this->basename]->new_version)) {
+                return ['available' => true, 'known' => true, 'new_version' => (string) $transient->response[$this->basename]->new_version];
+            }
+            if (isset($transient->no_update[$this->basename])) {
+                return ['available' => false, 'known' => true, 'new_version' => ''];
+            }
+        }
+
+        return ['available' => false, 'known' => false, 'new_version' => ''];
+    }
+
+    /**
+     * On the classic update screen, reached from the Valolink page's fallback
+     * link, put the way back first: the plugin's own page, not the plugins
+     * list it would otherwise have to be found in.
+     */
+    public function return_action($actions, $plugin)
+    {
+        if ($plugin !== $this->basename || empty($_GET[self::RETURN_FLAG]) || !is_array($actions)) {
+            return $actions;
+        }
+
+        return ['valolink' => sprintf(
+            '<a href="%s" target="_parent">%s</a>',
+            esc_url(admin_url('admin.php?page=' . Admin\SettingsPage::MENU_SLUG)),
+            esc_html__('Return to Valolink', 'valolink-plugin'),
+        )] + $actions;
+    }
+
+    private function refresh(): void
+    {
         delete_transient($this->cache_key);
         delete_site_transient('update_plugins');
         wp_update_plugins();
-
-        wp_safe_redirect(add_query_arg('valolink_plugin_checked', '1', self_admin_url('plugins.php')));
-        exit;
     }
 
     public function maybe_checked_notice(): void
@@ -76,14 +149,14 @@ final class Updater
             return;
         }
         $screen = function_exists('get_current_screen') ? get_current_screen() : null;
-        if (!$screen || $screen->id !== 'plugins') {
+        if (!$screen || !in_array($screen->id, ['plugins', 'toplevel_page_' . Admin\SettingsPage::MENU_SLUG], true)) {
             return;
         }
 
         $update     = get_site_transient('update_plugins');
         $has_update = isset($update->response[$this->basename]);
         $message    = $has_update
-            ? __('Valolink Plugin: an update is available below.', 'valolink-plugin')
+            ? __('Valolink Plugin: an update is available.', 'valolink-plugin')
             : __('Valolink Plugin is up to date.', 'valolink-plugin');
 
         echo '<div class="notice notice-' . ($has_update ? 'warning' : 'success') . ' is-dismissible"><p>'
