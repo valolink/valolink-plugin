@@ -204,6 +204,11 @@ final class ChangeService
             return $invalid;
         }
 
+        $markup = $this->check_body('', $fields);
+        if (is_wp_error($markup)) {
+            return $markup;
+        }
+
         $slug = isset($input['slug']) ? sanitize_title((string) $input['slug']) : '';
         $draft_id = $this->applier->create_draft($fields, $post_type, $slug);
         if (is_wp_error($draft_id)) {
@@ -257,6 +262,11 @@ final class ChangeService
             return $invalid;
         }
 
+        $markup = $this->check_body((string) $post->post_content, $fields);
+        if (is_wp_error($markup)) {
+            return $markup;
+        }
+
         $id = $this->repo->insert([
             'action'          => ChangeRepository::ACTION_UPDATE,
             'target_id'       => $target_id,
@@ -277,6 +287,27 @@ final class ChangeService
         ]);
 
         return $this->repo->find($id) ?? [];
+    }
+
+    /**
+     * The block checks every block edit already gets, for a whole body sent as
+     * `post_content` — the path a page rewrite or a new page takes, and until
+     * 0.2.10 the one path that skipped them, which is how a container with
+     * stray comments in it was approved on renea.demolink.fi. Against the
+     * current body only what the proposal introduces is reported; classic
+     * content without blocks has nothing to check.
+     */
+    private function check_body(string $current, array $fields): true|\WP_Error
+    {
+        if (!isset($fields['post_content']) || !has_blocks((string) $fields['post_content'])) {
+            return true;
+        }
+
+        $issues = (new BlockValidator())->check_diff($current, (string) $fields['post_content']);
+
+        return $issues === []
+            ? true
+            : new \WP_Error('invalid_block_markup', implode(' ', $issues), ['status' => 400, 'issues' => $issues]);
     }
 
     private function propose_update_block(

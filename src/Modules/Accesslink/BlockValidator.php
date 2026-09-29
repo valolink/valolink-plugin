@@ -80,7 +80,56 @@ final class BlockValidator
         // 3. Rich-text blocks must not contain block-level or foreign markup.
         $this->check_rich_text($blocks, $issues);
 
+        // 4. No HTML comments outside a Custom HTML block.
+        $this->check_comments($blocks, $issues, null);
+
         return array_values(array_unique($issues));
+    }
+
+    /** Comments WordPress itself writes and reads, in classic content and in core/more, core/nextpage. */
+    private const WP_COMMENTS = ['more', 'nextpage', 'noteaser'];
+
+    /**
+     * An HTML comment an agent leaves in block markup — a section label like
+     * `<!-- BOX 1: Energiajohtaminen -->` — survives the parser and every
+     * server-side check, and then breaks the editor: between the children of
+     * a container nothing in save() can produce it, so the container shows as
+     * invalid; between top-level blocks it becomes an empty Classic block.
+     * That reached renea.demolink.fi through an approved whole-page update
+     * (2026-09-22). A Custom HTML block is the one place a comment belongs.
+     *
+     * Only a block's own markup is read — the literal chunks of innerContent,
+     * not its children, which are visited in turn — so each comment is
+     * reported once, against the block that holds it.
+     */
+    private function check_comments(array $blocks, array &$issues, ?string $parent): void
+    {
+        foreach ($blocks as $block) {
+            $name = $block['blockName'] ?? null;
+            if ($name === 'core/html') {
+                continue;
+            }
+
+            $own = implode('', array_filter((array) ($block['innerContent'] ?? []), 'is_string'));
+            preg_match_all('/<!--(.*?)-->/s', $own, $m);
+            foreach ($m[1] as $text) {
+                $text = trim($text);
+                if (in_array(strtolower(strtok($text, ' ') ?: $text), self::WP_COMMENTS, true)) {
+                    continue;
+                }
+                $where = $name ?? $parent;
+                $issues[] = sprintf(
+                    'HTML comment "<!-- %s -->" %s: the editor will show %s. Remove it; explain structure in the proposal note instead.',
+                    mb_substr($text, 0, 60),
+                    $where === null ? 'between top-level blocks' : 'inside ' . $where,
+                    $where === null ? 'it as an empty Classic block' : 'that block as invalid',
+                );
+            }
+
+            if (!empty($block['innerBlocks'])) {
+                $this->check_comments($block['innerBlocks'], $issues, $name);
+            }
+        }
     }
 
     /**
@@ -106,9 +155,12 @@ final class BlockValidator
                     if (!$this->selector_is_tags((string) ($def['selector'] ?? ''))) {
                         continue;
                     }
-                    $inner = (string) ($block['innerHTML'] ?? '');
+                    $inner = $this->rich_text_region((string) ($block['innerHTML'] ?? ''), (string) $def['selector']);
+                    if ($inner === null) {
+                        continue;
+                    }
                     foreach ($this->tags_in($inner) as $tag) {
-                        if (!in_array($tag, self::INLINE_TAGS, true) && !$this->is_wrapper_tag($tag, $def)) {
+                        if (!in_array($tag, self::INLINE_TAGS, true)) {
                             $issues[] = sprintf(
                                 '<%s> inside %s: rich text only allows inline formatting (%s), so the editor will flag this block as invalid.',
                                 $tag,
@@ -141,20 +193,33 @@ final class BlockValidator
         return true;
     }
 
-    /** The element the rich text is sourced from is legitimately present. */
-    private function is_wrapper_tag(string $tag, array $def): bool
+    /**
+     * The inside of the element the rich text is sourced from — what RichText
+     * owns. Markup around it is the block's own wrapper: core/button stores
+     * `<div class="wp-block-button"><a>…</a></div>`, and reading the whole
+     * block flagged that <div> on every button there is, which refused any
+     * proposal that added one. Null when the element is absent (empty text).
+     */
+    private function rich_text_region(string $html, string $selector): ?string
     {
-        $selector = (string) ($def['selector'] ?? '');
-        if ($selector === '') {
-            return false;
-        }
-        foreach (explode(',', $selector) as $part) {
-            if (strtolower(trim($part)) === $tag) {
-                return true;
-            }
+        $tags = array_map(static fn (string $t): string => preg_quote(strtolower(trim($t)), '/'), explode(',', $selector));
+        if (!preg_match('/<(' . implode('|', $tags) . ')\b[^>]*>/i', $html, $open, PREG_OFFSET_CAPTURE)) {
+            return null;
         }
 
-        return false;
+        $tag   = preg_quote(strtolower($open[1][0]), '/');
+        $start = $open[0][1] + strlen($open[0][0]);
+        $depth = 1;
+        $pos   = $start;
+        while (preg_match('/<(\/?)' . $tag . '\b[^>]*>/i', $html, $next, PREG_OFFSET_CAPTURE, $pos)) {
+            $depth += $next[1][0] === '/' ? -1 : 1;
+            if ($depth === 0) {
+                return substr($html, $start, $next[0][1] - $start);
+            }
+            $pos = $next[0][1] + strlen($next[0][0]);
+        }
+
+        return substr($html, $start);
     }
 
     /** @return array<int, string> lowercase tag names appearing in $html */

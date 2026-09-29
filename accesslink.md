@@ -288,6 +288,10 @@ Dry-runs block checks without filing anything. Send `{content}` to check markup 
 
 The rich-text check is skipped for blocks whose content selector is class-based (`.gb-text`), because there is no reliable way to tell which element is the legitimate wrapper, and guessing produced false positives on valid GenerateBlocks pages.
 
+The rich-text check reads only the inside of the element its selector names. Reading the whole block flagged the `<div class="wp-block-button">` wrapper of every core/button, so a proposal adding a button was refused (fixed 0.2.10).
+
+**HTML comments** outside a Custom HTML block are refused: between a container's children nothing in `save()` produces one, so the container shows as invalid, and between top-level blocks one becomes an empty Classic block. WordPress's own `<!--more-->`, `<!--nextpage-->` and `<!--noteaser-->` pass. An agent's section labels (`<!-- BOX 1: Energiajohtaminen -->`) reached renea.demolink.fi through an approved whole-page update on 2026-09-22, because until 0.2.10 a whole `post_content` — on `create` and on `update` — skipped these checks entirely; it now gets them, reporting only what it introduces, as block edits always did. `tests/block-validator-wp.php` runs against a real WordPress.
+
 ### POST /changes
 
 Files a proposal. Returns `201` with the created row.

@@ -436,6 +436,11 @@ final class GuideBuilder
             . implode('`, `', array_slice(BlockValidator::INLINE_TAGS, 0, 12)) . '`…';
         $md[] = 'No `<div>`, no `<svg>`, no block-level elements — those make the block invalid.';
         $md[] = '';
+        $md[] = 'No HTML comments anywhere in block markup — not as section labels between';
+        $md[] = 'blocks, not inside them. The editor shows a container holding one as invalid;';
+        $md[] = 'they are refused, and a whole `post_content` is checked the same way.';
+        $md[] = 'Explain structure in the `note`. A Custom HTML block may hold comments.';
+        $md[] = '';
         $md[] = 'The exception is a Custom HTML block (`core/html`): its content is raw HTML and';
         $md[] = 'may carry `<script>`, `<style>` and `<iframe>` embeds, which are kept as written. It has no single';
         $md[] = 'wrapper, so edit it with `update_block` and the whole `html`, not `update_text`.';
