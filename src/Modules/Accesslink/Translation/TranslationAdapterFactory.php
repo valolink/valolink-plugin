@@ -25,16 +25,19 @@ final class TranslationAdapterFactory
             return self::$resolved = $polylang;
         }
 
+        // Polylang present but too old for pll_insert_post (< 3.7). Asked
+        // before WPML: Polylang's WPML compatibility layer defines
+        // icl_object_id, and kuumalahde.fi (Polylang Pro 3.6.6) was reported
+        // as a WPML site, pointing at the wrong fix.
+        if (function_exists('pll_languages_list')) {
+            return self::$resolved = new UnsupportedTranslationAdapter('polylang-too-old');
+        }
+
         // WPML keeps translation state behind its own tables and an action-based
         // write API that behaves differently enough to need its own adapter.
         // Naming it is more useful than a bare "unavailable".
         if (defined('ICL_SITEPRESS_VERSION') || function_exists('icl_object_id')) {
             return self::$resolved = new UnsupportedTranslationAdapter('wpml');
-        }
-
-        // Polylang present but too old for pll_insert_post (< 3.7).
-        if (function_exists('pll_languages_list')) {
-            return self::$resolved = new UnsupportedTranslationAdapter('polylang-too-old');
         }
 
         return self::$resolved = new UnsupportedTranslationAdapter('none');
