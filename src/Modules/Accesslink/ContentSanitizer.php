@@ -58,6 +58,14 @@ final class ContentSanitizer
     /** A block delimiter, opening or closing — the seams a document is compared at. */
     private const DELIMITER = '/(<!--\s+\/?wp:.*?-->)/s';
 
+    /**
+     * A Fusion body has no block delimiters, so it is cut at its shortcode
+     * tags instead. Without this the whole page is one piece: changing one
+     * word ran kses over all of it and stripped the iframes and styles the
+     * site's own Text Blocks carry — the defect 0.2.7 fixed for blocks.
+     */
+    private const FUSION_DELIMITER = '/(<!--\s+\/?wp:.*?-->|\[\/?[a-zA-Z][\w-]*(?![\w-])[^\]]*\])/s';
+
     /** One whole delimiter, in the block parser's own grammar (WP_Block_Parser::next_token). */
     private const BLOCK_DELIMITER = '/^<!--\s+(?P<closer>\/)?wp:(?P<name>(?:[a-z][a-z0-9_-]*\/)?[a-z][a-z0-9_-]*)\s+(?P<attrs>{(?:(?:[^}]+|}+(?=})|(?!}\s+\/?-->).)*+)?}\s+)?(?P<void>\/)?-->$/s';
 
@@ -128,7 +136,11 @@ final class ContentSanitizer
 
     private static function filter_document(string $content, string $current): string
     {
-        [$known_html, $known] = self::pieces_of($current);
+        $basis = $current !== '' ? $current : $content;
+        $split = FusionReader::is_fusion($basis) && preg_match(self::DELIMITER, $basis) !== 1
+            ? self::FUSION_DELIMITER
+            : self::DELIMITER;
+        [$known_html, $known] = self::pieces_of($current, $split);
 
         $out = '';
         foreach (self::split_html_blocks($content) as $piece) {
@@ -136,7 +148,7 @@ final class ContentSanitizer
                 $out .= isset($known_html[$piece]) ? $piece : self::filter_keeping_code($piece);
                 continue;
             }
-            foreach (preg_split(self::DELIMITER, $piece, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY) ?: [] as $token) {
+            foreach (preg_split($split, $piece, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY) ?: [] as $token) {
                 if (isset($known[$token])) {
                     $out .= $token;
                 } elseif (preg_match(self::BLOCK_DELIMITER, $token, $m) === 1) {
@@ -195,7 +207,7 @@ final class ContentSanitizer
      *
      * @return array{0: array<string, true>, 1: array<string, true>}
      */
-    private static function pieces_of(string $current): array
+    private static function pieces_of(string $current, string $split = self::DELIMITER): array
     {
         $known_html = [];
         $known = [];
@@ -204,7 +216,7 @@ final class ContentSanitizer
                 $known_html[$piece] = true;
                 continue;
             }
-            foreach (preg_split(self::DELIMITER, $piece, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY) ?: [] as $token) {
+            foreach (preg_split($split, $piece, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY) ?: [] as $token) {
                 $known[$token] = true;
             }
         }

@@ -123,6 +123,9 @@ final class ContentReader
         $out['post_content'] = $truncated ? mb_substr($content, 0, self::CONTENT_MAX_CHARS) : $content;
         $out['post_excerpt'] = (string) $post->post_excerpt;
         $out['truncated']    = $truncated;
+        // blocks, fusion or classic: whether GET /content/{id}/blocks has
+        // paths to offer, and which markup rules they follow.
+        $out['format']       = Documents::format($content);
         unset($out['excerpt']);
 
         // Everything else an agent may propose, read back through the same

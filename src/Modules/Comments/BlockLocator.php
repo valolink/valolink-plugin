@@ -4,19 +4,19 @@ declare(strict_types=1);
 
 namespace Valolink\Plugin\Modules\Comments;
 
-use Valolink\Plugin\Modules\Accesslink\BlockReader;
+use Valolink\Plugin\Modules\Accesslink\Documents;
 
 /**
  * Which block of a post a quoted text lives in, for the agent: the deepest
- * editable block whose text contains the quote, by Accesslink's own reader
- * and paths. Nothing in the rendered page needs marking for this, and text
+ * editable block — or Avada element — whose text contains the quote, by
+ * Accesslink's own reader and paths. Nothing in the rendered page needs marking for this, and text
  * a script rendered simply has no block. Only when Accesslink is present.
  */
 final class BlockLocator
 {
     public static function available(): bool
     {
-        return class_exists(BlockReader::class);
+        return class_exists(Documents::class);
     }
 
     /** @return array{path: string, name: string}|null */
@@ -30,15 +30,20 @@ final class BlockLocator
             return null;
         }
         $post = get_post($post_id);
-        if (!$post instanceof \WP_Post || !has_blocks($post->post_content)) {
+        if (!$post instanceof \WP_Post) {
+            return null;
+        }
+        $content = (string) $post->post_content;
+        if (Documents::format($content) === Documents::FORMAT_CLASSIC) {
             return null;
         }
         $best = null;
-        foreach ((new BlockReader())->flatten((string) $post->post_content)['blocks'] as $block) {
+        foreach (Documents::reader($content)->flatten($content)['blocks'] as $block) {
             if (empty($block['editable'])) {
                 continue;
             }
-            $text = self::norm(wp_strip_all_tags((string) ($block['html'] ?? '')));
+            // A block listing carries its HTML; a Fusion one only the text.
+            $text = self::norm(wp_strip_all_tags((string) ($block['html'] ?? $block['text_html'] ?? '')));
             if ($text === '' || !str_contains($text, $needle)) {
                 continue;
             }

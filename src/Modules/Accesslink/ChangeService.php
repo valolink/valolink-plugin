@@ -215,6 +215,13 @@ final class ChangeService
             return $draft_id;
         }
 
+        // Fusion Builder only strips the stray <p> and <br> wpautop puts
+        // between shortcodes on posts it marks as its own, and opens only
+        // those in the builder. A page an agent wrote in Fusion markup is one.
+        if (Documents::format((string) ($fields['post_content'] ?? '')) === Documents::FORMAT_FUSION) {
+            update_post_meta((int) $draft_id, 'fusion_builder_status', 'active');
+        }
+
         $id = $this->repo->insert([
             'action'          => ChangeRepository::ACTION_CREATE,
             'target_id'       => $draft_id,
@@ -294,16 +301,16 @@ final class ChangeService
      * `post_content` — the path a page rewrite or a new page takes, and until
      * 0.2.10 the one path that skipped them, which is how a container with
      * stray comments in it was approved on renea.demolink.fi. Against the
-     * current body only what the proposal introduces is reported; classic
-     * content without blocks has nothing to check.
+     * current body only what the proposal introduces is reported. A Fusion
+     * body gets Fusion's checks; classic content has nothing to check.
      */
     private function check_body(string $current, array $fields): true|\WP_Error
     {
-        if (!isset($fields['post_content']) || !has_blocks((string) $fields['post_content'])) {
+        if (!isset($fields['post_content'])) {
             return true;
         }
 
-        $issues = (new BlockValidator())->check_diff($current, (string) $fields['post_content']);
+        $issues = Documents::check_diff($current, (string) $fields['post_content']);
 
         return $issues === []
             ? true
@@ -339,7 +346,10 @@ final class ChangeService
         if (!array_key_exists($key, $input)) {
             return new \WP_Error('no_' . $key, sprintf('%s is required.', $key), ['status' => 400]);
         }
-        $reader = new BlockReader();
+        // A Fusion element keeps some of its words in attributes — a tab's
+        // title, an image's alt text — and update_text names one with `attr`.
+        $attr = $is_text && isset($input['attr']) && $input['attr'] !== '' ? sanitize_key((string) $input['attr']) : null;
+        $reader = Documents::reader((string) $post->post_content);
         $block = $reader->get_at((string) $post->post_content, $path);
         if ($block === null) {
             return new \WP_Error('block_not_found', sprintf('No block at path %s.', $path), ['status' => 404]);
@@ -355,19 +365,26 @@ final class ChangeService
 
         // Dry-run the replacement now rather than at approval, so a structural
         // failure reaches the agent instead of the reviewer's queue.
-        $trial = $is_text
-            ? $reader->replace_text_at((string) $post->post_content, $path, $html)
-            : $reader->replace_at((string) $post->post_content, $path, $html);
+        $trial = match (true) {
+            $attr !== null => $reader->replace_attr_at((string) $post->post_content, $path, $attr, (string) $input[$key]),
+            $is_text       => $reader->replace_text_at((string) $post->post_content, $path, $html),
+            default        => $reader->replace_at((string) $post->post_content, $path, $html),
+        };
         if (is_wp_error($trial)) {
             $trial->add_data(['status' => 400], $trial->get_error_code());
 
             return $trial;
         }
+        if ($attr !== null) {
+            // What approval writes is the value as the reader cleaned it,
+            // read back so the queue shows exactly that.
+            $html = (string) ($reader->get_at($trial, $path)['texts'][$attr] ?? '');
+        }
 
-        // Cheap block-validity checks on the result. These cannot prove
+        // Cheap validity checks on the result. For blocks these cannot prove
         // Gutenberg will accept it — that verdict lives in JavaScript — but
         // they catch the mistakes an agent actually makes.
-        $issues = (new BlockValidator())->check_diff((string) $post->post_content, $trial);
+        $issues = Documents::check_diff((string) $post->post_content, $trial);
         if ($issues !== []) {
             return new \WP_Error(
                 'invalid_block_markup',
@@ -386,8 +403,10 @@ final class ChangeService
                 'html'          => $html,
                 'block_name'    => $block['name'],
                 'previous_html' => $block['html'],
-            ],
-            'summary'         => $this->summarize($post->post_title . ' — ' . $block['name'] . $code_note),
+            ] + ($attr !== null ? ['attr' => $attr] : []),
+            'summary'         => $this->summarize(
+                $post->post_title . ' — ' . $block['name'] . ($attr !== null ? ' ' . $attr : '') . $code_note,
+            ),
             'note'            => $note,
             'requested_by'    => $requested_by,
             'idempotency_key' => $idempotency_key,
@@ -442,8 +461,8 @@ final class ChangeService
             );
         }
 
-        $reader = new BlockReader();
         $content = (string) $post->post_content;
+        $reader = Documents::reader($content);
         $payload = ['path' => $path];
 
         switch ($action) {
@@ -478,7 +497,7 @@ final class ChangeService
             return $trial;
         }
 
-        $issues = (new BlockValidator())->check_diff($content, $trial);
+        $issues = Documents::check_diff($content, $trial);
         if ($issues !== []) {
             return new \WP_Error('invalid_block_markup', implode(' ', $issues), ['status' => 400, 'issues' => $issues]);
         }
@@ -922,10 +941,12 @@ final class ChangeService
 
         // replace_text_at only ever swaps a wrapper's inner HTML, so the tree
         // never reshapes and every path stays valid across the whole loop.
-        $reader  = new BlockReader();
+        // On a Fusion page a key may also name an attribute, `path@title`,
+        // for the words Avada keeps there — tab titles, alt text.
         $content = (string) $source->post_content;
-        foreach ($texts as $path => $text) {
-            $path = (string) $path;
+        $reader  = Documents::reader($content);
+        foreach ($texts as $key => $text) {
+            [$path, $attr] = array_pad(explode('@', (string) $key, 2), 2, null);
             if ($reader->get_at($content, $path) === null) {
                 return new \WP_Error(
                     'block_not_found',
@@ -938,9 +959,11 @@ final class ChangeService
             // HTML with the words swapped, so it legitimately carries the icons
             // and anchors that were already there. The skeleton comparison
             // below is what proves nothing else changed.
-            $replaced = $reader->replace_text_at($content, $path, (string) $text, false);
+            $replaced = $attr === null
+                ? $reader->replace_text_at($content, $path, (string) $text, false)
+                : $reader->replace_attr_at($content, $path, (string) $attr, (string) $text);
             if (is_wp_error($replaced)) {
-                $replaced->add_data(['status' => 400, 'path' => $path], $replaced->get_error_code());
+                $replaced->add_data(['status' => 400, 'path' => (string) $key], $replaced->get_error_code());
 
                 return $replaced;
             }
@@ -955,7 +978,7 @@ final class ChangeService
         // it is built for content an agent authored, not for a clone of the
         // site's own markup. Anything an agent might inject is a tag or an
         // attribute, so any injection shows up here as a mismatch.
-        if (self::markup_skeleton((string) $source->post_content) !== self::markup_skeleton($content)) {
+        if ($reader->skeleton((string) $source->post_content) !== $reader->skeleton($content)) {
             return new \WP_Error(
                 'markup_changed',
                 'A translation may only change text, not markup. Send the source block\'s own HTML with '
@@ -964,7 +987,7 @@ final class ChangeService
             );
         }
 
-        $issues = (new BlockValidator())->check_diff((string) $source->post_content, $content);
+        $issues = Documents::check_diff((string) $source->post_content, $content);
         if ($issues !== []) {
             return new \WP_Error('invalid_block_markup', implode(' ', $issues), ['status' => 400, 'issues' => $issues]);
         }
@@ -1017,7 +1040,7 @@ final class ChangeService
         // reviewed it, so there is nothing to recover.
         $stored = get_post((int) $new_id);
         if (!$stored instanceof \WP_Post
-            || self::markup_skeleton((string) $stored->post_content) !== self::markup_skeleton($content)) {
+            || $reader->skeleton((string) $stored->post_content) !== $reader->skeleton($content)) {
             wp_delete_post((int) $new_id, true);
 
             return new \WP_Error(
@@ -1107,7 +1130,7 @@ final class ChangeService
      */
     private function block_hash(\WP_Post $post, string $path): string
     {
-        $block = (new BlockReader())->get_at((string) $post->post_content, $path);
+        $block = Documents::reader((string) $post->post_content)->get_at((string) $post->post_content, $path);
 
         return hash('sha256', (string) wp_json_encode([
             'path' => $path,
@@ -1343,10 +1366,14 @@ final class ChangeService
      */
     public function proposed_content(array $change, \WP_Post $post): string|\WP_Error|null
     {
-        $reader  = new BlockReader();
         $payload = $change['payload'] ?? [];
         $content = (string) $post->post_content;
+        $reader  = Documents::reader($content);
         $path    = (string) ($payload['path'] ?? '');
+
+        if ($change['action'] === ChangeRepository::ACTION_UPDATE_TEXT && ($payload['attr'] ?? '') !== '') {
+            return $reader->replace_attr_at($content, $path, (string) $payload['attr'], (string) ($payload['html'] ?? ''));
+        }
 
         return match ($change['action']) {
             // For update_text the payload's `html` is the block's *inner* text,
@@ -1403,20 +1430,6 @@ final class ChangeService
                 add_post_meta($to, $key, maybe_unserialize($value));
             }
         }
-    }
-
-    /**
-     * Every tag and block delimiter in order, with attributes, text removed.
-     *
-     * Two documents with the same skeleton differ only in their words. Block
-     * delimiters are HTML comments and are captured too, so a change to block
-     * attributes shows up as readily as a changed element.
-     */
-    private static function markup_skeleton(string $html): string
-    {
-        preg_match_all('/<[^>]*>/', $html, $matches);
-
-        return implode('', $matches[0]);
     }
 
     private function mark_stale(int $id, int $target_id, string $message): array

@@ -428,6 +428,8 @@ final class AccesslinkModule implements Module
                 'taxonomy'       => true,
                 'featured_image' => true,
                 'blocks'         => true,
+                // Avada pages: the same paths and actions, Fusion markup rules.
+                'fusion'         => FusionSchema::active(),
                 'menus'          => $service->menus_enabled(),
                 'elements'       => ElementReader::available()
                     && in_array(ElementReader::POST_TYPE, $service->allowed_post_types(), true),
@@ -477,9 +479,13 @@ final class AccesslinkModule implements Module
             return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 403]);
         }
 
-        $flat = (new BlockReader())->flatten((string) $post->post_content);
+        $content = (string) $post->post_content;
+        $flat = Documents::reader($content)->flatten($content);
         $flat['id'] = $post->ID;
-        $flat['has_blocks'] = has_blocks($post->post_content);
+        $flat['has_blocks'] = has_blocks($content);
+        // Which builder the paths address: Gutenberg blocks or Avada's
+        // Fusion elements. Same actions, different markup rules.
+        $flat['format'] = Documents::format($content);
 
         return new \WP_REST_Response($flat);
     }
@@ -491,8 +497,6 @@ final class AccesslinkModule implements Module
             return new \WP_Error('bad_body', 'Expected a JSON object.', ['status' => 400]);
         }
 
-        $reader = new BlockReader();
-
         // Either validate supplied content outright, or dry-run a block edit
         // against a real post without queueing it.
         if (isset($body['target_id'], $body['path'])) {
@@ -501,9 +505,15 @@ final class AccesslinkModule implements Module
                 return new \WP_Error('not_found', 'No post with that id.', ['status' => 404]);
             }
             $path = (string) $body['path'];
-            $result = array_key_exists('text', $body)
-                ? $reader->replace_text_at((string) $post->post_content, $path, (string) $body['text'])
-                : $reader->replace_at((string) $post->post_content, $path, (string) ($body['html'] ?? ''));
+            $reader = Documents::reader((string) $post->post_content);
+            $result = match (true) {
+                !empty($body['attr']) && array_key_exists('text', $body)
+                    => $reader->replace_attr_at((string) $post->post_content, $path, sanitize_key((string) $body['attr']), (string) $body['text']),
+                array_key_exists('text', $body)
+                    => $reader->replace_text_at((string) $post->post_content, $path, (string) $body['text']),
+                default
+                    => $reader->replace_at((string) $post->post_content, $path, (string) ($body['html'] ?? '')),
+            };
 
             if (is_wp_error($result)) {
                 return new \WP_REST_Response([
@@ -511,14 +521,15 @@ final class AccesslinkModule implements Module
                     'issues' => [$result->get_error_message()],
                 ]);
             }
-            $issues = (new BlockValidator())->check_diff((string) $post->post_content, $result);
-            $pre = (new BlockValidator())->check((string) $post->post_content);
+            $issues = Documents::check_diff((string) $post->post_content, $result);
+            $pre = Documents::check((string) $post->post_content);
 
             return new \WP_REST_Response([
                 'ok'           => $issues === [],
                 'issues'       => $issues,
                 'pre_existing' => $pre,
-                'note'         => 'issues = problems this edit would introduce. pre_existing = already wrong on that post, not your doing. Gutenberg decides final validity in JavaScript; PHP cannot reproduce that.',
+                'note'         => 'issues = problems this edit would introduce. pre_existing = already wrong on that post, not your doing. '
+                    . self::validity_note((string) $post->post_content),
             ]);
         } elseif (isset($body['content'])) {
             $content = (string) $body['content'];
@@ -530,13 +541,21 @@ final class AccesslinkModule implements Module
             );
         }
 
-        $issues = (new BlockValidator())->check($content);
+        $issues = Documents::check($content);
 
         return new \WP_REST_Response([
             'ok'     => $issues === [],
             'issues' => $issues,
-            'note'   => 'These are server-side checks only. Gutenberg decides final validity in JavaScript by re-running each block\'s save(); PHP cannot reproduce that.',
+            'note'   => 'These are server-side checks only. ' . self::validity_note($content),
         ]);
+    }
+
+    /** What a clean result does and does not promise, for the builder the content is in. */
+    private static function validity_note(string $content): string
+    {
+        return Documents::format($content) === Documents::FORMAT_FUSION
+            ? 'For Fusion markup they cover structure, element availability and code elements; read the page back with POST /preview to see it rendered.'
+            : 'Gutenberg decides final validity in JavaScript by re-running each block\'s save(); PHP cannot reproduce that.';
     }
 
     public function handle_taxonomies(): \WP_REST_Response
@@ -902,7 +921,7 @@ final class AccesslinkModule implements Module
             return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 403]);
         }
 
-        $reader = new BlockReader();
+        $reader = Documents::reader((string) $post->post_content);
         $path = trim((string) ($body['path'] ?? ''));
         $payload = ['path' => $path];
         if (in_array($action, [ChangeRepository::ACTION_UPDATE_TEXT, ChangeRepository::ACTION_UPDATE_BLOCK], true)) {
@@ -912,6 +931,10 @@ final class AccesslinkModule implements Module
             }
             $key = $action === ChangeRepository::ACTION_UPDATE_TEXT ? 'text' : 'html';
             $payload['html'] = ContentSanitizer::filter((string) ($body[$key] ?? ''), ($block['name'] ?? '') === 'core/html');
+            if ($action === ChangeRepository::ACTION_UPDATE_TEXT && !empty($body['attr'])) {
+                $payload['attr'] = sanitize_key((string) $body['attr']);
+                $payload['html'] = (string) ($body['text'] ?? '');
+            }
         } elseif ($action === ChangeRepository::ACTION_INSERT_BLOCK) {
             $payload['markup']   = ContentSanitizer::filter((string) ($body['markup'] ?? ''));
             $payload['position'] = (string) ($body['position'] ?? 'after');
@@ -927,7 +950,7 @@ final class AccesslinkModule implements Module
         if ($content === null) {
             return new \WP_Error('bad_action', 'That action does not change the post body.', ['status' => 400]);
         }
-        $issues = (new BlockValidator())->check_diff((string) $post->post_content, $content);
+        $issues = Documents::check_diff((string) $post->post_content, $content);
 
         return new \WP_REST_Response(
             ['ok' => $issues === [], 'issues' => $issues] + $this->render_preview($post, $content, (bool) $request->get_param('html')),
@@ -968,7 +991,7 @@ final class AccesslinkModule implements Module
      */
     private function render_preview(\WP_Post $post, string $content, bool $with_html): array
     {
-        $flat = (new BlockReader())->flatten($content);
+        $flat = Documents::reader($content)->flatten($content);
 
         // Render through the same filters the theme uses, with the post in
         // place for blocks that read it; then back out.
@@ -977,7 +1000,17 @@ final class AccesslinkModule implements Module
         $preview->post_content = $content;
         $GLOBALS['post'] = $preview;
         setup_postdata($preview);
+        // Fusion Builder strips the <p> and <br> wpautop leaves between its
+        // shortcodes only on a singular front-end view, which a REST request
+        // is not; without this the preview has paragraphs the page does not.
+        $fusion_fix = Documents::format($content) === Documents::FORMAT_FUSION && function_exists('fusion_builder_fix_shortcodes');
+        if ($fusion_fix) {
+            add_filter('the_content', 'fusion_builder_fix_shortcodes', 10);
+        }
         $html = (string) apply_filters('the_content', $content);
+        if ($fusion_fix) {
+            remove_filter('the_content', 'fusion_builder_fix_shortcodes', 10);
+        }
         wp_reset_postdata();
         $GLOBALS['post'] = $previous;
 

@@ -70,6 +70,11 @@ final class GuideBuilder
                 'summary' => 'Addressing one block instead of rewriting a page, and adding, removing or moving blocks.',
                 'when'    => $this->uses_blocks(),
             ],
+            'fusion' => [
+                'label'   => 'Editing an Avada (Fusion Builder) page',
+                'summary' => 'Avada pages are nested shortcodes; addressing one element, its text and its text attributes, and what may be added, moved or removed.',
+                'when'    => FusionSchema::active(),
+            ],
             'products' => [
                 'label'   => 'WooCommerce products',
                 'summary' => 'Product fields — categories, visibility and, where switched on, prices and stock — and the rules WooCommerce holds them to.',
@@ -134,6 +139,7 @@ final class GuideBuilder
         $lines = match ($name) {
             'proposing'    => $this->section_proposing(),
             'blocks'       => $this->section_blocks(),
+            'fusion'       => $this->section_fusion(),
             'products'     => $this->section_products(),
             'translations' => $this->section_translations(),
             'elements'     => $this->section_elements(),
@@ -590,6 +596,83 @@ final class GuideBuilder
     }
 
     /** @return array<int, string> */
+    private function section_fusion(): array
+    {
+        $base  = $this->base();
+        $types = $this->service->allowed_post_types();
+
+        $md = [];
+        $md[] = '## Editing an Avada (Fusion Builder) page';
+        $md[] = '';
+        $md[] = 'Pages here are built with Avada\'s Fusion Builder: nested shortcodes, `fusion_builder_container`';
+        $md[] = '> `fusion_builder_row` > `fusion_builder_column` > elements such as `fusion_text`, `fusion_title`,';
+        $md[] = '`fusion_button` and `fusion_imageframe`. `GET /content/{id}` reports `format: "fusion"` for them.';
+        $md[] = '';
+        $md[] = "- `GET {$base}/content/{id}/blocks` — the elements as addressable paths, the same";
+        $md[] = '  listing and the same actions as block pages. Per element: `name`, `depth`, `editable`,';
+        $md[] = '  `text_kind`, `text_html` (the text, untruncated), `texts` (words kept in attributes, such';
+        $md[] = '  as a tab\'s `title` or an image\'s `alt`), `label` (a container\'s name in the builder),';
+        $md[] = '  `width` (a column\'s), and `global_id` / `global_title` for a Library reference.';
+        $md[] = '';
+        $md[] = '**Do not rewrite a Fusion page\'s `post_content`.** Every layout tag carries dozens of';
+        $md[] = 'styling attributes; regenerating the string loses them, breaks the grid, and makes a diff';
+        $md[] = 'nobody can review. Address one element:';
+        $md[] = '';
+        $md[] = '- `update_text` with `text` replaces an element\'s text and leaves its tag, with all its';
+        $md[] = '  styling, byte-identical. `text_kind` `rich` (a Text Block, a tab) may hold paragraphs,';
+        $md[] = '  headings and lists; `inline` (a title, a button) only inline formatting. Keep the element\'s';
+        $md[] = '  own style: many Text Blocks have no `<p>` tags and rely on line breaks, which become';
+        $md[] = '  paragraphs when the page renders.';
+        $md[] = '- `update_text` with `attr` sets one text attribute, from the element\'s `texts`:';
+        $md[] = '';
+        $md[] = '  ```json';
+        $md[] = '  { "action": "update_text", "target_id": 123, "path": "0.0.1.2", "attr": "alt",';
+        $md[] = '    "text": "Poreallas terassilla", "note": "The image had no alt text." }';
+        $md[] = '  ```';
+        $md[] = '';
+        $md[] = '  An attribute that is not there yet can be added the same way — an image without alt';
+        $md[] = '  text is the common case. Plain text only, and no `"`, `[` or `]`: they end the shortcode.';
+        $md[] = '  Use typographic quotes ” ’.';
+        $md[] = '- `update_block` with `html` replaces an element\'s whole shortcode, for what words cannot';
+        $md[] = '  change, such as a button\'s link. It must stay the same element type.';
+        $md[] = '- `insert_block`, `delete_block` and `move_block` work as on block pages, with Fusion';
+        $md[] = '  markup. Elements go inside columns beside other elements; a whole container goes beside';
+        $md[] = '  containers, or with no `path` at the page\'s `start` or `end`; a tab, toggle, checklist';
+        $md[] = '  item or gallery image only among its own kind. **Rows and columns are the page grid and';
+        $md[] = '  cannot be added, removed or moved** — describe a needed grid change in a note instead.';
+        $md[] = '  Take an existing element\'s shortcode as the shape; attributes you leave out take the';
+        $md[] = '  site\'s defaults, which is usually what you want.';
+        $md[] = '';
+        $md[] = 'Text may not add shortcodes. A shortcode already in an element\'s text (a contact form)';
+        $md[] = 'must come back exactly as it was. Code elements (`fusion_code`, marked `code: true`) are';
+        $md[] = 'never proposed — their content is encoded and a reviewer cannot read it. An element marked';
+        $md[] = '`dynamic: true` is filled from data when the page renders, so its stored text may not be';
+        $md[] = 'what visitors see.';
+        $md[] = '';
+        $md[] = '### Library elements and Layout sections';
+        $md[] = '';
+        $md[] = '`[fusion_global id="…"]` renders an Avada Library element in its place — `global_id` and';
+        $md[] = '`global_title` in the listing say which. Its words live in that element, a `'
+            . FusionSchema::LIBRARY_POST_TYPE . '` post,';
+        $md[] = in_array(FusionSchema::LIBRARY_POST_TYPE, $types, true)
+            ? 'so propose against that post. It changes on every page that uses it; say so in the note.'
+            : 'which is not among the post types you may touch here. Say in a note what should change.';
+        $md[] = 'Headers, footers and similar are Layout sections, `' . FusionSchema::SECTION_POST_TYPE . '` posts'
+            . (in_array(FusionSchema::SECTION_POST_TYPE, $types, true) ? ', edited the same way.' : ', not editable here.');
+        $md[] = '';
+        $md[] = '### Checking before you file';
+        $md[] = '';
+        $md[] = "- `POST {$base}/preview` with the body you would send to `/changes` returns the page as";
+        $md[] = '  it would be: the element listing with paths, `text` as a visitor reads it, and `issues`.';
+        $md[] = '  Nothing is queued. Add `?html=1` for the rendered HTML.';
+        $md[] = "- `POST {$base}/validate` with `{target_id, path, text}` (and `attr` if needed) dry-runs";
+        $md[] = '  an edit. `issues` is what your edit introduces, `pre_existing` what was already wrong.';
+        $md[] = '';
+
+        return $md;
+    }
+
+    /** @return array<int, string> */
     private function section_translations(): array
     {
         $base = $this->base();
@@ -636,6 +719,14 @@ final class GuideBuilder
         $md[] = 'immediately; approving it sets its status. If the source page changes before a';
         $md[] = 'human approves, the proposal goes `stale` and you should read the source again.';
         $md[] = '';
+        if (FusionSchema::active()) {
+            $md[] = 'On an Avada page, words kept in attributes are translated with a `path@attr` key —';
+            $md[] = '`"0.0.1.0.1@title": "Specifications"`, `"0.0.1.1@alt": "Hot tub on a terrace"` — and';
+            $md[] = 'those attributes are the only ones allowed to differ. A Library reference';
+            $md[] = '(`fusion_global`) renders the Library element\'s own translation when it has one,';
+            $md[] = 'and the original otherwise — translate the Library elements a page uses as well.';
+            $md[] = '';
+        }
         $md[] = '`texts` is optional. Leave it out to clone a post verbatim into another';
         $md[] = 'language — what a page or element with no visible text, such as one that only';
         $md[] = 'injects CSS or a tracking script, needs in order to exist there at all.';
@@ -982,8 +1073,13 @@ final class GuideBuilder
         if (!$seo->can_write()) {
             $out[] = sprintf('SEO fields (%s)', $seo->label());
         }
-        if (!TranslationAdapterFactory::detect()->available()) {
-            $out[] = 'Translations — no multilingual plugin Accesslink can drive';
+        $tr = TranslationAdapterFactory::detect();
+        if (!$tr->available()) {
+            $out[] = match ($tr->plugin()) {
+                'polylang-too-old' => 'Translations — Polylang here is older than 3.7, which Accesslink needs',
+                'wpml'             => 'Translations — WPML is not supported',
+                default            => 'Translations — no multilingual plugin Accesslink can drive',
+            };
         }
         if (!$this->service->menus_enabled()) {
             $out[] = 'Navigation menus — editing them is switched off for this site';

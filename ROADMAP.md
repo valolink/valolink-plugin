@@ -178,11 +178,17 @@ surface:
   change into an existing translation), term translations
   (`pll_save_term_translations`, without which a translated post cannot be
   categorised), and the status matrix as a standalone endpoint. Design below.
-- [ ] **ACF / custom fields.** CPT UI is on much of the fleet, so custom post types
-  exist that are only half-readable now. Needs discovery first — `GET /field-groups`
-  and `GET /content/{id}/fields` — because an agent cannot guess field keys. v1 is
-  scalars only (text, textarea, wysiwyg, number, url, image id, select, true/false);
-  repeaters and flexible content are where the cost lives, and they wait.
+- [~] **ACF / custom fields.** v1 shipped in 7f53d83: fields as `acf:<name>`, read
+  from ACF's own groups, scalar kinds writable. Repeaters, flexible content and
+  the object kinds are readable and refused on write; they are where the cost
+  lives, and they wait.
+- [ ] **Avada, the rest.** The first slice ships (see below). Next: the page
+  grid — adding or removing a column with the right `type`/`first`/`last`,
+  which only a render can check; Avada page options (`_fusion` meta: title bar,
+  sidebars) as layout fields beside GeneratePress's; and Comments' front-end
+  markers verified on an Avada page. kuumalahde.fi runs Polylang Pro 3.6.6,
+  below the 3.7 `create_translation` needs, so Fusion translation is covered by
+  the reader tests but not yet run end to end.
 - [ ] **Media upload by URL, sideloaded at approval.** Without it every created page
   is imageless. Fetch happens only on approve, behind a host allowlist with MIME
   and size limits. Worth more than its place here suggests: a service page
@@ -291,6 +297,23 @@ Kept short; the spec carries the current behaviour.
   postmeta and the lookup table, a stock change parked as stale after a simulated
   sale, a price queued before the switch went off failing at approval, and every
   refusal above returned with its reason.
+
+- **Avada / Fusion Builder pages (2026-09-30).** Twenty-one customer sites run
+  Avada, so its pages needed what block pages have. `FusionReader` gives them
+  the same path listing and actions, picked per post by `Documents` from the
+  content; edits are byte-offset splices, never a re-serialisation. Text lives
+  in content and in a listed set of attributes (`update_text` + `attr`,
+  `path@attr` in translations); the grid is locked; code elements and new
+  shortcodes are refused; `FusionValidator` reports only what a change
+  introduces. Measured on the kuumalahde.fi mirror: 497 Fusion posts, 13 442
+  elements, every no-op text and attribute edit byte-identical, no validator
+  issue on any real page, 3.6 s for the lot; a propose, preview and approve run
+  on a 206 kB page left every other byte in place. Fixes that came with it: a
+  whole-body update of a Fusion page would have run kses over the entire page
+  (no block delimiters to cut it at — now cut at shortcode tags); the
+  translation adapter reported Polylang Pro 3.6 as WPML (its compatibility
+  layer defines `icl_object_id`); and a Fusion review diff folds unchanged
+  attribute lines instead of printing all hundred.
 
 #### Polylang translations — design
 

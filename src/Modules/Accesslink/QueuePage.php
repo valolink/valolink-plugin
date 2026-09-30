@@ -154,6 +154,24 @@ final class QueuePage
                 </p>
             <?php endif; ?>
 
+            <?php if ($change['post_type'] === FusionSchema::LIBRARY_POST_TYPE) : ?>
+                <p class="notice notice-warning" style="padding:.5em 1em;margin:0 0 1em;">
+                    <?php
+                    // A Library element renders wherever a page references it,
+                    // and the diff looks exactly like a diff of a page.
+                    echo esc_html(sprintf(
+                        /* translators: %d: number of posts referencing the element. */
+                        __('This is an Avada Library element. Approving changes it on every page that uses it (%d found).', 'valolink-plugin'),
+                        $this->library_usage((int) $change['target_id']),
+                    ));
+                    ?>
+                </p>
+            <?php elseif ($change['post_type'] === FusionSchema::SECTION_POST_TYPE) : ?>
+                <p class="notice notice-warning" style="padding:.5em 1em;margin:0 0 1em;">
+                    <?php esc_html_e('This is an Avada Layout section — a header, footer or similar. Approving changes it on every page whose Layout uses it.', 'valolink-plugin'); ?>
+                </p>
+            <?php endif; ?>
+
             <?php if ($change['post_type'] === ProductApplier::POST_TYPE && ProductApplier::available()) : ?>
                 <?php $this->render_product_context($change); ?>
             <?php endif; ?>
@@ -519,10 +537,11 @@ final class QueuePage
      */
     private function render_block_diff(array $change, string $current, string $proposed): void
     {
-        $reader = new BlockReader();
+        $reader = Documents::reader($current);
         $path   = (string) ($change['payload']['path'] ?? '');
         $anchor = $reader->get_at($current, $path);
         $name   = (string) ($change['payload']['block_name'] ?? ($anchor['name'] ?? '?'));
+        $attr   = (string) ($change['payload']['attr'] ?? '');
 
         switch ((string) $change['action']) {
             case ChangeRepository::ACTION_UPDATE_TEXT:
@@ -534,12 +553,16 @@ final class QueuePage
                 printf(
                     '<h4>%s <code>%s</code></h4>',
                     esc_html__('Block', 'valolink-plugin'),
-                    esc_html($name . ' @ ' . $path),
+                    esc_html($name . ($attr !== '' ? ' ' . $attr : '') . ' @ ' . $path),
                 );
-                $this->render_field_diff(
-                    (string) ($anchor['html'] ?? ''),
-                    (string) ($reader->get_at($proposed, $path)['html'] ?? ''),
-                );
+                $before = $reader->display_html((string) ($anchor['html'] ?? ''));
+                $after  = $reader->display_html((string) ($reader->get_at($proposed, $path)['html'] ?? ''));
+                // An Avada element is a hundred attribute lines; the one that
+                // changed would be lost among the ninety-nine that did not.
+                if ($reader instanceof FusionReader) {
+                    [$before, $after] = $this->condense($before, $after);
+                }
+                $this->render_field_diff($before, $after);
 
                 return;
 
@@ -565,7 +588,7 @@ final class QueuePage
                         )),
                     );
                 }
-                $this->render_field_diff('', (string) ($change['payload']['markup'] ?? ''));
+                $this->render_field_diff('', $reader->display_html((string) ($change['payload']['markup'] ?? '')));
                 break;
 
             case ChangeRepository::ACTION_DELETE_BLOCK:
@@ -574,7 +597,7 @@ final class QueuePage
                     esc_html__('Delete block', 'valolink-plugin'),
                     esc_html($name . ' @ ' . $path),
                 );
-                $this->render_field_diff((string) ($anchor['html'] ?? ''), '');
+                $this->render_field_diff($reader->display_html((string) ($anchor['html'] ?? '')), '');
                 break;
 
             default:
@@ -605,23 +628,75 @@ final class QueuePage
     }
 
     /**
+     * Unchanged runs cut down to a couple of lines of context either side of
+     * each change, with the first line kept so the element stays named.
+     * wp_text_diff() shows every line, which is right for a paragraph and
+     * useless for a shortcode laid out one attribute per line.
+     *
+     * @return array{0: string, 1: string}
+     */
+    private function condense(string $current, string $proposed, int $context = 2): array
+    {
+        if (!class_exists('Text_Diff', false)) {
+            require_once ABSPATH . WPINC . '/wp-diff.php';
+        }
+
+        $edits = (new \Text_Diff('auto', [explode("\n", $current), explode("\n", $proposed)]))->getDiff();
+        $last  = count($edits) - 1;
+        $left  = [];
+        $right = [];
+        foreach ($edits as $i => $op) {
+            if (!$op instanceof \Text_Diff_Op_copy) {
+                array_push($left, ...(array) ($op->orig ?: []));
+                array_push($right, ...(array) ($op->final ?: []));
+                continue;
+            }
+            $lines = (array) $op->orig;
+            $head  = array_slice($lines, 0, $i === 0 ? 1 : $context);
+            $tail  = $i === $last ? [] : array_slice($lines, -$context);
+            $keep  = count($lines) > count($head) + count($tail) + 1
+                ? array_merge($head, ['…'], $tail)
+                : $lines;
+            array_push($left, ...$keep);
+            array_push($right, ...$keep);
+        }
+
+        return [implode("\n", $left), implode("\n", $right)];
+    }
+
+    /**
      * The block tree as indented plain text, for diffing.
      *
      * Deliberately without paths: an insert or delete renumbers every later
      * sibling, so including them would mark the whole rest of the document as
      * changed and bury the one line that actually moved.
      */
-    private function outline(BlockReader $reader, string $content): string
+    private function outline(DocumentReader $reader, string $content): string
     {
         $lines = [];
         foreach (($reader->flatten($content)['blocks'] ?? []) as $block) {
             $text = trim((string) ($block['text'] ?? ''));
             $lines[] = str_repeat('    ', (int) ($block['depth'] ?? 0))
                 . (string) ($block['name'] ?? '?')
+                . (isset($block['label']) ? ' [' . $block['label'] . ']' : '')
                 . ($text !== '' ? ' — ' . wp_trim_words($text, 8, '…') : '');
         }
 
         return implode("\n", $lines);
+    }
+
+    /**
+     * How many posts reference an Avada Library element — the reach of
+     * approving a change to it. Counts drafts too: they go live later.
+     */
+    private function library_usage(int $id): int
+    {
+        global $wpdb;
+
+        return (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_status IN ('publish','draft','pending','private','future') AND post_content LIKE %s",
+            '%' . $wpdb->esc_like('[' . FusionSchema::GLOBAL_REF . ' id="' . $id . '"') . '%',
+        ));
     }
 
     /**

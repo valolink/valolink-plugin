@@ -24,7 +24,7 @@ namespace Valolink\Plugin\Modules\Accesslink;
  * positional, so they shift if blocks are inserted or removed — which is
  * exactly what the staleness hash is for.
  */
-final class BlockReader
+final class BlockReader implements DocumentReader
 {
     public const MAX_BLOCKS   = 400;
     public const TEXT_PREVIEW = 200;
@@ -192,6 +192,34 @@ final class BlockReader
         }
 
         return $map;
+    }
+
+    /** A block's attributes are data, never the words on the page. */
+    public function replace_attr_at(string $content, string $path, string $attr, string $value): string|\WP_Error
+    {
+        return new \WP_Error(
+            'not_text_attr',
+            'Blocks keep their text in their HTML, not in attributes; use update_text without attr.',
+        );
+    }
+
+    /**
+     * Every tag and block delimiter in order, with attributes, text removed.
+     *
+     * Two documents with the same skeleton differ only in their words. Block
+     * delimiters are HTML comments and are captured too, so a change to block
+     * attributes shows up as readily as a changed element.
+     */
+    public function skeleton(string $content): string
+    {
+        preg_match_all('/<[^>]*>/', $content, $matches);
+
+        return implode('', $matches[0]);
+    }
+
+    public function display_html(string $html): string
+    {
+        return $html;
     }
 
     /** The editable text of a block: the inner HTML of its wrapper element. */

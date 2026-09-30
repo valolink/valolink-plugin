@@ -176,6 +176,34 @@ Maintaining `innerContent` is the subtle part. A parent block stores its childre
 
 Staleness for these covers the **whole document**, not one block, because paths are positional: if anything moves before approval, "after the second paragraph" no longer means what the agent meant.
 
+### Avada (Fusion Builder) pages
+
+Twenty-one Valolink customer sites run Avada (September 2026), whose Fusion Builder stores a page as nested shortcodes in `post_content` — `[fusion_builder_container]` › `[fusion_builder_row]` › `[fusion_builder_column]` › elements such as `[fusion_text]`, `[fusion_title]`, `[fusion_button]`, `[fusion_imageframe]` — with sixty-odd styling attributes on every layout tag. The problem is the one blocks have, worse: regenerating the string loses styling and breaks the grid, and its diff is unreadable. So a Fusion page is addressed exactly like a block page: `GET /content/{id}/blocks` lists its elements by path, and `update_text`, `update_block`, `insert_block`, `delete_block`, `move_block`, `/preview`, `/validate` and `create_translation` all work on it. `Documents::reader()` picks `BlockReader` or `FusionReader` by the content itself — block delimiters, or a `fusion_`/`awb_` tag — so a site that left Avada still has editable Fusion pages, and `GET /content/{id}` reports `format: blocks | fusion | classic`.
+
+```json
+{ "id": 123, "format": "fusion", "total": 97, "truncated": false,
+  "blocks": [
+    {"path":"0","name":"fusion_builder_container","depth":0,"has_inner_blocks":true,"editable":false,"label":"Hero","text":""},
+    {"path":"0.0.1","name":"fusion_builder_column","depth":2,"has_inner_blocks":true,"editable":false,"width":"1_2","text":""},
+    {"path":"0.0.1.0","name":"fusion_text","depth":3,"editable":true,"text_kind":"rich","text_html":"\n<h3>Otsikko</h3>\nKappale.","text":"Otsikko Kappale."},
+    {"path":"0.0.1.1","name":"fusion_imageframe","depth":3,"editable":false,"texts":{"alt":""},"text":"https://…"}
+  ] }
+```
+
+The listing carries no markup — one Avada column tag is three kilobytes of styling an agent has no use for — which is also why it holds up to 1000 elements where blocks stop at 400; the largest page on kuumalahde.fi has 177.
+
+**Parsing follows WordPress's shortcode rules**, because those decide what renders: attributes end at the first `]`, `/]` closes a tag, content runs to the first matching `[/name]`, a tag with no closer is void. Registration is not consulted — some custom elements register their shortcode only for front-end requests, and wherever the parser looks (the page, a column, a parent's items) a tag is an element. Text inside an element is never parsed. Nothing is re-serialised: every edit is a splice at the node's byte offsets, so every other byte of the page is untouched by construction, and a guard re-parses the result and refuses the edit if the element sequence changed.
+
+**Words live in two places.** An element's content — `text_kind` `rich` for TinyMCE regions (Text Block, tab, toggle: paragraphs, headings, lists), `inline` for a title or button label — and a few attributes, listed per element in `FusionSchema::TEXT_ATTRS` and returned as `texts`: tab and toggle titles, image `alt` and captions, testimonial names. `update_text` with `attr` sets one, adding it if absent (an image with no alt text is the common case); values are plain text and may not contain `"`, `[` or `]`, which end the shortcode. In `create_translation` those are keyed `path@attr`, and the skeleton comparison blanks exactly those attributes, so they are the only ones a translation may change. An element whose content is an image URL or encoded code has no editable text.
+
+**What an agent may write.** Text may keep the tags its element already has (years of pasted `<img>` and `<iframe>`) but adds only formatting its editor could produce, and may not add shortcodes — counted across every tag, registered or not, so a front-end-only shortcode cannot be smuggled in either. `insert_block` takes one element: containers beside containers, elements inside columns, a tab or checklist item only among its own kind. **Rows and columns cannot be inserted, deleted or moved**: the grid is where Avada keeps widths and breakpoints, and a column without the right `type`, `first` and `last` breaks the layout in ways only a render shows. `fusion_code` and the other code elements are never added or changed (their content is base64 a reviewer cannot read), and a `fusion_global` must point at an existing Library element. A whole-body `update` of a Fusion page is filtered only where it changed, cut at shortcode tags the way block bodies are cut at delimiters; without that, one changed word ran kses over the whole page and stripped the iframes and styles its own Text Blocks hold. A `create` whose body is Fusion markup gets `fusion_builder_status=active`, which Fusion needs to open it in the builder and to strip the `<p>` wpautop leaves between shortcodes.
+
+**Checks.** `FusionValidator` reports what a change introduces, counted rather than de-duplicated: a layout tag never closed, a stray closer printed as text, an element directly in a row or container, words loose between elements, an attribute holding a `javascript:` URL, a code element added or changed. It raised nothing on any of the 497 Fusion posts on the kuumalahde.fi mirror. `tests/fusion-reader-wp.php` covers the operations against a real install.
+
+**Library elements and Layout sections.** `[fusion_global id="…"]` renders an Avada Library element (`fusion_element`) in its place; the listing names it with `global_id` and `global_title`, and its words are edited by proposing against that post when the type is allowed. The review card counts the pages referencing it, and flags Layout sections (`fusion_tb_section`: headers, footers) the same way GeneratePress Elements are flagged. A translation keeps the source's `fusion_global` ids, and that is right: Avada resolves the id through the `wpml_object_id` filter, which Polylang answers, so the page renders the Library element's translation when one exists and the original when not. Translating a page therefore means translating the Library elements it uses too.
+
+**Review.** The queue lays a Fusion element out one attribute per line and folds unchanged runs to two lines of context, so a changed link or alt text is one visible line rather than a changed three-kilobyte one.
+
 ### GET /languages · GET /content/{id}/translations · action `create_translation`
 
 Present when the site runs a multilingual plugin Accesslink can drive. Polylang 3.7+ is supported through its `pll_*` API; WPML is detected and reported unwritable rather than half-supported. `GET /guide` names the resolved adapter.
@@ -459,7 +487,8 @@ Sites differ, and absence of a plugin narrows what Accesslink offers instead of 
 
 - **No SEO plugin, or an unwritable one** — the SEO fields drop out of `allowed_fields` entirely and a proposal naming them is refused with the reason. `GET /guide` reports the resolved adapter and lists what is unavailable on this site.
 - **A post type without a taxonomy** — refused by name rather than written where nothing renders it.
-- **A block type whose plugin isn't installed** — `insert_block` refuses it by name.
+- **A block type whose plugin isn't installed** — `insert_block` refuses it by name; so does a Fusion element.
+- **No Fusion Builder** — the `fusion` guide section and capability are absent. Fusion pages left behind by a former Avada site stay readable and editable; `insert_block` refuses elements that no longer render.
 - **Not GeneratePress** — the three layout fields drop out of `allowed_fields`; **no GP Elements, or `gp_elements` not in the allowed types** — the element fields drop out, so the guide never advertises a field every proposal naming it would be refused for.
 - **No WooCommerce, or `product` not in the allowed types** — the product fields and taxonomies drop out and the `products` guide section is absent; **commerce switch off** — prices, sales, stock and SKU drop out, and a proposal naming them is refused by name rather than dropped.
 - **Logging module off** — audit calls are wrapped and swallowed; nothing depends on it.
@@ -473,7 +502,8 @@ Named here so nobody assumes otherwise. The roadmap (`ROADMAP.md`, *Accesslink f
 
 - **WooCommerce beyond simple products.** Variations — a variable product's prices and stock — and attributes, gallery images, shipping and tax class, upsells and cross-sells, changing a product's type, and an external product's URL. Nor does the front-end preview render a proposed price yet.
 - **Attachment fields.** Alt text, title and caption of media items. Reads exist; there is no applier for the `attachment` entity yet, and on GenerateBlocks pages the rendered alt lives in the block markup rather than on the attachment.
-- **Custom fields / ACF.** Common on agency sites, entirely absent here.
+- **ACF beyond scalar fields.** Repeaters, flexible content, relationships and the object kinds are readable but refused on write.
+- **Avada, the rest.** The page grid (rows, columns), Avada's own page options (`_fusion` meta), and Layouts' display conditions.
 - **Renaming and scheduling.** `post_name` on an existing post and `post_date`. A rename ships together with redirects or not at all.
 - **Media upload.** `/media` is a picker, not an uploader; a page an agent creates has no images unless the library already holds them.
 - **Reverting an applied change**, though the revision to revert to already exists.
