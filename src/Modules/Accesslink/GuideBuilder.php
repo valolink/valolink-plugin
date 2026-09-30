@@ -75,6 +75,11 @@ final class GuideBuilder
                 'summary' => 'Avada pages are nested shortcodes; addressing one element, its text and its text attributes, and what may be added, moved or removed.',
                 'when'    => FusionSchema::active(),
             ],
+            'layouts' => [
+                'label'   => 'Avada Layouts',
+                'summary' => 'Which header, title bar, content and footer a page gets, why an edit may not show, and changing a Layout\'s conditions or sections.',
+                'when'    => AvadaLayouts::available(),
+            ],
             'products' => [
                 'label'   => 'WooCommerce products',
                 'summary' => 'Product fields — categories, visibility and, where switched on, prices and stock — and the rules WooCommerce holds them to.',
@@ -140,6 +145,7 @@ final class GuideBuilder
             'proposing'    => $this->section_proposing(),
             'blocks'       => $this->section_blocks(),
             'fusion'       => $this->section_fusion(),
+            'layouts'      => $this->section_layouts(),
             'products'     => $this->section_products(),
             'translations' => $this->section_translations(),
             'elements'     => $this->section_elements(),
@@ -614,9 +620,8 @@ final class GuideBuilder
         $md[] = '  as a tab\'s `title` or an image\'s `alt`), `label` (a container\'s name in the builder),';
         $md[] = '  `width` (a column\'s), and `global_id` / `global_title` for a Library reference.';
         $md[] = '';
-        $md[] = '**Do not rewrite a Fusion page\'s `post_content`.** Every layout tag carries dozens of';
-        $md[] = 'styling attributes; regenerating the string loses them, breaks the grid, and makes a diff';
-        $md[] = 'nobody can review. Address one element:';
+        $md[] = '**Do not rewrite a Fusion page\'s `post_content`.** Its tags carry dozens of styling';
+        $md[] = 'attributes a rewrite loses, and nobody can review the diff. Address one element:';
         $md[] = '';
         $md[] = '- `update_text` with `text` replaces an element\'s text and leaves its tag, with all its';
         $md[] = '  styling, byte-identical. `text_kind` `rich` (a Text Block, a tab) may hold paragraphs,';
@@ -640,8 +645,7 @@ final class GuideBuilder
         $md[] = '  containers, or with no `path` at the page\'s `start` or `end`; a tab, toggle, checklist';
         $md[] = '  item or gallery image only among its own kind. **Rows and columns are the page grid and';
         $md[] = '  cannot be added, removed or moved** — describe a needed grid change in a note instead.';
-        $md[] = '  Take an existing element\'s shortcode as the shape; attributes you leave out take the';
-        $md[] = '  site\'s defaults, which is usually what you want.';
+        $md[] = '  Copy an existing element\'s shortcode as the shape; omitted attributes take site defaults.';
         $md[] = '';
         $md[] = 'Text may not add shortcodes. A shortcode already in an element\'s text (a contact form)';
         $md[] = 'must come back exactly as it was. Code elements (`fusion_code`, marked `code: true`) are';
@@ -658,7 +662,8 @@ final class GuideBuilder
             ? 'so propose against that post. It changes on every page that uses it; say so in the note.'
             : 'which is not among the post types you may touch here. Say in a note what should change.';
         $md[] = 'Headers, footers and similar are Layout sections, `' . FusionSchema::SECTION_POST_TYPE . '` posts'
-            . (in_array(FusionSchema::SECTION_POST_TYPE, $types, true) ? ', edited the same way.' : ', not editable here.');
+            . (in_array(FusionSchema::SECTION_POST_TYPE, $types, true) ? ', edited the same way' : ', not editable here')
+            . (AvadaLayouts::available() ? ' — see the `layouts` section for which page gets which.' : '.');
         $md[] = '';
         $md[] = '### Checking before you file';
         $md[] = '';
@@ -667,6 +672,69 @@ final class GuideBuilder
         $md[] = '  Nothing is queued. Add `?html=1` for the rendered HTML.';
         $md[] = "- `POST {$base}/validate` with `{target_id, path, text}` (and `attr` if needed) dry-runs";
         $md[] = '  an edit. `issues` is what your edit introduces, `pre_existing` what was already wrong.';
+        $md[] = '';
+
+        return $md;
+    }
+
+    /** @return array<int, string> */
+    private function section_layouts(): array
+    {
+        $base  = $this->base();
+        $types = $this->service->allowed_post_types();
+
+        $md = [];
+        $md[] = '## Avada Layouts';
+        $md[] = '';
+        $md[] = 'Avada builds every page from four areas — ' . implode(', ', array_map(static fn (string $a): string => '`' . $a . '`', AvadaLayouts::areas())) . '.';
+        $md[] = 'A Layout gives some areas a Layout Section when its conditions match the page; the';
+        $md[] = 'Global Layout fills the rest. Among matching Layouts, the last in Avada\'s order wins.';
+        $md[] = '';
+        $md[] = "- `GET {$base}/layouts` — the Global Layout, each Layout with its `order`, `conditions` and";
+        $md[] = '  section per area, and every section with its `area` and `used_by`.';
+        $md[] = "- `GET {$base}/content/{id}` carries `avada_layout`: the Layout this post gets and the";
+        $md[] = '  section rendering each area (`from`: `layout` or `global`).';
+        $md[] = '';
+        $md[] = '**Check `post_content_shown` before editing a page.** When it is `false`, the page\'s content';
+        $md[] = 'area is a section with no Post Content element: the post\'s own content is not on its page,';
+        $md[] = 'and editing it changes nothing a visitor sees. The words are in that section. Likewise a';
+        $md[] = 'header or footer is one section shared by every page its Layout matches — say so in the note.';
+        $md[] = '';
+
+        if (!in_array(AvadaLayouts::LAYOUT_TYPE, $types, true)) {
+            $md[] = 'Layouts are not editable here. Describe a needed change in a note.';
+            $md[] = '';
+
+            return $md;
+        }
+
+        $md[] = 'Propose an `update` against a Layout with either field:';
+        $md[] = '';
+        $md[] = '- `layout_conditions` — the **whole** list, replacing it. Read the current one from';
+        $md[] = '  `/layouts`, change it, send it all back:';
+        $md[] = '';
+        $md[] = '  ```json';
+        $md[] = '  { "action": "update", "target_id": 31214, "fields": { "layout_conditions": [';
+        $md[] = '      { "rule": "specific_page", "object": 31200 },';
+        $md[] = '      { "rule": "specific_page", "object": 66491 } ] }, "note": "Why." }';
+        $md[] = '  ```';
+        $md[] = '';
+        $md[] = '  Rules: `front_page`; `singular_<post type>`; `specific_<post type>` and';
+        $md[] = '  `children_of_<post type>` with a post id as `object`; `taxonomy_of_<taxonomy>` with a term';
+        $md[] = '  id (posts carrying that term); `archive_of_<post type>`; `archive_of_<taxonomy>` with a term';
+        $md[] = '  id; `<taxonomy>` (all its archives); `all_archives`, `search_results`, `not_found`,';
+        $md[] = '  `date_archive`, `author_archive`, and `author_archive_` with a user id. `mode` is `include`';
+        $md[] = '  (default) or `exclude`; an exclude that matches keeps the Layout off that page.';
+        $md[] = '- `layout_sections` — `{"header": 31215}` sets that area only; `0` clears it. The section must';
+        $md[] = '  belong to that area.';
+        $md[] = '';
+        $md[] = 'New Layouts cannot be proposed: Avada applies a Layout as soon as it exists, even as a';
+        $md[] = 'draft. The Global Layout is read-only here.';
+        if (in_array(AvadaLayouts::SECTION_TYPE, $types, true)) {
+            $md[] = 'A new section can be: `create` with `post_type` `' . AvadaLayouts::SECTION_TYPE . '`, a';
+            $md[] = '`section_area`, and Fusion markup as `post_content`. It does nothing until it is published';
+            $md[] = 'and a Layout uses it.';
+        }
         $md[] = '';
 
         return $md;

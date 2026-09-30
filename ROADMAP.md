@@ -182,11 +182,13 @@ surface:
   from ACF's own groups, scalar kinds writable. Repeaters, flexible content and
   the object kinds are readable and refused on write; they are where the cost
   lives, and they wait.
-- [ ] **Avada, the rest.** The first slice ships (see below). Next: the page
+- [ ] **Avada, the rest.** Pages and Layouts ship (see below). Next: the page
   grid — adding or removing a column with the right `type`/`first`/`last`,
   which only a render can check; Avada page options (`_fusion` meta: title bar,
-  sidebars) as layout fields beside GeneratePress's; and Comments' front-end
-  markers verified on an Avada page. kuumalahde.fi runs Polylang Pro 3.6.6,
+  sidebars) as layout fields beside GeneratePress's; creating a Layout, which
+  needs a create that writes nothing until approval because Avada applies
+  draft Layouts; the Global Layout; and Comments' front-end markers verified
+  on an Avada page. kuumalahde.fi runs Polylang Pro 3.6.6,
   below the 3.7 `create_translation` needs, so Fusion translation is covered by
   the reader tests but not yet run end to end.
 - [ ] **Media upload by URL, sideloaded at approval.** Without it every created page
@@ -314,6 +316,16 @@ Kept short; the spec carries the current behaviour.
   translation adapter reported Polylang Pro 3.6 as WPML (its compatibility
   layer defines `icl_object_id`); and a Fusion review diff folds unchanged
   attribute lines instead of printing all hundred.
+
+- **Avada Layouts (2026-09-30).** `GET /layouts`, and `avada_layout` on
+  `GET /content/{id}`: which Layout a post gets, its section per area, and
+  `post_content_shown` — false when the Layout's content section has no Post
+  Content element, so editing the post changes nothing visible. The resolver
+  agreed with Avada's own `get_override('layout')` on all 31 kuumalahde.fi
+  posts sampled. Proposable: `layout_conditions` and `layout_sections` on an
+  existing Layout, written through Avada's own writer (every real Layout
+  round-trips), and `section_area` on a section. Creating a Layout is refused
+  because Avada matches draft Layouts on the live site.
 
 #### Polylang translations — design
 

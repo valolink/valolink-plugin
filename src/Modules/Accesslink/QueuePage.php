@@ -166,6 +166,10 @@ final class QueuePage
                     ));
                     ?>
                 </p>
+            <?php elseif ($change['post_type'] === AvadaLayouts::LAYOUT_TYPE) : ?>
+                <p class="notice notice-warning" style="padding:.5em 1em;margin:0 0 1em;">
+                    <?php esc_html_e('This is an Avada Layout. Its conditions decide which pages get its header, page title bar, content and footer; approving changes every page they match.', 'valolink-plugin'); ?>
+                </p>
             <?php elseif ($change['post_type'] === FusionSchema::SECTION_POST_TYPE) : ?>
                 <p class="notice notice-warning" style="padding:.5em 1em;margin:0 0 1em;">
                     <?php esc_html_e('This is an Avada Layout section — a header, footer or similar. Approving changes it on every page whose Layout uses it.', 'valolink-plugin'); ?>
@@ -346,7 +350,11 @@ final class QueuePage
             // diff can never disagree with the staleness hash about what
             // "current" means.
             $current = $applier->current_value((int) $change['target_id'], $field);
-            if (is_array($proposed)) {
+            if (AvadaLayouts::is_field($field)) {
+                // Read the same way current_value() reads the stored layout,
+                // so an unchanged area or condition is an unchanged line.
+                $proposed = (new AvadaLayouts())->format_proposed((int) $change['target_id'], $field, $proposed);
+            } elseif (is_array($proposed)) {
                 if (in_array($field, ElementReader::CONDITION_FIELDS, true)) {
                     // Same JSON shape current_value() produces, so equal
                     // conditions compare equal instead of always differing.

@@ -194,6 +194,18 @@ final class ChangeService
             return new \WP_Error('bad_post_type', 'post_type not permitted on this site.', ['status' => 400]);
         }
 
+        // A create is drafted at once, and Avada applies a Layout whatever its
+        // status: it loads them with post_status "any" and matches without
+        // looking. A proposed Layout would be live before anyone reviewed it.
+        if ($post_type === AvadaLayouts::LAYOUT_TYPE) {
+            return new \WP_Error(
+                'layout_create_refused',
+                'Avada applies a Layout as soon as it exists, even as a draft, so new Layouts are made in wp-admin. '
+                    . 'Propose layout_conditions or layout_sections on an existing Layout — see GET /layouts.',
+                ['status' => 400],
+            );
+        }
+
         $requested_status = sanitize_key((string) ($input['status'] ?? 'publish'));
         if (!in_array($requested_status, PostApplier::ALLOWED_STATUSES, true)) {
             return new \WP_Error('bad_status', 'Unsupported target status.', ['status' => 400]);
@@ -1553,6 +1565,13 @@ final class ChangeService
 
             if ($field === PostApplier::MEDIA_FIELD) {
                 $out[$field] = (int) $value;
+                continue;
+            }
+
+            if (AvadaLayouts::is_field($field)) {
+                // Lists and maps; AvadaLayouts checks them at validate time
+                // against what exists on the site.
+                $out[$field] = is_array($value) ? $value : (string) $value;
                 continue;
             }
 

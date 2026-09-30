@@ -288,6 +288,12 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        register_rest_route(self::REST_NAMESPACE, '/layouts', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_layouts'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
         register_rest_route(self::REST_NAMESPACE, '/elements', [
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => [$this, 'handle_elements'],
@@ -430,6 +436,8 @@ final class AccesslinkModule implements Module
                 'blocks'         => true,
                 // Avada pages: the same paths and actions, Fusion markup rules.
                 'fusion'         => FusionSchema::active(),
+                'avada_layouts'  => AvadaLayouts::available()
+                    && in_array(AvadaLayouts::LAYOUT_TYPE, $service->allowed_post_types(), true),
                 'menus'          => $service->menus_enabled(),
                 'elements'       => ElementReader::available()
                     && in_array(ElementReader::POST_TYPE, $service->allowed_post_types(), true),
@@ -580,6 +588,21 @@ final class AccesslinkModule implements Module
             return $result;
         }
         $result['editable'] = $this->service()->menus_enabled();
+
+        return new \WP_REST_Response($result);
+    }
+
+    public function handle_layouts(): \WP_REST_Response|\WP_Error
+    {
+        if (!AvadaLayouts::available()) {
+            return new \WP_Error('layouts_unavailable', 'Avada\'s Layout Builder is not active on this site.', ['status' => 404]);
+        }
+        $result = (new AvadaLayouts())->list();
+        $types = $this->service()->allowed_post_types();
+        $result['editable'] = [
+            'layouts'  => in_array(AvadaLayouts::LAYOUT_TYPE, $types, true),
+            'sections' => in_array(AvadaLayouts::SECTION_TYPE, $types, true),
+        ];
 
         return new \WP_REST_Response($result);
     }

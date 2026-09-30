@@ -157,6 +157,22 @@ final class ContentReader
             $out['layout'] = (new LayoutMeta())->read($id);
         }
 
+        // Avada decides header, title bar, content and footer per page. Say
+        // which Layout this post gets and whether its own content is on its
+        // page at all; for a Layout or a section, say what it is.
+        if (AvadaLayouts::available()) {
+            $layouts = new AvadaLayouts();
+            if ($post->post_type === AvadaLayouts::LAYOUT_TYPE) {
+                foreach (AvadaLayouts::LAYOUT_FIELDS as $field) {
+                    $out[$field] = $layouts->read_field($id, $field);
+                }
+            } elseif ($post->post_type === AvadaLayouts::SECTION_TYPE) {
+                $out['section_area'] = AvadaLayouts::area_of($id);
+            } else {
+                $out['avada_layout'] = $layouts->for_post($post);
+            }
+        }
+
         // An Element's behaviour, in the same names an update may send back.
         if ($post->post_type === ElementReader::POST_TYPE && ElementReader::available()) {
             $described = (new ElementReader())->get($id);

@@ -79,6 +79,14 @@ final class PostApplier
             && ($post_types === null || in_array(ElementReader::POST_TYPE, $post_types, true))) {
             $fields = array_merge($fields, ElementReader::WRITABLE);
         }
+        if (AvadaLayouts::available()) {
+            if ($post_types === null || in_array(AvadaLayouts::LAYOUT_TYPE, $post_types, true)) {
+                $fields = array_merge($fields, AvadaLayouts::LAYOUT_FIELDS);
+            }
+            if ($post_types === null || in_array(AvadaLayouts::SECTION_TYPE, $post_types, true)) {
+                $fields = array_merge($fields, AvadaLayouts::SECTION_FIELDS);
+            }
+        }
         if (ProductApplier::available()
             && ($post_types === null || in_array(ProductApplier::POST_TYPE, $post_types, true))) {
             $fields = array_merge($fields, array_keys(ProductApplier::TERM_FIELDS), ProductApplier::MERCHANDISING_FIELDS);
@@ -224,6 +232,10 @@ final class PostApplier
             return $post->post_type === ElementReader::POST_TYPE
                 ? (new ElementReader())->read_field($post_id, $field)
                 : '';
+        }
+
+        if (AvadaLayouts::is_field($field)) {
+            return AvadaLayouts::available() ? (new AvadaLayouts())->read_field($post_id, $field) : '';
         }
 
         return '';
@@ -455,6 +467,26 @@ final class PostApplier
             }
         }
 
+        // A Layout's post_content is Avada's JSON, written only through the
+        // layout fields, never as a body an agent composed.
+        if ($post_type === AvadaLayouts::LAYOUT_TYPE && array_key_exists('post_content', $fields)) {
+            return new \WP_Error(
+                'layout_body',
+                'A Layout\'s content is Avada\'s own data. Propose layout_conditions and layout_sections instead.',
+                ['status' => 400],
+            );
+        }
+        $avada = array_filter($fields, static fn (string $f): bool => AvadaLayouts::is_field($f), ARRAY_FILTER_USE_KEY);
+        if ($avada !== []) {
+            if (!AvadaLayouts::available()) {
+                return new \WP_Error('layouts_unavailable', 'Avada\'s Layout Builder is not active here.', ['status' => 400]);
+            }
+            $check = (new AvadaLayouts())->normalise_fields($post_type, $avada, $post_id);
+            if (is_wp_error($check)) {
+                return $check;
+            }
+        }
+
         $product_fields = array_intersect_key($fields, array_flip(ProductApplier::FIELDS));
         if ($product_fields !== []) {
             if ($post_type !== ProductApplier::POST_TYPE || !ProductApplier::available()) {
@@ -578,6 +610,23 @@ final class PostApplier
                 return $normalised;
             }
             (new ElementReader())->write_fields($post_id, $normalised);
+            $wrote = true;
+        }
+
+        $avada = array_filter($fields, static fn (string $f): bool => AvadaLayouts::is_field($f), ARRAY_FILTER_USE_KEY);
+        if ($avada !== []) {
+            $layouts = new AvadaLayouts();
+            // Normalised again against the layout as it is now: its other
+            // areas are kept from the current state, which the staleness
+            // hash has just confirmed is what the proposal was made against.
+            $normalised = $layouts->normalise_fields((string) get_post_type($post_id), $avada, $post_id);
+            if (is_wp_error($normalised)) {
+                return $normalised;
+            }
+            $written = $layouts->write_fields($post_id, $normalised);
+            if (is_wp_error($written)) {
+                return $written;
+            }
             $wrote = true;
         }
 
@@ -709,7 +758,7 @@ final class PostApplier
      * user at all — so without this it stripped every <svg> back out again,
      * silently, undoing the exact thing ContentSanitizer exists to keep.
      */
-    private static function without_kses(callable $save): mixed
+    public static function without_kses(callable $save): mixed
     {
         $was_on = has_filter('content_save_pre', 'wp_filter_post_kses');
         if ($was_on) {
