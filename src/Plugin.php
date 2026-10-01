@@ -12,6 +12,7 @@ use Valolink\Plugin\Modules\Comments\CommentsModule;
 use Valolink\Plugin\Modules\Email\EmailModule;
 use Valolink\Plugin\Modules\EngineLink\EngineLinkModule;
 use Valolink\Plugin\Modules\Logging\LoggingModule;
+use Valolink\Plugin\Modules\MaintenancePage\MaintenancePageModule;
 use Valolink\Plugin\Modules\Scripts\ScriptsModule;
 use Valolink\Plugin\Modules\Security\SecurityModule;
 use Valolink\Plugin\Modules\Staging\MuPluginInstaller;
@@ -71,6 +72,9 @@ final class Plugin
 
     public static function on_deactivate(): void
     {
+        // A file in wp-content outlives the plugin otherwise.
+        MaintenancePageModule::on_disable();
+
         foreach (_get_cron_array() ?: [] as $timestamp => $hooks) {
             foreach (array_keys($hooks) as $hook) {
                 if (is_string($hook) && str_starts_with($hook, 'valolink_')) {
@@ -130,6 +134,15 @@ final class Plugin
             label: static fn (): string => __('Scripts', 'valolink-plugin'),
             description: static fn (): string => __('Manage JavaScript snippets and external script URLs with per-snippet loading strategy (head/async/defer/footer/on-interaction/on-scroll) and frontend/admin/logged-in/logged-out placement. Configure under Valolink → Scripts.', 'valolink-plugin'),
             class: ScriptsModule::class,
+            default_enabled: false,
+            constructor_args: [$settings],
+        ));
+
+        $registry->register(new ModuleManifest(
+            id: MaintenancePageModule::MODULE_ID,
+            label: static fn (): string => __('Maintenance page', 'valolink-plugin'),
+            description: static fn (): string => __('The customer\'s logo, colours and fonts on the page visitors see while WordPress updates, instead of the grey "Briefly unavailable for scheduled maintenance" box. Its own settings, optionally imported from Avada or GeneratePress. Configure under Valolink → Maintenance page.', 'valolink-plugin'),
+            class: MaintenancePageModule::class,
             default_enabled: false,
             constructor_args: [$settings],
         ));

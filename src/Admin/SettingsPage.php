@@ -179,10 +179,20 @@ final class SettingsPage
             : [];
 
         foreach ($this->registry->all() as $manifest) {
-            $this->settings->set_module_enabled(
-                $manifest->id,
-                in_array($manifest->id, $submitted, true),
-            );
+            $was = $this->settings->is_module_enabled($manifest->id);
+            $now = in_array($manifest->id, $submitted, true);
+            $this->settings->set_module_enabled($manifest->id, $now);
+
+            // A module switched off is not loaded again, so one that leaves
+            // something outside the database — a file in wp-content — is
+            // told here, while it can still clean up.
+            if ($was && !$now && method_exists($manifest->class, 'on_disable')) {
+                try {
+                    ($manifest->class)::on_disable();
+                } catch (\Throwable $e) {
+                    error_log(sprintf('[valolink-plugin] module "%s" failed to clean up on disable: %s', $manifest->id, $e->getMessage()));
+                }
+            }
         }
 
         if (!empty($_POST['valolink_notice_users_present'])) {
