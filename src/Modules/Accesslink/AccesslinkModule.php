@@ -74,6 +74,7 @@ final class AccesslinkModule implements Module
         add_action('admin_post_' . self::REGEN_ACTION, [$this, 'handle_regen_key']);
         add_action('admin_post_' . self::NOTE_ACTION, [$this, 'handle_note_admin']);
         add_action('rest_api_init', [$this, 'register_routes']);
+        (new Abilities($this, new AccesslinkAuth($this->settings)))->register();
 
         add_action(self::PRUNE_HOOK, [$this, 'handle_prune']);
         if (!wp_next_scheduled(self::PRUNE_HOOK)) {

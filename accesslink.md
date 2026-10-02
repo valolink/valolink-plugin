@@ -287,6 +287,12 @@ Golden tests: `tests/block-compiler-wp.php` compiles a fixture per node kind wit
 
 **Style edits ship switched off** (*Allow style edits*, shown only where GB Pro is active): a style or token changes every page that uses it. `capabilities.styles`, `style_edits` and `design_tokens` report what the site has; the two actions drop out of `actions` when off.
 
+### Abilities (WordPress 6.9+ Abilities API, MCP)
+
+Where WordPress has the Abilities API, Accesslink registers six abilities in the category `valolink-accesslink`: `valolink/accesslink-guide` ({section?}), `valolink/design-system` ({usage?}), `valolink/read-content` ({id}), `valolink/compile-section` ({tree, seed?}), `valolink/propose-change` (the `POST /changes` body, plus an optional `agent` label) and `valolink/change-status` ({id}). Each passes through to the REST handler behind the matching route, so the two cannot drift. They are listed and run at `/wp-json/wp-abilities/v1/…`, and WordPress' MCP adapter offers them to MCP clients (meta `public`, `show_in_rest`, `mcp.public`; annotations mark the reads `readonly`).
+
+Who: a logged-in WordPress user (an application password from an MCP client) who can `edit_others_posts` — Editors and above, because Accesslink reads drafts and private content that a Contributor's `edit_posts` does not cover. No Accesslink key is involved; `propose-change` also needs the site's writes switch, and a proposal only lands in the queue, with `requested_by` = `wp:<login> <agent>`. Approving stays in wp-admin. `tests/abilities-wp.php` (run once with writes off and once on).
+
 ### GET /elements
 
 GeneratePress Elements are ordinary posts of the `gp_elements` type, so once an operator adds that type to *Allowed post types* every existing read and write applies to them unchanged. What is not ordinary is what they mean: an Element is site furniture — a hero, a footer, a script injected into `wp_head` — and its behaviour lives in `_generate_*` postmeta, not in its content.

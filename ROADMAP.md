@@ -177,6 +177,10 @@ surface:
   with global styles only (GB Element/Text, core heading/paragraph/list/image, synced
   patterns with slot values), serialized by WordPress itself. Golden tests against
   the live editor: `tests/block-compiler-wp.php` + `tests/editor-validate.cjs`.
+- [x] **Abilities API / MCP** (2026-10-02). Six abilities (guide, design system, read
+  content, compile, propose, change status) passing through to the REST handlers; Editors
+  and above via application passwords, proposals still queued. `tests/abilities-wp.php`.
+  Not yet: installing WordPress' MCP adapter plugin on a site and connecting an agent.
 - [ ] **`wp_block` (synced patterns).** Just a post type — but editing one changes
   every page using it, so the queue has to show "used on N pages" or approval is
   blind.
