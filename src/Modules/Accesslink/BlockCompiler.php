@@ -335,6 +335,24 @@ final class BlockCompiler
 
             return null;
         }
+        // An unsynced pattern is a starting point: its blocks are copied into
+        // the page, to be edited there.
+        if (get_post_meta($post->ID, 'wp_pattern_sync_status', true) === 'unsynced') {
+            if (!empty($node['slots'])) {
+                $this->issues[] = sprintf('%s: "%s" is unsynced — it is copied into the page and has no slots; edit the copy instead.', $path, $post->post_title);
+
+                return null;
+            }
+            $copied = array_values(array_filter(parse_blocks((string) $post->post_content), static fn (array $b): bool => $b['blockName'] !== null));
+            if (count($copied) !== 1) {
+                $this->issues[] = sprintf('%s: "%s" has %d top-level blocks; use its markup from GET /content/%d directly.', $path, $post->post_title, count($copied), $post->ID);
+
+                return null;
+            }
+
+            return $this->reid($copied[0], $path);
+        }
+
         $slots = [];
         foreach ($this->reader->patterns() as $pattern) {
             if ($pattern['id'] === (int) $post->ID) {
@@ -416,6 +434,19 @@ final class BlockCompiler
         }
 
         return $clean;
+    }
+
+    /** A copied block tree with fresh GenerateBlocks uniqueIds, so two copies on a page do not share them. */
+    private function reid(array $block, string $path): array
+    {
+        if (isset($block['attrs']['uniqueId']) && str_starts_with((string) $block['blockName'], 'generateblocks/')) {
+            $block['attrs']['uniqueId'] = $this->unique_id($path . '#' . $block['attrs']['uniqueId']);
+        }
+        foreach ($block['innerBlocks'] as $i => $inner) {
+            $block['innerBlocks'][$i] = $this->reid($inner, $path . '.' . $i);
+        }
+
+        return $block;
     }
 
     /** 8 lowercase hex, unique within this compile, stable for the same seed and path. */

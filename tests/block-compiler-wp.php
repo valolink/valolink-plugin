@@ -121,6 +121,17 @@ try {
         $r = $compiler->compile($tree, 'bad');
         check('refused: ' . $name, is_wp_error($r), is_wp_error($r) ? '' : 'compiled');
     }
+    // An unsynced pattern is copied into the page, with fresh GenerateBlocks ids.
+    $starter = $compiler->compile(['element' => 'section', 'class' => 'vlc-section', 'children' => [['text' => 'Pohja', 'class' => 'vlc-eyebrow']]], 'starter');
+    $unsynced = wp_insert_post(['post_type' => 'wp_block', 'post_status' => 'publish', 'post_title' => 'vlc starter', 'post_content' => $starter['markup']]);
+    update_post_meta($unsynced, 'wp_pattern_sync_status', 'unsynced');
+    $copy = $compiler->compile([['pattern' => $unsynced], ['pattern' => $unsynced]], 'copy');
+    $ids = is_wp_error($copy) ? [] : (preg_match_all('/"uniqueId":"([0-9a-f]{8})"/', $copy['markup'], $m) ? $m[1] : []);
+    check('unsynced pattern copied, not referenced', !is_wp_error($copy) && !str_contains($copy['markup'], 'wp:block ') && substr_count($copy['markup'], '<p class="gb-text vlc-eyebrow">Pohja</p>') === 2, is_wp_error($copy) ? $copy->get_error_message() : '');
+    check('copies get their own uniqueIds', count($ids) === 4 && count(array_unique($ids)) === 4, implode(',', $ids));
+    $out['unsynced-copied-twice'] = is_wp_error($copy) ? '' : $copy['markup'];
+    check('unsynced pattern refuses slots', is_wp_error($compiler->compile(['pattern' => $unsynced, 'slots' => ['X' => 'y']], 'x')));
+
     $r = $compiler->compile(['paragraph' => 'x<script>alert(1)</script><img src=x onerror=alert(1)>y'], 'strip');
     check('non-inline markup stripped', !is_wp_error($r) && !str_contains($r['markup'], '<script') && !str_contains($r['markup'], 'onerror'), is_wp_error($r) ? $r->get_error_message() : $r['markup']);
 } finally {
