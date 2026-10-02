@@ -25,7 +25,10 @@ function check(string $name, bool $ok, string $detail = ''): void
     }
 }
 
-$names = ['valolink/accesslink-guide', 'valolink/design-system', 'valolink/read-content', 'valolink/compile-section', 'valolink/propose-change', 'valolink/change-status'];
+$names = ['valolink/accesslink-guide', 'valolink/design-system', 'valolink/read-content', 'valolink/read-structure', 'valolink/compile-section', 'valolink/propose-change', 'valolink/change-status'];
+if (\Valolink\Plugin\Modules\Accesslink\AvadaLayouts::available()) {
+    $names[] = 'valolink/avada-layouts';
+}
 foreach ($names as $name) {
     check('registered: ' . $name, wp_get_ability($name) !== null);
 }
@@ -64,6 +67,12 @@ try {
     if ($page) {
         $read = wp_get_ability('valolink/read-content')->execute(['id' => $page->ID]);
         check('read content runs', is_array($read) && (int) ($read['id'] ?? 0) === $page->ID, is_wp_error($read) ? $read->get_error_message() : '');
+        $structure = wp_get_ability('valolink/read-structure')->execute(['id' => $page->ID]);
+        check('read structure runs', is_array($structure) && isset($structure['blocks'], $structure['format']), is_wp_error($structure) ? $structure->get_error_message() : '');
+    }
+    if (wp_get_ability('valolink/avada-layouts') !== null) {
+        $layouts = wp_get_ability('valolink/avada-layouts')->execute([]);
+        check('avada layouts runs', is_array($layouts) && isset($layouts['layouts'], $layouts['areas']), is_wp_error($layouts) ? $layouts->get_error_message() : '');
     }
 
     // The module's settings are read once per request, so the writes switch is

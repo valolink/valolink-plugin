@@ -180,7 +180,10 @@ surface:
 - [x] **Abilities API / MCP** (2026-10-02). Six abilities (guide, design system, read
   content, compile, propose, change status) passing through to the REST handlers; Editors
   and above via application passwords, proposals still queued. `tests/abilities-wp.php`.
-  Not yet: installing WordPress' MCP adapter plugin on a site and connecting an agent.
+  Plus `read-structure` (block or Fusion element paths, without which path edits were
+  unreachable here) and, where Avada's Layout Builder runs, `avada-layouts`.
+  Not yet: installing WordPress' MCP adapter plugin on a site and connecting an agent;
+  `/preview` and `/validate` have no ability either, so an abilities agent cannot dry-run.
 - [ ] **`wp_block` (synced patterns).** Just a post type — but editing one changes
   every page using it, so the queue has to show "used on N pages" or approval is
   blind.

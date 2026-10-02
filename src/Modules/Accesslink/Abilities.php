@@ -68,6 +68,24 @@ final class Abilities
             'additionalProperties' => false,
         ], ['type' => 'object'], $read, fn (array $in) => $this->module->handle_content_get($this->request('GET', ['id' => (int) $in['id']])));
 
+        // Path-addressed edits — update_text, insert_block, translations — need
+        // the paths, and the REST route for them takes only the Accesslink
+        // key. Block pages and Avada (Fusion) pages alike.
+        $this->ability('valolink/read-structure', 'Read a page\'s blocks or elements', 'The page\'s blocks — or, on an Avada page, its Fusion elements — as addressable paths with their text, for update_text, insert_block, delete_block, move_block and create_translation.', [
+            'type' => 'object',
+            'properties' => ['id' => ['type' => 'integer', 'minimum' => 1]],
+            'required' => ['id'],
+            'additionalProperties' => false,
+        ], ['type' => 'object'], $read, fn (array $in) => $this->module->handle_content_blocks($this->request('GET', ['id' => (int) $in['id']])));
+
+        if (AvadaLayouts::available()) {
+            $this->ability('valolink/avada-layouts', 'Avada Layouts', 'Which header, page title bar, content and footer each Avada Layout gives the pages its conditions match, and every Layout Section with where it is used.', [
+                'type' => 'object',
+                'properties' => new \stdClass(),
+                'additionalProperties' => false,
+            ], ['type' => 'object'], $read, fn (array $in) => $this->module->handle_layouts());
+        }
+
         $this->ability('valolink/compile-section', 'Compile a section', 'Turn a short section description (element, heading, paragraph, text, button, list, image, pattern nodes) into block markup styled with the site\'s global styles. Writes nothing.', [
             'type' => 'object',
             'properties' => [

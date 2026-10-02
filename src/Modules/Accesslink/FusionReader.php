@@ -263,6 +263,14 @@ final class FusionReader implements DocumentReader
         }
 
         $markup = trim($markup);
+        // Block markup — what POST /compile produces — has no place in a
+        // Fusion page; say so rather than report "parsed 0 elements".
+        if (str_contains($markup, '<!-- wp:')) {
+            return new \WP_Error(
+                'wrong_builder',
+                'This page is built with Avada\'s Fusion Builder, so block markup (from /compile or elsewhere) cannot be inserted. Insert a Fusion element shortcode instead.',
+            );
+        }
         $new = $this->real($this->parse($markup));
         if (!$this->is_one($markup)) {
             return new \WP_Error(

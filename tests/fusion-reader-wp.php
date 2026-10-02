@@ -119,6 +119,7 @@ check('another tab goes among tabs', is_string($r->insert_block($page, '0.0.1.0.
 check('markup with loose text is refused', err($r->insert_block($page, '0.0.0.1', 'after', '[fusion_text]x')) === 'not_one_block');
 check('a tag that would pair with its neighbour\'s closer is refused', err($r->insert_block($page, '0.0.0.1', 'after', '[fusion_text]')) === 'block_roundtrip_failed');
 check('a tab cannot be inserted into a column', err($r->insert_block($page, '0.0.0.0', 'after', '[fusion_tab title="x"]y[/fusion_tab]')) === 'wrong_level');
+check('block markup is refused with the reason', err($r->insert_block($page, '0.0.0.1', 'after', "<!-- wp:paragraph -->\n<p>x</p>\n<!-- /wp:paragraph -->")) === 'wrong_builder');
 check('two elements at once are refused', err($r->insert_block($page, '0.0.0.1', 'after', $text('a') . $text('b'))) === 'not_one_block');
 check('a code element cannot be inserted', err($r->insert_block($page, '0.0.0.1', 'after', '[fusion_code]PHNjcmlwdD4=[/fusion_code]')) === 'code_element');
 check('an unregistered element is refused', err($r->insert_block($page, '0.0.0.1', 'after', '[fusion_nonexistent]x[/fusion_nonexistent]')) === 'block_not_available');
