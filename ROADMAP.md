@@ -166,6 +166,13 @@ surface:
   anything. Two entries in `PostApplier::POST_FIELDS`. Ship the rename together
   with redirects — a silent rename is worse than no rename. (`slug` on `create`
   is the redirect-free case and already ships.)
+- [x] **Design system: tokens, global styles, patterns** (2026-10-02). `GET /styles`,
+  a guide section listing them from the site, and `set_style` / `set_tokens`
+  proposals for GenerateBlocks Pro global classes and design tokens, behind *Allow
+  style edits*. CSS compiled server-side by `StyleCompiler` (GB compiles in the
+  browser only), tokens through GB's checksummed `Styles_Root::save()`. Built for
+  kuumalahde's rebuild (enginelink `docs/projects/kuumalahde-folds.md` §8);
+  `tests/style-compiler.php`, `tests/styles-wp.php`.
 - [ ] **`wp_block` (synced patterns).** Just a post type — but editing one changes
   every page using it, so the queue has to show "used on N pages" or approval is
   blind.

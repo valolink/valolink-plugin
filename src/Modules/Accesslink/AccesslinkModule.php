@@ -282,6 +282,15 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        // The design system agent-written content is built from: tokens,
+        // global styles, block patterns. Readable wherever GenerateBlocks Pro
+        // is; proposable only when the operator switches it on.
+        register_rest_route(self::REST_NAMESPACE, '/styles', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_styles'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
         register_rest_route(self::REST_NAMESPACE, '/menus/(?P<id>\d+)', [
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => [$this, 'handle_menu'],
@@ -422,6 +431,9 @@ final class AccesslinkModule implements Module
                     if ($action === ChangeRepository::ACTION_UPDATE_MENU) {
                         return $service->menus_enabled();
                     }
+                    if (in_array($action, ChangeRepository::STYLE_ACTIONS, true)) {
+                        return $service->styles_enabled();
+                    }
 
                     return true;
                 },
@@ -439,6 +451,9 @@ final class AccesslinkModule implements Module
                 'avada_layouts'  => AvadaLayouts::available()
                     && in_array(AvadaLayouts::LAYOUT_TYPE, $service->allowed_post_types(), true),
                 'menus'          => $service->menus_enabled(),
+                'styles'         => StyleReader::available(),
+                'style_edits'    => $service->styles_enabled(),
+                'design_tokens'  => StyleReader::tokens_available(),
                 'elements'       => ElementReader::available()
                     && in_array(ElementReader::POST_TYPE, $service->allowed_post_types(), true),
                 'layout'         => LayoutMeta::available(),
@@ -579,6 +594,29 @@ final class AccesslinkModule implements Module
         $result['editable'] = $this->service()->menus_enabled();
 
         return new \WP_REST_Response($result);
+    }
+
+    public function handle_styles(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        if (!StyleReader::available()) {
+            return new \WP_Error('styles_unavailable', 'This site has no GenerateBlocks Pro global styles.', ['status' => 404]);
+        }
+        $reader = new StyleReader();
+        $usage = (bool) $request->get_param('usage');
+        $styles = array_map(static function (array $style) use ($reader, $usage): array {
+            if ($usage) {
+                $style['used_on'] = $reader->class_usage(ltrim($style['selector'], '.'), 0)['count'];
+            }
+
+            return $style;
+        }, $reader->styles());
+
+        return new \WP_REST_Response([
+            'tokens'   => $reader->tokens(),
+            'styles'   => $styles,
+            'patterns' => $reader->patterns(),
+            'editable' => $this->service()->styles_enabled(),
+        ]);
     }
 
     public function handle_menu(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
@@ -1196,6 +1234,10 @@ final class AccesslinkModule implements Module
         // Only when the field was on the form. It is rendered only while
         // WooCommerce is active, and saving the settings with Woo switched off
         // must not quietly reset it.
+        // Same reason: rendered only while GenerateBlocks Pro is active.
+        if (!empty($_POST['styles_field'])) {
+            $values['allow_style_edits'] = !empty($_POST['allow_style_edits']);
+        }
         if (!empty($_POST['commerce_field'])) {
             $values['allow_commerce_edits'] = !empty($_POST['allow_commerce_edits']);
         }

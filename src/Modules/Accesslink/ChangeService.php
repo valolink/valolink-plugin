@@ -133,6 +133,18 @@ final class ChangeService
             );
         }
 
+        if ($action === ChangeRepository::ACTION_SET_STYLE) {
+            return $this->announce(
+                $this->propose_set_style($input, $note_early, $requested_by, $idempotency_key),
+            );
+        }
+
+        if ($action === ChangeRepository::ACTION_SET_TOKENS) {
+            return $this->announce(
+                $this->propose_set_tokens($input, $note_early, $requested_by, $idempotency_key),
+            );
+        }
+
         if ($action === ChangeRepository::ACTION_SET_LANGUAGE) {
             return $this->announce(
                 $this->propose_set_language($input, $note_early, $requested_by, $idempotency_key),
@@ -561,6 +573,138 @@ final class ChangeService
             'allow_menu_edits',
             false,
         );
+    }
+
+    /**
+     * Global styles and design tokens change every page that uses them, so
+     * proposing them is opt-in per site, and needs GenerateBlocks Pro.
+     */
+    public function styles_enabled(): bool
+    {
+        return StyleReader::available() && (bool) $this->settings->get_module_setting(
+            AccesslinkModule::MODULE_ID,
+            'allow_style_edits',
+            false,
+        );
+    }
+
+    private function styles_refusal(): \WP_Error
+    {
+        return new \WP_Error(
+            'styles_disabled',
+            StyleReader::available()
+                ? 'Proposing global styles and tokens is switched off for this site. An operator can enable it under Valolink → Accesslink.'
+                : 'This site has no GenerateBlocks Pro global styles.',
+            ['status' => 403],
+        );
+    }
+
+    /**
+     * Create or change one GenerateBlocks Pro global style (a class).
+     *
+     * The whole style object is sent, as GET /styles returns it: what is left
+     * out is removed. Every page using the class changes on approval, so the
+     * card shows the CSS diff and how many posts use it.
+     */
+    private function propose_set_style(
+        array $input,
+        ?string $note,
+        ?string $requested_by,
+        ?string $idempotency_key,
+    ): array|\WP_Error {
+        if (!$this->styles_enabled()) {
+            return $this->styles_refusal();
+        }
+        $selector = trim((string) ($input['selector'] ?? ''));
+        $styles = $input['styles'] ?? null;
+        $category = sanitize_text_field((string) ($input['category'] ?? ''));
+
+        $applier = new StyleApplier();
+        $valid = $applier->validate_style($selector, $styles, $category);
+        if (is_wp_error($valid)) {
+            return $valid;
+        }
+
+        $reader = new StyleReader();
+        $existing = $reader->find($selector);
+        if ($existing !== null && !array_key_exists('category', $input)) {
+            $category = $existing['category'];
+        }
+        $id = $this->repo->insert([
+            'action'          => ChangeRepository::ACTION_SET_STYLE,
+            'entity_type'     => 'style',
+            'target_id'       => $existing['id'] ?? 0,
+            'post_type'       => StyleReader::POST_TYPE,
+            'base_hash'       => $reader->style_hash($selector),
+            'payload'         => [
+                'selector' => $selector,
+                'styles'   => $styles,
+                'category' => $category,
+                'css'      => StyleCompiler::compile($selector, $styles),
+                'creates'  => $existing === null,
+            ],
+            'summary'         => $this->summarize(sprintf('Global style %s (%s)', $selector, $existing === null ? 'new' : 'changed')),
+            'note'            => $note,
+            'requested_by'    => $requested_by,
+            'idempotency_key' => $idempotency_key,
+        ]);
+
+        $this->audit('accesslink_proposed', [
+            'change_id' => $id,
+            'action'    => ChangeRepository::ACTION_SET_STYLE,
+            'selector'  => $selector,
+            'by'        => $requested_by,
+        ]);
+
+        return $this->repo->find($id) ?? [];
+    }
+
+    /**
+     * Add or change design tokens on the managed :root style. Only the listed
+     * tokens change; the rest of the registry stays as it is.
+     */
+    private function propose_set_tokens(
+        array $input,
+        ?string $note,
+        ?string $requested_by,
+        ?string $idempotency_key,
+    ): array|\WP_Error {
+        if (!$this->styles_enabled()) {
+            return $this->styles_refusal();
+        }
+        $applier = new StyleApplier();
+        $rows = $applier->validate_tokens($input['tokens'] ?? null);
+        if (is_wp_error($rows)) {
+            return $rows;
+        }
+
+        $reader = new StyleReader();
+        $names = array_column($rows, 'name');
+        $id = $this->repo->insert([
+            'action'          => ChangeRepository::ACTION_SET_TOKENS,
+            'entity_type'     => 'tokens',
+            'target_id'       => 0,
+            'post_type'       => StyleReader::POST_TYPE,
+            'base_hash'       => $reader->tokens_hash(),
+            'payload'         => ['tokens' => $rows],
+            'summary'         => $this->summarize(sprintf(
+                'Design tokens: %s%s',
+                implode(', ', array_slice($names, 0, 6)),
+                count($names) > 6 ? sprintf(' and %d more', count($names) - 6) : '',
+            )),
+            'note'            => $note,
+            'requested_by'    => $requested_by,
+            'idempotency_key' => $idempotency_key,
+        ]);
+
+        $this->audit('accesslink_proposed', [
+            'change_id' => $id,
+            'action'    => ChangeRepository::ACTION_SET_TOKENS,
+            'tokens'    => $names,
+            'by'        => $requested_by,
+        ]);
+
+        return $this->repo->find($id) ?? [];
     }
 
     /**
@@ -1269,6 +1413,45 @@ final class ChangeService
             // A menu is not a post, so no caching plugin hears about this. The
             // change would be real and invisible until something else cleared
             // the cache.
+            if (!is_wp_error($result)) {
+                CacheCleaner::purge_site();
+            }
+        } elseif ($change['action'] === ChangeRepository::ACTION_SET_STYLE) {
+            if (!$this->styles_enabled()) {
+                return $this->fail($id, 'Proposing global styles was switched off, or GenerateBlocks Pro is gone, since this was proposed.');
+            }
+            $selector = (string) ($change['payload']['selector'] ?? '');
+            if (!hash_equals((string) $change['base_hash'], (new StyleReader())->style_hash($selector))) {
+                return $this->mark_stale(
+                    $id,
+                    $target_id,
+                    'The style changed after this was proposed, so applying it would undo that. Re-read GET /styles and propose again.',
+                );
+            }
+            $result = (new StyleApplier())->apply_style(
+                $selector,
+                (array) ($change['payload']['styles'] ?? []),
+                (string) ($change['payload']['category'] ?? ''),
+            );
+            if (!is_wp_error($result)) {
+                $this->repo->update($id, ['target_id' => $result]);
+                $target_id = $result;
+                // Global CSS changes every page without touching a post, so no
+                // caching plugin hears about it.
+                CacheCleaner::purge_site();
+            }
+        } elseif ($change['action'] === ChangeRepository::ACTION_SET_TOKENS) {
+            if (!$this->styles_enabled()) {
+                return $this->fail($id, 'Proposing design tokens was switched off, or GenerateBlocks Pro is gone, since this was proposed.');
+            }
+            if (!hash_equals((string) $change['base_hash'], (new StyleReader())->tokens_hash())) {
+                return $this->mark_stale(
+                    $id,
+                    $target_id,
+                    'The design tokens changed after this was proposed, so applying it would undo that. Re-read GET /styles and propose again.',
+                );
+            }
+            $result = (new StyleApplier())->apply_tokens((array) ($change['payload']['tokens'] ?? []));
             if (!is_wp_error($result)) {
                 CacheCleaner::purge_site();
             }

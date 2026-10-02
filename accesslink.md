@@ -71,6 +71,8 @@ Approval is the only gate, so every action has to be reviewable at the scope it 
 | `set_language` | a statement of the language being assigned; nothing about the content changes | — |
 | `sync_translation_meta` | the missing keys and the values they will take | — |
 | `update_menu` | both sides as an indented `label → target` tree | — (the menu, not a page) |
+| `set_style` | the class's CSS before and after, one rule per line, and how many posts use the class (with the first ten) | — (a style has no page; its reach is the point) |
+| `set_tokens` | each token's value before and after, with its type and how often it is used | — |
 
 The **block outline** is the tree as indented `name — first words` lines. Paths are deliberately left out: an insert or delete renumbers every later sibling, so including them would mark the rest of the document as changed and bury the line that actually moved. It is folded by default — on a GenerateBlocks page it runs to a hundred lines, and the block diff above it already shows the line that changed.
 
@@ -264,6 +266,18 @@ Whole-tree rather than per-item because that is the only form in which a menu is
 This is what the menu work was actually waiting on. The write was never the hard part; approving a menu change was, because a menu diffed as JSON is unreadable and diffed as prose says nothing. The queue renders both sides as an indented `label → target` tree, which makes the edit a translation produces — same label, different destination — visible at a glance.
 
 **Menus ship switched off.** They are site structure rather than content, so a separate *Allow menu edits* toggle gates the action, `capabilities.menus` reports it, and `update_menu` drops out of the advertised `actions` when it is off. Creating a menu and assigning it to a theme location are deliberately still outside the API; those are one-time structural decisions, where repointing items is the repetitive work an agent should do.
+
+### GET /styles · actions `set_style` · `set_tokens`
+
+Where GenerateBlocks Pro is active, `GET /styles` returns the design system agent-written content is built from: `tokens` (the managed `:root` style of GB Pro 2.8+: name, value, type, label, category, scope; a custom property on `:root` without a registry row is listed as `unregistered`), `styles` (published global classes in cascade order: selector, category, the style object, compiled CSS; `?usage=1` adds `used_on`), and `patterns` (`wp_block`: synced or not, the override slots of a synced one as `{name, block}`, and how many posts reference it). The guide's `styles` section lists the same, generated from the site, with the rules: style blocks through `globalClasses`, never per block; values are tokens; never invent a class; insert a synced pattern rather than copying it.
+
+`set_style` creates or changes one global **class**: `{selector: ".kl-card", styles: {…}, category?: "Cards"}`, the whole style object in GenerateBlocks' own shape (camelCase properties, `&:hover`-style nested selectors, `@media`/`@supports`/`@container` keys); what is left out is removed. `set_tokens` adds or changes the listed tokens only: `{tokens: [{name, value, type?, label?, category?, scope?}]}`. Element, id and `:root` selectors are not proposable.
+
+GenerateBlocks compiles style CSS in the browser and nothing in PHP does, so `StyleCompiler` does it server-side for the same object: alphabetical declarations, minified, nested and at-rules as GB nests them — equivalent output, not byte-identical (no longhand merging); the next save in GB's Styles dashboard recompiles from the same data. It is also the safety boundary, because the CSS lands in a stylesheet on every page: no braces, semicolons, comments or markup in values, no `@import`, `expression()`, `javascript:`, or `url()` other than a plain address. Tokens are written only through `GenerateBlocks_Pro_Styles_Root::save()`, GB's checksummed write (registry validation, snapshots, stylesheet rebuild); a class style is written as the dashboard writes it (selector, data, CSS, category in meta, next `menu_order`), then the stylesheet is rebuilt — GB's own save hook skips requests without an editing user.
+
+Staleness: a style proposal hashes the class's stored data, CSS and category (or its absence); a token proposal hashes GB's `:root` checksum, so any change to the tokens in between parks it. Approval purges the page cache, since no post changed.
+
+**Style edits ship switched off** (*Allow style edits*, shown only where GB Pro is active): a style or token changes every page that uses it. `capabilities.styles`, `style_edits` and `design_tokens` report what the site has; the two actions drop out of `actions` when off.
 
 ### GET /elements
 

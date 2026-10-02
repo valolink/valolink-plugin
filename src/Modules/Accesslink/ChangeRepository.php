@@ -26,6 +26,8 @@ final class ChangeRepository
     public const ACTION_SET_LANGUAGE       = 'set_language';
     public const ACTION_UPDATE_MENU        = 'update_menu';
     public const ACTION_SYNC_TRANSLATION_META = 'sync_translation_meta';
+    public const ACTION_SET_STYLE          = 'set_style';
+    public const ACTION_SET_TOKENS         = 'set_tokens';
 
     /**
      * Every action `propose()` accepts.
@@ -47,6 +49,14 @@ final class ChangeRepository
         self::ACTION_SET_LANGUAGE,
         self::ACTION_UPDATE_MENU,
         self::ACTION_SYNC_TRANSLATION_META,
+        self::ACTION_SET_STYLE,
+        self::ACTION_SET_TOKENS,
+    ];
+
+    /** Design-system actions: GenerateBlocks Pro global styles and design tokens, opt-in per site. */
+    public const STYLE_ACTIONS = [
+        self::ACTION_SET_STYLE,
+        self::ACTION_SET_TOKENS,
     ];
 
     /** Actions that exist only where a multilingual plugin does. */

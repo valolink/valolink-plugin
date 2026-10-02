@@ -95,6 +95,11 @@ final class GuideBuilder
                 'summary' => 'Site furniture — headers, footers, injected scripts — and how they differ from pages.',
                 'when'    => $this->uses_elements(),
             ],
+            'styles' => [
+                'label'   => 'Design system: tokens, global styles, patterns',
+                'summary' => 'The site\'s design tokens and GenerateBlocks global styles to build content from, its block patterns, and proposing a new style.',
+                'when'    => StyleReader::available(),
+            ],
             'menus' => [
                 'label'   => 'Navigation menus',
                 'summary' => 'Reading a menu as a tree and proposing a new one.',
@@ -149,6 +154,7 @@ final class GuideBuilder
             'products'     => $this->section_products(),
             'translations' => $this->section_translations(),
             'elements'     => $this->section_elements(),
+            'styles'       => $this->section_styles(),
             'menus'        => $this->section_menus(),
             'fields'       => $this->section_fields(),
             'comments'     => $this->section_comments(),
@@ -891,6 +897,135 @@ final class GuideBuilder
     }
 
     /** @return array<int, string> */
+    /**
+     * The design system, listed from the site itself so it never drifts:
+     * agent-written content uses these instead of styling blocks one by one.
+     */
+    private function section_styles(): array
+    {
+        $base = $this->base();
+        $reader = new StyleReader();
+        $tokens = $reader->tokens();
+        $styles = $reader->styles();
+        $patterns = $reader->patterns();
+
+        $md = [];
+        $md[] = '## Design system: tokens, global styles, patterns';
+        $md[] = '';
+        $md[] = "`GET {$base}/styles` returns all of it as data (`?usage=1` adds how many posts use";
+        $md[] = 'each style). The rules, because they decide whether content stays consistent:';
+        $md[] = '';
+        $md[] = '- **Style blocks with the global styles below, never one by one.** On a GenerateBlocks';
+        $md[] = '  block that is the `globalClasses` attribute and the same classes in its markup; no';
+        $md[] = '  `styles`/`css` attributes of the block\'s own, no inline `style`. Core blocks take';
+        $md[] = '  a class through `className`.';
+        $md[] = '- Values in styles are tokens: `var(--space-md)`, not `16px`.';
+        $md[] = '- Never invent a class. If nothing fits, propose one (below) and use it once it is';
+        $md[] = '  approved — or say in your note what is missing.';
+        $md[] = '- A recurring section is a pattern: insert the synced pattern and fill its slots';
+        $md[] = '  rather than copying its blocks.';
+        $md[] = '';
+        $md[] = 'A section with global styles, as markup:';
+        $md[] = '';
+        $md[] = '```html';
+        $md[] = '<!-- wp:generateblocks/element {"uniqueId":"ab12cd34","tagName":"section","globalClasses":["kl-section","kl-section--stone"]} -->';
+        $md[] = '<section class="gb-element kl-section kl-section--stone"><!-- wp:heading -->';
+        $md[] = '<h2 class="wp-block-heading">Otsikko</h2>';
+        $md[] = '<!-- /wp:heading --></section>';
+        $md[] = '<!-- /wp:generateblocks/element -->';
+        $md[] = '```';
+        $md[] = '';
+        $md[] = '`uniqueId` is any 8 lowercase letters and digits, unique within the page.';
+        $md[] = '';
+
+        if ($tokens !== []) {
+            $md[] = '### Tokens';
+            $md[] = '';
+            $by_category = [];
+            foreach ($tokens as $token) {
+                $by_category[$token['category'] !== '' ? $token['category'] : $token['type']][] = $token;
+            }
+            foreach ($by_category as $category => $rows) {
+                $md[] = sprintf('- **%s:** %s', $category, implode(' · ', array_map(
+                    static fn (array $t): string => sprintf('`%s` %s', $t['name'], $t['value']),
+                    $rows,
+                )));
+            }
+            $md[] = '';
+        }
+
+        $md[] = '### Global styles';
+        $md[] = '';
+        if ($styles === []) {
+            $md[] = 'None yet.';
+        }
+        foreach ($styles as $style) {
+            $css = (string) preg_replace('/^' . preg_quote($style['selector'], '/') . '\{([^}]*)\}.*/s', '$1', $style['css']);
+            $md[] = sprintf(
+                '- `%s`%s — %s',
+                $style['selector'],
+                $style['category'] !== '' ? ' (' . $style['category'] . ')' : '',
+                mb_strlen($css) > 140 ? mb_substr($css, 0, 140) . '…' : $css,
+            );
+        }
+        $md[] = '';
+
+        if ($patterns !== []) {
+            $md[] = '### Patterns';
+            $md[] = '';
+            foreach ($patterns as $pattern) {
+                $md[] = sprintf(
+                    '- %s (id %d, %s%s) — used on %d',
+                    $pattern['title'],
+                    $pattern['id'],
+                    $pattern['synced'] ? 'synced' : 'unsynced: inserting copies its blocks',
+                    $pattern['slots'] !== [] ? '; slots: ' . implode(', ', array_map(
+                        static fn (array $slot): string => $slot['name'] . ' (' . preg_replace('#^core/#', '', $slot['block']) . ')',
+                        $pattern['slots'],
+                    )) : '',
+                    $pattern['used_on'],
+                );
+            }
+            $md[] = '';
+            $md[] = 'A synced pattern goes into a page as one block, with each slot\'s text in `content`';
+            $md[] = '(attributes by slot name; a button slot takes `text` and `url`):';
+            $md[] = '';
+            $md[] = '```html';
+            $md[] = '<!-- wp:block {"ref":123,"content":{"Otsikko":{"content":"…"},"Painike":{"text":"…","url":"/…/"}}} /-->';
+            $md[] = '```';
+            $md[] = '';
+        }
+
+        if ($this->service->styles_enabled()) {
+            $md[] = '### Proposing a style or a token';
+            $md[] = '';
+            $md[] = 'A global style, created or changed — send its whole style object (anything left out';
+            $md[] = 'is removed). GenerateBlocks\' format: camelCase properties, `&:hover`-style nested';
+            $md[] = 'selectors, `@media` keys:';
+            $md[] = '';
+            $md[] = '```json';
+            $md[] = '{"action": "set_style", "selector": ".kl-card--outline", "category": "Cards",';
+            $md[] = ' "styles": {"borderTopWidth": "1px", "borderTopStyle": "solid", "borderTopColor": "var(--border-subtle)",';
+            $md[] = '            "&:hover": {"borderTopColor": "var(--border-strong)"},';
+            $md[] = '            "@media (max-width:767px)": {"paddingTop": "var(--space-md)"}},';
+            $md[] = ' "note": "Why it is needed and where it will be used."}';
+            $md[] = '```';
+            $md[] = '';
+            $md[] = 'Tokens — only the listed ones change: `{"action": "set_tokens", "tokens": [{"name":';
+            $md[] = '"--space-5xl", "value": "128px", "type": "unit", "category": "Space", "scope":';
+            $md[] = '["paddingTop", "paddingBottom", "gap"]}]}`.';
+            $md[] = '';
+            $md[] = 'Only class selectors. The reviewer sees the CSS before and after and how many posts';
+            $md[] = 'use the class; a style changed by someone in between is parked as `stale`.';
+        } else {
+            $md[] = 'Proposing styles is switched off on this site: build with what is listed, and say';
+            $md[] = 'in your note when something is missing.';
+        }
+        $md[] = '';
+
+        return $md;
+    }
+
     private function section_menus(): array
     {
         $base = $this->base();

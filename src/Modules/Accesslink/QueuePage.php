@@ -110,6 +110,7 @@ final class QueuePage
         $is_set_language = $change['action'] === ChangeRepository::ACTION_SET_LANGUAGE;
         $is_menu = $change['action'] === ChangeRepository::ACTION_UPDATE_MENU;
         $is_sync_meta = $change['action'] === ChangeRepository::ACTION_SYNC_TRANSLATION_META;
+        $is_style = in_array($change['action'], ChangeRepository::STYLE_ACTIONS, true);
         ?>
         <div class="card" style="max-width:none;margin-bottom:1em;padding:1em;">
             <h3 style="margin-top:0;">
@@ -206,6 +207,8 @@ final class QueuePage
                 </p>
             <?php elseif ($is_menu) : ?>
                 <?php $this->render_menu_diff($change); ?>
+            <?php elseif ($is_style) : ?>
+                <?php $this->render_style_diff($change); ?>
             <?php elseif ($is_sync_meta) : ?>
                 <?php $this->render_meta_sync($change); ?>
             <?php elseif ($is_set_language) : ?>
@@ -232,6 +235,11 @@ final class QueuePage
                     <a class="button" target="_blank" rel="noopener"
                        href="<?php echo esc_url(admin_url('nav-menus.php?menu=' . $target_id)); ?>">
                         <?php esc_html_e('Open this menu in the editor', 'valolink-plugin'); ?>
+                    </a>
+                <?php elseif ($is_style) : ?>
+                    <a class="button" target="_blank" rel="noopener"
+                       href="<?php echo esc_url(admin_url('admin.php?page=generateblocks-styles')); ?>">
+                        <?php esc_html_e('Open the GenerateBlocks styles', 'valolink-plugin'); ?>
                     </a>
                 <?php elseif ($target_id > 0) : ?>
                     <?php if ($is_create) : ?>
@@ -796,6 +804,69 @@ final class QueuePage
         );
     }
 
+    /**
+     * A global style or token proposal: what changes, as CSS, and how far it
+     * reaches. There is no page to preview — the reach is the point.
+     */
+    private function render_style_diff(array $change): void
+    {
+        $reader = new StyleReader();
+        $payload = (array) $change['payload'];
+        if ($change['action'] === ChangeRepository::ACTION_SET_STYLE) {
+            $selector = (string) ($payload['selector'] ?? '');
+            $current = $reader->find($selector);
+            $usage = $reader->class_usage(ltrim($selector, '.'));
+            echo '<p class="notice notice-warning" style="padding:.5em 1em;margin:0 0 1em;">';
+            echo esc_html(sprintf(
+                /* translators: 1: CSS class selector, 2: number of posts using the class. */
+                __('A global style: approving changes %1$s on every page that uses it (%2$d posts found).', 'valolink-plugin'),
+                $selector,
+                $usage['count'],
+            ));
+            if ($usage['posts'] !== []) {
+                echo '<br>' . esc_html(implode(', ', array_map(
+                    static fn (array $p): string => sprintf('%s #%d', $p['title'] !== '' ? $p['title'] : $p['post_type'], $p['id']),
+                    $usage['posts'],
+                )));
+            }
+            echo '</p>';
+            if (($payload['category'] ?? '') !== '') {
+                echo '<p>' . esc_html__('Category:', 'valolink-plugin') . ' ' . esc_html((string) $payload['category']) . '</p>';
+            }
+            $this->render_field_diff(
+                self::css_lines((string) ($current['css'] ?? '')),
+                self::css_lines((string) ($payload['css'] ?? '')),
+            );
+
+            return;
+        }
+
+        $known = [];
+        foreach ($reader->tokens() as $token) {
+            $known[$token['name']] = $token;
+        }
+        $before = [];
+        $after = [];
+        foreach ((array) ($payload['tokens'] ?? []) as $row) {
+            $name = (string) ($row['name'] ?? '');
+            $before[] = isset($known[$name])
+                ? sprintf('%s: %s  (%s, used %d×)', $name, $known[$name]['value'], $known[$name]['type'], $reader->token_usage($name))
+                : sprintf('%s: (new)', $name);
+            $after[] = sprintf('%s: %s  (%s%s)', $name, (string) ($row['value'] ?? ''), (string) ($row['type'] ?? ''),
+                ($row['label'] ?? '') !== '' ? ', ' . $row['label'] : '');
+        }
+        echo '<p class="notice notice-warning" style="padding:.5em 1em;margin:0 0 1em;">'
+            . esc_html__('Design tokens: every style and block that uses one of these changes with it.', 'valolink-plugin')
+            . '</p>';
+        $this->render_field_diff(implode("\n", $before), implode("\n", $after));
+    }
+
+    /** Minified CSS, one rule per line, so a diff of it is readable. */
+    private static function css_lines(string $css): string
+    {
+        return trim((string) preg_replace('/\}(?!\s*$)/', "}\n", $css));
+    }
+
     private function render_field_diff(string $current, string $proposed): void
     {
         if (function_exists('wp_text_diff')) {
@@ -1025,6 +1096,26 @@ final class QueuePage
                         </p>
                     </td>
                 </tr>
+                <?php if (StyleReader::available()) : ?>
+                <tr>
+                    <th scope="row"><?php esc_html_e('Allow style edits', 'valolink-plugin'); ?></th>
+                    <td>
+                        <input type="hidden" name="styles_field" value="1">
+                        <label>
+                            <input type="checkbox" name="allow_style_edits" value="1"
+                                <?php checked((bool) $this->settings->get_module_setting(
+                                    AccesslinkModule::MODULE_ID,
+                                    'allow_style_edits',
+                                    false,
+                                )); ?>>
+                            <?php esc_html_e('Let agents propose GenerateBlocks global styles and design tokens', 'valolink-plugin'); ?>
+                        </label>
+                        <p class="description">
+                            <?php esc_html_e('Off by default. A global style or token changes every page that uses it; the queue shows the CSS before and after and how many posts use the class.', 'valolink-plugin'); ?>
+                        </p>
+                    </td>
+                </tr>
+                <?php endif; ?>
                 <tr>
                     <th scope="row"><?php esc_html_e('Allow agent replies to comments', 'valolink-plugin'); ?></th>
                     <td>
