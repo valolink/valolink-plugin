@@ -25,7 +25,10 @@ namespace Valolink\Plugin\Modules\Accesslink;
  * Nodes: element (GenerateBlocks Element: a container), heading and paragraph
  * (core blocks — inline-editable and pattern-overridable), text (GenerateBlocks
  * Text: eyebrows, labels), button (GenerateBlocks Text as a link), list, image
- * (an attachment), pattern (a synced pattern with slot values). Heading,
+ * (an attachment), pattern (a synced pattern with slot values), shortcode (one
+ * registered shortcode — the site's own menus and widgets), block (a block that
+ * renders itself, from a short allowlist: search, site logo, mini-cart,
+ * customer account; scalar attributes only). Heading,
  * paragraph, text, button and image take "slot": "Name" — in a synced pattern
  * that block's content becomes an override each page fills in. Classes must be
  * global styles that exist. Blocks are built as parsed-block arrays and written
@@ -57,6 +60,9 @@ final class BlockCompiler
     private array $ids = [];
     /** @var array<string, true> */
     private array $slots = [];
+
+    /** Dynamic blocks a tree may place: self-closing, rendered by their own PHP. */
+    private const DYNAMIC_BLOCKS = ['core/search', 'core/site-logo', 'woocommerce/mini-cart', 'woocommerce/customer-account'];
 
     /** Blocks whose content a synced pattern lets each page override (GB Text through the Blocks module). */
     private const SLOT_BLOCKS = ['core/heading', 'core/paragraph', 'core/image', 'generateblocks/text'];
@@ -133,6 +139,8 @@ final class BlockCompiler
             isset($node['list'])      => $this->list($node, $path),
             isset($node['image'])     => $this->image($node, $path),
             isset($node['pattern'])   => $this->pattern($node, $path),
+            isset($node['shortcode']) => $this->shortcode($node, $path),
+            isset($node['block'])     => $this->dynamic($node, $path),
             default                   => $this->unknown($node, $path),
         };
 
@@ -394,10 +402,51 @@ final class BlockCompiler
         return ['blockName' => 'core/block', 'attrs' => $attrs, 'innerBlocks' => [], 'innerHTML' => '', 'innerContent' => []];
     }
 
+    private function shortcode(array $node, string $path): ?array
+    {
+        $code = trim((string) $node['shortcode']);
+        if (!preg_match('/^\[([a-z0-9_-]+)(\s[^\[\]]*)?\]$/i', $code, $m) || !shortcode_exists($m[1])) {
+            $this->issues[] = sprintf('%s: shortcode is one registered shortcode, e.g. [kl_links menu="footer"].', $path);
+
+            return null;
+        }
+
+        return $this->block('core/shortcode', [], [], $code);
+    }
+
+    private function dynamic(array $node, string $path): ?array
+    {
+        $name = (string) $node['block'];
+        if (!in_array($name, self::DYNAMIC_BLOCKS, true) || !\WP_Block_Type_Registry::get_instance()->is_registered($name)) {
+            $this->issues[] = sprintf('%s: block is one of %s (registered on this site).', $path, implode(', ', self::DYNAMIC_BLOCKS));
+
+            return null;
+        }
+        $attrs = is_array($node['attrs'] ?? null) ? $node['attrs'] : [];
+        foreach ($attrs as $key => $value) {
+            if (!is_string($key) || !preg_match('/^[a-zA-Z][a-zA-Z0-9]*$/', $key) || !(is_scalar($value) || $value === null)) {
+                $this->issues[] = sprintf('%s: block attributes are name: scalar value pairs.', $path);
+
+                return null;
+            }
+            if (is_string($value)) {
+                $attrs[$key] = wp_kses($value, []);
+            }
+        }
+        if (isset($node['class'])) {
+            $classes = $this->classes((string) $node['class'], $path);
+            if ($classes !== []) {
+                $attrs['className'] = implode(' ', $classes);
+            }
+        }
+
+        return ['blockName' => $name, 'attrs' => $attrs, 'innerBlocks' => [], 'innerHTML' => '', 'innerContent' => []];
+    }
+
     private function unknown(array $node, string $path): ?array
     {
         $this->issues[] = sprintf(
-            '%s: unknown node (keys: %s). Use element, heading, paragraph, text, button, list, image or pattern.',
+            '%s: unknown node (keys: %s). Use element, heading, paragraph, text, button, list, image, pattern, shortcode or block.',
             $path,
             implode(', ', array_keys($node)),
         );
