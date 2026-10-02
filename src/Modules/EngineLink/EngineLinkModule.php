@@ -172,9 +172,13 @@ final class EngineLinkModule implements Module
         return new \WP_REST_Response((new StatusCollector())->collect());
     }
 
-    public function handle_pages(): \WP_REST_Response
+    public function handle_pages(\WP_REST_Request $request): \WP_REST_Response
     {
-        return new \WP_REST_Response((new PageLister())->collect());
+        // ?types=page,post,product — which public post types to list; pages when left out.
+        $raw   = $request->get_param('types');
+        $types = is_string($raw) && $raw !== '' ? array_map('sanitize_key', explode(',', $raw)) : ['page'];
+
+        return new \WP_REST_Response((new PageLister())->collect($types));
     }
 
     // -------------------------------------------------------------------------

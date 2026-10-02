@@ -110,30 +110,45 @@ Do not include credentials, secret keys, or file system paths anywhere in the re
 
 ### GET /wp-json/enginelink/v1/pages
 
-The site's published pages, for EngineLink's content workflow
+The site's published content, for EngineLink's content workflow
 (EngineLink repo, `docs/projects/content-workflow.md` §5). EngineLink uses the
-list to know which pages exist and then reads each page's public URL as a
-visitor sees it; the text never comes from here. `post_content` is left out on
-purpose: what the theme, page builders and ACF render is not in it.
+list to know which pages (and posts, products, other public post types) exist
+and then reads each one's public URL as a visitor sees it; the text never
+comes from here. `post_content` is left out on purpose: what the theme, page
+builders and ACF render is not in it. `words` is a count from it, a size hint
+so the operator can tell an article from a stub when choosing what to read.
 
-Published pages only, passworded ones excluded, every language (Polylang),
-ordered by menu order then title, at most 500 (`truncated` says when more exist).
+`?types=page,post,product` names the public post types to list (unknown and
+non-public ones are ignored; attachments never listed); without it, pages
+only, as before 0.2.12. Published items only, passworded ones excluded, every
+language (Polylang). Pages in menu order then title, other types newest first,
+at most 500 per type (`truncated_types` names the types that had more).
+`types` lists every public post type with its published count, whatever was
+asked, so EngineLink can offer them.
 
 ```json
 {
-  "plugin_version": "0.2.7",
+  "plugin_version": "0.2.12",
   "total": 2,
   "truncated": false,
+  "truncated_types": [],
+  "types": [
+    { "name": "post", "label": "Artikkelit", "count": 230 },
+    { "name": "page", "label": "Sivut", "count": 42 }
+  ],
   "pages": [
-    { "id": 12, "url": "https://example.fi/", "title": "Etusivu", "parent": 0, "menu_order": 0, "modified": "2026-09-20T08:14:03+00:00", "lang": "fi", "front": true },
-    { "id": 40, "url": "https://example.fi/palvelut/", "title": "Palvelut", "parent": 0, "menu_order": 1, "modified": "2026-08-02T11:40:00+00:00", "lang": null, "front": false }
+    { "id": 12, "type": "page", "url": "https://example.fi/", "title": "Etusivu", "parent": 0, "menu_order": 0, "date": "2019-03-01T10:00:00+00:00", "modified": "2026-09-20T08:14:03+00:00", "lang": "fi", "front": true, "categories": [], "words": 840 },
+    { "id": 301, "type": "post", "url": "https://example.fi/blogi/kattoremontin-hinta/", "title": "Mitä kattoremontti maksaa?", "parent": 0, "menu_order": 0, "date": "2026-05-02T09:00:00+00:00", "modified": "2026-05-02T09:00:00+00:00", "lang": "fi", "front": false, "categories": ["Blogi"], "words": 1200 }
   ]
 }
 ```
 
-`lang` is the Polylang slug, or `null` without Polylang. `modified` is the page's
-GMT modification time. Sites on a plugin without this route answer 404, and
-EngineLink falls back to `wp/v2/pages`, the sitemap and the front page's links.
+`lang` is the Polylang slug, or `null` without Polylang. `date` and `modified`
+are GMT. `categories` are the names in the type's public hierarchical
+taxonomies (post categories, product categories). Sites on a plugin without
+this route answer 404, and EngineLink falls back to `wp/v2`, the sitemap and
+the front page's links; a plugin before 0.2.12 answers pages only, without
+`types`, and EngineLink lists other types through `wp/v2` where it can.
 
 ---
 
