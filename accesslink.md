@@ -277,6 +277,14 @@ GenerateBlocks compiles style CSS in the browser and nothing in PHP does, so `St
 
 Staleness: a style proposal hashes the class's stored data, CSS and category (or its absence); a token proposal hashes GB's `:root` checksum, so any change to the tokens in between parks it. Approval purges the page cache, since no post changed.
 
+### POST /compile
+
+`{tree, seed?}` → `{markup, blocks, classes}`: a short description of a section turned into block markup styled only with the site's global styles, for `insert_block`, `create` or `update`. Nothing is written (a read, like `/validate`). Nodes: `element` (GenerateBlocks Element: div, section, article, aside, header, footer, nav, figure, ul, ol, li; `class`, `children`), `heading` (core, `level`), `paragraph` (core), `text` (GenerateBlocks Text, `tag`: p, span, div, strong, small, figcaption), `button` (GenerateBlocks Text as a link: `href` http(s), root-relative, `#`, `mailto:`, `tel:`; `new_tab`), `list` (core, item texts, `ordered`), `image` (core, an attachment id, `alt`, `size`), `pattern` (a synced `wp_block` by id or title, `slots` by override name; a button slot takes `{text, url}`, an image slot an attachment id). A list of nodes compiles to several top-level blocks.
+
+Why it exists: hand-written GenerateBlocks markup fails in ways only the editor shows — an Element without `tagName` saves no wrapper and is flagged invalid (found 2026-10-02 on kuumalahde dev1), classes have to be in both `globalClasses` and the markup, `--` must be escaped in the comment. The compiler builds parsed-block arrays and lets WordPress' own `serialize_blocks()` write them, so the comment JSON is escaped exactly as the editor escapes it; Element markup carries only the global classes (GenerateBlocks' save adds nothing else), Text markup `gb-text` first. Every `class` must be an existing global style; text is reduced to inline formatting (strong, em, b, i, a, br, span, sup, sub, mark); uniqueIds are 8 hex characters, stable for a `seed`. The result passes `Documents::check()` before it is returned.
+
+Golden tests: `tests/block-compiler-wp.php` compiles a fixture per node kind with a fixed seed (inside a rolled-back transaction, with throwaway styles and a pattern) and writes them with `OUT=…`; `tests/editor-validate.cjs` loads each into a live block editor (`wp.blocks.parse`) and fails on anything the editor flags. Run both after every GenerateBlocks update; passing on GB 2.5.0-rc.2 / Pro 2.8.0-rc.2 (kuumalahde dev1, 2026-10-02).
+
 **Style edits ship switched off** (*Allow style edits*, shown only where GB Pro is active): a style or token changes every page that uses it. `capabilities.styles`, `style_edits` and `design_tokens` report what the site has; the two actions drop out of `actions` when off.
 
 ### GET /elements

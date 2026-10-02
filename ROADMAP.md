@@ -173,6 +173,10 @@ surface:
   browser only), tokens through GB's checksummed `Styles_Root::save()`. Built for
   kuumalahde's rebuild (enginelink `docs/projects/kuumalahde-folds.md` §8);
   `tests/style-compiler.php`, `tests/styles-wp.php`.
+- [x] **Compiler: `POST /compile`** (2026-10-02). Section description → block markup
+  with global styles only (GB Element/Text, core heading/paragraph/list/image, synced
+  patterns with slot values), serialized by WordPress itself. Golden tests against
+  the live editor: `tests/block-compiler-wp.php` + `tests/editor-validate.cjs`.
 - [ ] **`wp_block` (synced patterns).** Just a post type — but editing one changes
   every page using it, so the queue has to show "used on N pages" or approval is
   blind.

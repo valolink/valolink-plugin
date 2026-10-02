@@ -291,6 +291,14 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        // Section description → block markup with the site's global styles.
+        // Nothing is written, so it is a read like /validate.
+        register_rest_route(self::REST_NAMESPACE, '/compile', [
+            'methods'             => \WP_REST_Server::CREATABLE,
+            'callback'            => [$this, 'handle_compile'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
         register_rest_route(self::REST_NAMESPACE, '/menus/(?P<id>\d+)', [
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => [$this, 'handle_menu'],
@@ -454,6 +462,7 @@ final class AccesslinkModule implements Module
                 'styles'         => StyleReader::available(),
                 'style_edits'    => $service->styles_enabled(),
                 'design_tokens'  => StyleReader::tokens_available(),
+                'compile'        => StyleReader::available(),
                 'elements'       => ElementReader::available()
                     && in_array(ElementReader::POST_TYPE, $service->allowed_post_types(), true),
                 'layout'         => LayoutMeta::available(),
@@ -617,6 +626,21 @@ final class AccesslinkModule implements Module
             'patterns' => $reader->patterns(),
             'editable' => $this->service()->styles_enabled(),
         ]);
+    }
+
+    public function handle_compile(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        if (!StyleReader::available()) {
+            return new \WP_Error('styles_unavailable', 'The compiler builds with GenerateBlocks Pro global styles, which this site does not have.', ['status' => 404]);
+        }
+        $body = $request->get_json_params();
+        $tree = is_array($body) ? ($body['tree'] ?? null) : null;
+        if (!is_array($tree) || $tree === []) {
+            return new \WP_Error('no_tree', 'Send {"tree": node or [nodes]} — see the guide\'s styles section.', ['status' => 400]);
+        }
+        $result = (new BlockCompiler())->compile($tree, sanitize_key((string) ($body['seed'] ?? '')));
+
+        return is_wp_error($result) ? $result : new \WP_REST_Response($result);
     }
 
     public function handle_menu(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
