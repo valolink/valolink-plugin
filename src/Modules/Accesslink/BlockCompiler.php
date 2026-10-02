@@ -25,7 +25,9 @@ namespace Valolink\Plugin\Modules\Accesslink;
  * Nodes: element (GenerateBlocks Element: a container), heading and paragraph
  * (core blocks — inline-editable and pattern-overridable), text (GenerateBlocks
  * Text: eyebrows, labels), button (GenerateBlocks Text as a link), list, image
- * (an attachment), pattern (a synced pattern with slot values). Classes must be
+ * (an attachment), pattern (a synced pattern with slot values). Heading,
+ * paragraph, text, button and image take "slot": "Name" — in a synced pattern
+ * that block's content becomes an override each page fills in. Classes must be
  * global styles that exist. Blocks are built as parsed-block arrays and written
  * by WordPress' own serialize_blocks(), so the comment JSON is escaped exactly
  * as the editor escapes it.
@@ -53,6 +55,11 @@ final class BlockCompiler
     private string $seed = '';
     /** @var array<string, true> */
     private array $ids = [];
+    /** @var array<string, true> */
+    private array $slots = [];
+
+    /** Blocks whose content a synced pattern lets each page override (GB Text through the Blocks module). */
+    private const SLOT_BLOCKS = ['core/heading', 'core/paragraph', 'core/image', 'generateblocks/text'];
 
     public function __construct(private readonly StyleReader $reader = new StyleReader())
     {
@@ -74,6 +81,7 @@ final class BlockCompiler
         $this->used = [];
         $this->count = 0;
         $this->ids = [];
+        $this->slots = [];
         $this->seed = $seed !== '' ? $seed : wp_generate_password(8, false);
 
         $nodes = array_is_list($tree) ? $tree : [$tree];
@@ -116,7 +124,7 @@ final class BlockCompiler
         }
         $this->count++;
 
-        return match (true) {
+        $block = match (true) {
             isset($node['element'])   => $this->element($node, $path, $depth),
             isset($node['heading'])   => $this->heading($node, $path),
             isset($node['paragraph']) => $this->paragraph($node, $path),
@@ -127,6 +135,36 @@ final class BlockCompiler
             isset($node['pattern'])   => $this->pattern($node, $path),
             default                   => $this->unknown($node, $path),
         };
+
+        return $block !== null && isset($node['slot']) ? $this->slot($block, $node['slot'], $path) : $block;
+    }
+
+    /** Mark a block as a pattern override slot. */
+    private function slot(array $block, mixed $name, string $path): ?array
+    {
+        $name = is_string($name) ? trim($name) : '';
+        if ($name === '' || mb_strlen($name) > 40 || preg_match('/[<>"{}]/', $name)) {
+            $this->issues[] = sprintf('%s: slot is a short name (at most 40 characters), e.g. "Otsikko".', $path);
+
+            return $block;
+        }
+        if (!in_array($block['blockName'], self::SLOT_BLOCKS, true)) {
+            $this->issues[] = sprintf('%s: only heading, paragraph, text, button and image can be slots.', $path);
+
+            return $block;
+        }
+        if (isset($this->slots[$name])) {
+            $this->issues[] = sprintf('%s: slot "%s" is used twice; slot names are unique within a pattern.', $path, $name);
+
+            return $block;
+        }
+        $this->slots[$name] = true;
+        $block['attrs'] = ['metadata' => [
+            'name'     => $name,
+            'bindings' => ['__default' => ['source' => 'core/pattern-overrides']],
+        ]] + $block['attrs'];
+
+        return $block;
     }
 
     private function element(array $node, string $path, int $depth): ?array

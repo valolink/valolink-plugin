@@ -7,6 +7,7 @@ namespace Valolink\Plugin;
 use Valolink\Plugin\Admin\SettingsPage;
 use Valolink\Plugin\Modules\Accesslink\AccesslinkModule;
 use Valolink\Plugin\Modules\AssetVersion\AssetVersionModule;
+use Valolink\Plugin\Modules\Blocks\BlocksModule;
 use Valolink\Plugin\Modules\Branding\BrandingModule;
 use Valolink\Plugin\Modules\Comments\CommentsModule;
 use Valolink\Plugin\Modules\Email\EmailModule;
@@ -107,6 +108,15 @@ final class Plugin
             label: static fn (): string => __('EngineLink', 'valolink-plugin'),
             description: static fn (): string => __('Exposes REST endpoints for EngineLink to pull site inventory (WP version, PHP, plugins, health). Requires an API key set below.', 'valolink-plugin'),
             class: EngineLinkModule::class,
+            default_enabled: false,
+            constructor_args: [$settings],
+        ));
+
+        $registry->register(new ModuleManifest(
+            id: BlocksModule::MODULE_ID,
+            label: static fn (): string => __('Blocks', 'valolink-plugin'),
+            description: static fn (): string => __('Block support shared by our sites. For now: GenerateBlocks Text blocks can be override slots in synced patterns, so each page fills in its own text.', 'valolink-plugin'),
+            class: BlocksModule::class,
             default_enabled: false,
             constructor_args: [$settings],
         ));
