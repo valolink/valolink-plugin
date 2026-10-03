@@ -11,7 +11,7 @@ Not a public product. Not on wordpress.org.
 | Module | Purpose |
 |--------|---------|
 | **Core** | Registry, loader, context detection, settings, uninstall coordinator, admin settings page, self-updater, env compatibility gate |
-| **B — Staging Detection** | Detects staging/local environments; blocks indexing, intercepts mail, disables live payment gateways; shows admin notice |
+| **B — Staging Detection** | Detects staging/local environments; blocks indexing, intercepts mail, disables live payment gateways (test-mode Paytrail stays), stops marketing syncs; shows admin notice |
 | **C — Inventory Push** | Pushes WP core/theme/plugin/PHP inventory to the Valolink Nuxt backend via HMAC-signed POST; runs on cron + update events + on demand |
 | **E — Agency Branding** | Custom login logo and support contact info on the WP login screen |
 

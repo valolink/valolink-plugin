@@ -25,6 +25,15 @@ final class StagingModule implements Module
     public const BYPASS_PARAM       = 'valolink_preview';
     public const BYPASS_COOKIE_TTL  = 86400;
 
+    /**
+     * Options whose value is where a marketing plugin sends the shop's carts,
+     * orders and customers; read as empty on a copy, so nothing done there
+     * reaches the customer's live account. The copy's database keeps them.
+     * GetResponse: live sync is on whenever its URL is set (FullEcommerce
+     * posts every cart change and order status change to it).
+     */
+    private const MARKETING_SYNC_OPTIONS = ['gr4wp-live-sync-url'];
+
     /** WooCommerce gateway IDs that are safe to keep active on staging. */
     private const SAFE_GATEWAYS = ['bacs', 'cheque', 'cod'];
 
@@ -89,6 +98,11 @@ final class StagingModule implements Module
         }
         if ($this->is_enabled('disable_live_gateways') && class_exists('WooCommerce')) {
             add_filter('woocommerce_available_payment_gateways', [$this, 'disable_live_gateways']);
+        }
+        if ($this->is_enabled('block_marketing_sync')) {
+            foreach (self::MARKETING_SYNC_OPTIONS as $option) {
+                add_filter('pre_option_' . $option, '__return_empty_string');
+            }
         }
         if ($this->is_enabled('require_login')) {
             add_action('template_redirect', [$this, 'enforce_require_login'], 1);
@@ -310,7 +324,10 @@ final class StagingModule implements Module
                     </tr>
                     <?php $this->checkbox_row('disable_live_gateways',
                         __('Disable live WooCommerce payment gateways', 'valolink-plugin'),
-                        __('Only safe offline gateways (BACS, Cheque, COD) remain active when WooCommerce is installed.', 'valolink-plugin')); ?>
+                        __('Only safe offline gateways (BACS, Cheque, COD) and gateways in test mode (Paytrail) remain active when WooCommerce is installed.', 'valolink-plugin')); ?>
+                    <?php $this->checkbox_row('block_marketing_sync',
+                        __('Stop marketing syncs', 'valolink-plugin'),
+                        __('Carts, orders and customers are not sent to the live marketing account (GetResponse live sync). The settings stay in the database.', 'valolink-plugin')); ?>
                 </tbody></table>
 
                 <h2><?php esc_html_e('Production host', 'valolink-plugin'); ?></h2>
@@ -445,6 +462,7 @@ final class StagingModule implements Module
             'intercept_mail'          => $bool('intercept_mail'),
             'intercept_mail_extra'    => sanitize_email((string) wp_unslash($_POST['intercept_mail_extra'] ?? '')),
             'disable_live_gateways'   => $bool('disable_live_gateways'),
+            'block_marketing_sync'    => $bool('block_marketing_sync'),
             'require_login'           => $bool('require_login'),
             'coming_soon_enabled'     => $bool('coming_soon_enabled'),
             'coming_soon_page_id'     => max(0, (int) ($_POST['coming_soon_page_id'] ?? 0)),
@@ -621,9 +639,24 @@ final class StagingModule implements Module
     {
         return array_filter(
             $gateways,
-            static fn(string $id): bool => in_array($id, self::SAFE_GATEWAYS, true),
-            ARRAY_FILTER_USE_KEY,
+            static fn(mixed $gateway, string $id): bool => in_array($id, self::SAFE_GATEWAYS, true) || self::in_test_mode($gateway),
+            ARRAY_FILTER_USE_BOTH,
         );
+    }
+
+    /**
+     * A live gateway that is provably in its sandbox can stay on a copy, so
+     * checkouts can be tested end to end. Paytrail: `enable_test_mode` on the
+     * gateway swaps in Paytrail's public test merchant whatever credentials are
+     * saved (v-wp-staging-create blanks the live ones in the copy too).
+     */
+    private static function in_test_mode(mixed $gateway): bool
+    {
+        if (!is_object($gateway) || !isset($gateway->id)) {
+            return false;
+        }
+
+        return $gateway->id === 'paytrail' && property_exists($gateway, 'enable_test_mode') && $gateway->enable_test_mode === true;
     }
 
     public function enforce_require_login(): void
@@ -692,6 +725,7 @@ final class StagingModule implements Module
         }
         if ($this->is_enabled('disable_live_gateways') && class_exists('WooCommerce'))
                                                         $active[] = __('Woo live gateways off', 'valolink-plugin');
+        if ($this->is_enabled('block_marketing_sync'))  $active[] = __('marketing syncs off', 'valolink-plugin');
         if ($this->is_enabled('require_login'))         $active[] = __('login required', 'valolink-plugin');
         if ($this->is_enabled('coming_soon_enabled'))   $active[] = __('coming-soon redirect', 'valolink-plugin');
         if ($this->is_enabled('block_auto_updates'))    $active[] = __('auto-updates blocked', 'valolink-plugin');
@@ -881,6 +915,7 @@ final class StagingModule implements Module
             'intercept_mail'          => true,
             'intercept_mail_extra'    => '',
             'disable_live_gateways'   => true,
+            'block_marketing_sync'    => true,
             'require_login'           => false,
             'coming_soon_enabled'     => false,
             'coming_soon_page_id'     => 0,

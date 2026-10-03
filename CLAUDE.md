@@ -46,7 +46,7 @@ Only these ship in v1. Everything else in `ROADMAP.md`.
 - Module registry, loader, context detection, settings storage, uninstall coordinator, admin settings page (one screen, module toggles), self-updater, env compatibility gate.
 
 ### Module B — Staging Detection & Helpers
-Detect staging/local environments reliably (multiple heuristics: hostname patterns, `WP_ENVIRONMENT_TYPE`, known host markers, IP ranges). On detection: block search indexing, intercept outgoing mail, disable live payment gateways (WooCommerce). Admin notice that staging mode is active.
+Detect staging/local environments reliably (multiple heuristics: hostname patterns, `WP_ENVIRONMENT_TYPE`, known host markers, IP ranges). On detection: block search indexing, intercept outgoing mail, disable live payment gateways (WooCommerce; a gateway provably in test mode — Paytrail — stays), stop marketing syncs (GetResponse live sync reads as empty). Admin notice that staging mode is active.
 
 ### EngineLink module (shipped — pull, not push)
 Read-only inventory served over REST: `/ping` + `/status` (WP core version, theme, plugins with update state, PHP env, users, DB size, health). EngineLink pulls on its own 6-hourly cron and on demand; Bearer-key auth as described in §3. The Logging module adds `/logs` + `/log-events` on the same namespace. Spec: `enginelink.md`.
