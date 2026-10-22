@@ -152,6 +152,12 @@ final class EngineLinkModule implements Module
             'permission_callback' => [$auth, 'check'],
         ]);
 
+        register_rest_route(self::REST_NAMESPACE, '/self-update', [
+            'methods'             => \WP_REST_Server::CREATABLE,
+            'callback'            => [$this, 'handle_self_update'],
+            'permission_callback' => [$auth, 'check'],
+        ]);
+
         register_rest_route(self::REST_NAMESPACE, '/pages', [
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => [$this, 'handle_pages'],
@@ -170,6 +176,13 @@ final class EngineLinkModule implements Module
     public function handle_status(): \WP_REST_Response
     {
         return new \WP_REST_Response((new StatusCollector())->collect());
+    }
+
+    public function handle_self_update(): \WP_REST_Response|\WP_Error
+    {
+        $result = SelfUpdate::run();
+
+        return is_wp_error($result) ? $result : new \WP_REST_Response($result);
     }
 
     public function handle_pages(\WP_REST_Request $request): \WP_REST_Response

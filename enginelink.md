@@ -119,6 +119,24 @@ Do not include credentials, secret keys, or file system paths anywhere in the re
 
 ---
 
+### POST /wp-json/enginelink/v1/self-update
+
+Since 0.2.13. Updates this plugin, and only this plugin, to its latest GitHub release — the
+package the Updater offers in wp-admin — so EngineLink can update sites it has no other way onto
+(sites on other hosts). A leaked key can at most trigger an update to an official release.
+
+```json
+{ "updated": true, "from": "0.2.13", "to": "0.2.14" }
+{ "updated": false, "from": "0.2.14", "to": "0.2.14", "reason": "up_to_date" }
+```
+
+Refused with 409 when `DISALLOW_FILE_MODS` is set (staging copies, locked-down sites) or when
+WordPress cannot write its files directly (it would ask for FTP credentials); 500 with WordPress's
+own messages when the upgrade fails. WordPress's upgrader deactivates an active plugin outside cron
+and leaves reactivation to the browser; the endpoint puts it back in the active list (network-wide
+on a multisite when it was) without loading it twice, then refreshes the staging mu-loader.
+Tested 2026-10-22 on pohja.demolink.fi: 0.2.11 → 0.2.12 in 2 s, active afterwards, front page 200.
+
 ### GET /wp-json/enginelink/v1/pages
 
 The site's published content, for EngineLink's content workflow
