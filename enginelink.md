@@ -43,7 +43,10 @@ Full snapshot of the site's current state. This is the main endpoint EngineLink 
   "php": {
     "version": "8.2.15",
     "memory_limit": "256M",
-    "max_execution_time": 30
+    "max_execution_time": 30,
+    "build_date": "2026-10-21T22:10:32Z",
+    "build_date_source": "phpinfo",
+    "sapi": "litespeed"
   },
   "themes": {
     "active": {
@@ -101,6 +104,14 @@ is unprotected. `production_host` is the plaintext copy and may have been rewrit
 search-replace on a clone — the hash decides, this field is for display. `loader_version` is
 the header version of the installed `mu-plugins/valolink-staging-loader.php` (null when
 missing); anything below 2.0 is stale and refreshes on the site's next wp-admin visit.
+
+`php.build_date` is when the running PHP was built (since 0.2.13): phpinfo()'s "Build Date"
+(`build_date_source: "phpinfo"`, the build machine's clock, read as UTC), or the binary's
+modification time where phpinfo() is disabled (`"binary_mtime"`), or null. Hosts that backport
+security fixes keep the old version number — CloudLinux's alt-php 8.4.26 rebuilt on
+2026-10-21 with the fixes for CVE-2026-109618/109619 still reports 8.4.26 — so EngineLink
+treats a build made after an advisory was published as carrying its fix. `sapi` is `PHP_SAPI`
+(`fpm-fcgi`, `litespeed`, `apache2handler`, …).
 
 Use `null` for any field that cannot be determined rather than omitting it. EngineLink handles nulls.
 

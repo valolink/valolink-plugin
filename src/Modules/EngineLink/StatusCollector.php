@@ -85,7 +85,7 @@ final class StatusCollector
             'version'            => PHP_VERSION,
             'memory_limit'       => $limit !== false ? $limit : null,
             'max_execution_time' => (int) ini_get('max_execution_time'),
-        ];
+        ] + PhpBuild::collect();
     }
 
     private function themes(): array
