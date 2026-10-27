@@ -51,6 +51,10 @@ final class Plugin
 
             $loader = new Loader($settings, $registry, Context::detect());
             $loader->load();
+
+            if (defined('WP_CLI') && WP_CLI) {
+                \WP_CLI::add_command('valolink blocks', \Valolink\Plugin\Modules\Blocks\LocalStylesCommand::class);
+            }
         } catch (\Throwable $e) {
             error_log(sprintf(
                 '[valolink-plugin] boot failed, plugin inactive this request: %s in %s:%d',
