@@ -137,6 +137,7 @@ final class BlockCompiler
             isset($node['text'])      => $this->text($node, $path),
             isset($node['button'])    => $this->button($node, $path),
             isset($node['list'])      => $this->list($node, $path),
+            isset($node['details'])   => $this->details($node, $path, $depth),
             isset($node['image'])     => $this->image($node, $path),
             isset($node['pattern'])   => $this->pattern($node, $path),
             isset($node['shortcode']) => $this->shortcode($node, $path),
@@ -303,6 +304,36 @@ final class BlockCompiler
         $tag = $ordered ? 'ol' : 'ul';
 
         return $this->block('core/list', $attrs, $children, sprintf('<%s class="%s">', $tag, esc_attr(trim('wp-block-list ' . implode(' ', $classes)))), '</' . $tag . '>');
+    }
+
+    /** A disclosure (core/details): the summary text, then the blocks it opens. */
+    private function details(array $node, string $path, int $depth): ?array
+    {
+        $summary = trim((string) $node['details']);
+        if ($summary === '') {
+            $this->issues[] = sprintf('%s: details is the summary text; the opened content goes in children.', $path);
+
+            return null;
+        }
+        $classes = $this->classes((string) ($node['class'] ?? ''), $path);
+        $children = [];
+        foreach ((array) ($node['children'] ?? []) as $i => $child) {
+            $block = $this->node($child, $path . '.' . $i, $depth + 1);
+            if ($block !== null) {
+                $children[] = $block;
+            }
+        }
+        $summary = $this->inline($summary, $path);
+        $attrs = ['summary' => $summary];
+        if (!empty($node['open'])) {
+            $attrs['showContent'] = true;
+        }
+        if ($classes !== []) {
+            $attrs['className'] = implode(' ', $classes);
+        }
+        $open = sprintf('<details class="%s"%s><summary>%s</summary>', esc_attr(trim('wp-block-details ' . implode(' ', $classes))), !empty($node['open']) ? ' open' : '', $summary);
+
+        return $this->block('core/details', $attrs, $children, $open, '</details>');
     }
 
     private function image(array $node, string $path): ?array

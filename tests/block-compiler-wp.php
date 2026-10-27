@@ -77,6 +77,8 @@ try {
         'text-span-div' => ['element' => 'div', 'children' => [['text' => 'Span', 'tag' => 'span'], ['text' => 'Div', 'tag' => 'div', 'class' => 'vlc-eyebrow']]],
         'list-unordered' => ['list' => ['Yksi', 'Kaksi <em>korostettu</em>'], 'class' => 'vlc-list'],
         'list-ordered' => ['list' => ['Eka', 'Toka'], 'ordered' => true],
+        'details-closed' => ['details' => 'Toimitus ja <strong>käyttöönotto</strong>', 'class' => 'vlc-list', 'children' => [['paragraph' => 'Sisältö.'], ['list' => ['Yksi', 'Kaksi']]]],
+        'details-open' => ['details' => 'Takuu', 'open' => true, 'children' => [['paragraph' => 'Auki.']]],
         'pattern-with-slots' => ['pattern' => $pattern_id, 'slots' => ['Otsikko' => 'Ohitettu', 'Painike' => ['text' => 'Klikkaa', 'url' => '/x/']]],
         'mixed-escapes' => ['element' => 'section', 'class' => 'vlc-section--alt', 'children' => [['paragraph' => 'Lainaus "tuplat" & \'yksittäiset\' <b>b</b> -- viivat']]],
     ];

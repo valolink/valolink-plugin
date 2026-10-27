@@ -942,7 +942,8 @@ final class GuideBuilder
         $md[] = 'Nodes: `element` (a container: div, section, article, aside, header, footer, nav,';
         $md[] = 'figure, ul, ol, li; with `class` and `children`), `heading` (+ `level`), `paragraph`,';
         $md[] = '`text` (+ `tag`: p, span, div…; for eyebrows and labels), `button` (+ `href`,';
-        $md[] = '`new_tab`), `list` (item texts, + `ordered`), `image` (an attachment id from';
+        $md[] = '`new_tab`), `list` (item texts, + `ordered`), `details` (a disclosure: the summary';
+        $md[] = 'text, + `children`, `open`), `image` (an attachment id from';
         $md[] = '`GET /media`, + `alt`, `size`), `pattern` (an id or title, + `slots`). Text takes';
         $md[] = 'inline formatting only (strong, em, a, br, span, mark). `class` must name global';
         $md[] = 'styles listed below. The response\'s `markup` goes into `insert_block`, `create` or';
