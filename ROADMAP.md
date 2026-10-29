@@ -143,7 +143,38 @@ surface:
   approvals and thirteen reloads. An optional `batch` label on proposals,
   grouped in the queue under one *Approve all* button, each still applied and
   stale-checked on its own with a result per row. Not atomicity — that is Tier 2.
-  The attachment alt sweep below is unusable without this.
+  The attachment alt sweep below is unusable without this. leadaudit.fi
+  (2026-10-28) was 34 approvals in three visits for one customer request; a
+  per-page *Approve all* with one combined preview is the shape it wanted.
+- [ ] **`replace_block`: swap one element for another type.** `update_block` must
+  keep the element type, so replacing a contact form with a Text Block cost an
+  `insert_block` plus a `delete_block` per page — 24 proposals on leadaudit.fi
+  where 12 would do, and two approval rounds, because the pair conflicts (see
+  *Anchor structural changes by content* in Tier 2). Both readers already splice
+  a delete and an insert at byte offsets; doing both at one position is one
+  structural change with one staleness check, reviewed as "this element → that
+  element". Same insert rules apply (an element inside a column, a container
+  among containers).
+- [ ] **Background and text colour in the Fusion listing, and a contrast check.**
+  On leadaudit.fi the contact block was white text on blue on ten pages and white
+  on white on two, because a Fusion listing says nothing about what is behind an
+  element; the agent mocked up a blue one and assumed the rest. Give each
+  container and column its `background_color`, whether it has a background image,
+  and the text colour it hands down (its own attributes, else Avada's global
+  options), and have `/validate` and `/preview` flag an inline `color:` in new
+  text that is too close to that background. Reads only; caught by Reima after
+  approval, it should have been caught before filing.
+- [ ] **Name shortcode elements in the listing.** The same Contact Form 7 form sat
+  as a bare `[contact-form-7]` element in most columns and alone inside a Text
+  Block in others (leadaudit.fi page 23), so finding "every form" took two
+  matchers. List a shortcode element with its type and, for a form, its title;
+  mark a Text Block whose whole content is one shortcode.
+- [ ] **What changed on a page since a date.** `GET /content/{id}/changes?since=`:
+  the element-level difference between the current content and the revision at
+  that time, in the listing's own shape (added, removed, text changed). "Reima
+  changed the Yhteystiedot layout, do the same for English" meant dumping both
+  pages' trees and comparing them by eye. Reads revisions that already exist; also
+  the first half of `sync_translation`.
 - [ ] **Revert an applied change.** `wp_update_post` already wrote a revision at
   apply time, so a Revert button on applied rows is nearly free. Moves how risky
   approving *feels* more than anything else on this list, and matters more once
@@ -192,6 +223,36 @@ surface:
 
 #### Open — Tier 2: real work, real payoff
 
+- [ ] **Anchor structural changes by content, not only by path.** Structural
+  proposals hash the whole document because paths are positional, so a second
+  structural change on a page goes stale the moment the first is approved. On
+  leadaudit.fi (2026-10-28/29) removing a contact form from 14 posts took three
+  rounds — insert the replacement text, approve, *then* file the delete, approve,
+  *then* the section delete on the front page — an agent process watching the
+  queue between rounds (it hit its 12-hour limit overnight), and two re-filed
+  deletes that went stale because the reviewer approved block-scoped text edits
+  on the same page first. Record, beside the path, a fingerprint of the target
+  element and of its parent; at approval, find the element again by fingerprint
+  and park the change only if it is gone, ambiguous, or its own content changed.
+  Insert-before-X and delete-X then both apply in either order. The guard that
+  re-parses after a splice stays. Highest payoff on this list for Avada work.
+- [ ] **Dependent proposals.** `depends_on: <id>` holds a proposal as *waiting*,
+  re-resolves it against the document when its dependency is applied, and only
+  then puts it in the queue (or parks it as stale with the reason). All rounds
+  are filed at once and approved in one visit, with no agent left polling — the
+  pull model means nothing tells an agent a change was approved. Mostly absorbed
+  by content anchoring for same-page work; still needed for real ordering across
+  posts ("publish the translation after the source is fixed").
+- [ ] **One change on many pages.** leadaudit.fi's English side had the same
+  call-to-action container pasted into nine pages where the Finnish side used one
+  Library element (one proposal for seven pages). A multi-target proposal — one
+  operation, its target given as "the element matching this fingerprint", and a
+  list of posts — shown as one card with the diff once and the pages listed, then
+  applied and stale-checked per post. With it, a read that finds identical
+  containers across pages by their text-stripped skeleton and suggests turning
+  them into a Library element (`fusion_global`), which also makes the next edit a
+  single change for a person in the builder.
+
 - [ ] **Polylang, the rest.** `sync_translation` (mirror a source's structural
   change into an existing translation), term translations
   (`pll_save_term_translations`, without which a translated post cannot be
@@ -219,7 +280,10 @@ surface:
 - [ ] **Atomic batches.** A `batch_id` with all-or-nothing apply. Today every
   change stands alone, so a translation plus its menu entry plus its redirect can
   be approved piecemeal and leave the site half-done. Architectural, and the unlock
-  for every multi-entity item here. Second slice after grouped review.
+  for every multi-entity item here. Second slice after grouped review. The cheap
+  first case is an ordered group on one document — "swap the form for a text
+  block, then delete the section" filed, previewed and applied as one card — which
+  needs no cross-entity rollback.
 - [ ] **WooCommerce, beyond simple products.** The first slice ships (see below).
   Next, in order: **variations** — a variable product's prices and stock live on
   `product_variation` posts, so a price-list update on a clothing or parts shop
@@ -358,7 +422,11 @@ addressable paths with `editable` leaves. The reads, `create_translation`,
 - `sync_translation` — source changed, so mirror the structural change into the
   translation and leave translated leaves alone except where the matching source
   leaf moved. This is the one that earns its keep; manual translation drift is
-  exactly what nobody catches.
+  exactly what nobody catches. First real case: leadaudit.fi 2026-10-29, the
+  Finnish Yhteystiedot layout changed by hand and mirrored to Contact us by
+  comparing the two trees by eye (insert, two text edits, three deletes left to
+  the builder). On Avada it needs the grid rule relaxed or a structural mirror
+  that only moves elements between the existing columns.
 - Term translations (`pll_save_term_translations`) — without them a translated
   post cannot be categorised.
 
