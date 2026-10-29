@@ -76,6 +76,23 @@ Deliberately deferred until v1 inventory push is solid. The threat surface flips
 
 Do not start this before Phase 2 ships.
 
+### Comments follow-ups
+
+- [ ] **Comment mode does not work with an ad blocker on.** It confused a customer,
+  and Reima too, until he thought to switch the blocker off (2026-10). Nothing
+  says why: the admin-bar toggle is rendered server-side, so it is there and
+  simply does nothing when the script never loaded. Likely cause, not yet
+  confirmed: the names match anti-comment rules in annoyance filter lists
+  (uBlock Origin's *Annoyances*, Fanboy's lists hide or block comment widgets) —
+  `assets/comments/comments.js` and `comments.css`, and the REST route
+  `valolink/v1/comments`. Confirm with uBlock Origin's logger which request or
+  rule it is before changing anything. Then (1) give the assets and the route
+  neutral names that say nothing about comments (the `vl-c-` class prefix is
+  already neutral); (2) make a blocked load visible: a few lines of inline script
+  with the admin-bar node checking that the module's script ran and, if not,
+  telling the user an ad blocker is likely blocking comment mode on this site and
+  to allow it. (2) is needed even after (1), since lists change.
+
 ### Accesslink follow-ups
 **Objective:** widen what an agent can actually do through the change queue.
 
