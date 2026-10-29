@@ -25,6 +25,9 @@
     set: (k, v) => { try { localStorage.setItem(k, v ? "1" : "0"); } catch (e) { /* private mode */ } },
   };
   let mode = store.get(KEY_MODE, false);
+  // One comment and out: the c key turns the mode on until that comment is sent
+  // or abandoned. Not stored, so a reload never comes back in it.
+  let oneShot = false;
   let visible = store.get(KEY_VISIBLE, true);
   let showResolved = store.get(KEY_RESOLVED, false);
   let comments = [];
@@ -244,11 +247,13 @@
         comments.unshift(created);
         closePop();
         renderPins();
+        if (oneShot) setMode(false);
       } catch (e) { ta.disabled = false; alert(e.message); }
     };
+    const cancel = () => { closePop(); if (oneShot) setMode(false); };
     p.querySelector(".vl-c-send").addEventListener("click", send);
-    p.querySelector(".vl-c-cancel").addEventListener("click", closePop);
-    ta.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") send(); if (e.key === "Escape") closePop(); });
+    p.querySelector(".vl-c-cancel").addEventListener("click", cancel);
+    ta.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") send(); if (e.key === "Escape") { e.stopPropagation(); cancel(); } });
   }
 
   function openThread(c, pinEl) {
@@ -276,7 +281,7 @@
       if (!text) return;
       try { const r = await api("/" + c.id + "/replies", "POST", { text }); c.replies = (c.replies || []).concat([r]); openThread(c, pinEl); } catch (e) { alert(e.message); }
     });
-    ta.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") p.querySelector(".vl-c-send").click(); if (e.key === "Escape") closePop(); });
+    ta.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") p.querySelector(".vl-c-send").click(); if (e.key === "Escape") { e.stopPropagation(); closePop(); } });
     p.querySelector(".vl-c-status").addEventListener("click", async () => {
       try {
         const updated = await api("/" + c.id + "/status", "POST", { status: c.status === "resolved" ? "open" : "resolved" });
@@ -317,14 +322,24 @@
   function updateBar() {
     const modeNode = document.getElementById("wp-admin-bar-valolink-comment-mode");
     const visNode = document.getElementById("wp-admin-bar-valolink-comments-visible");
-    if (modeNode) { modeNode.classList.toggle("vl-c-on", mode); const l = modeNode.querySelector(".ab-label"); if (l) l.textContent = mode ? T.modeOn : T.modeOff; }
+    if (modeNode) { modeNode.classList.toggle("vl-c-on", mode); const l = modeNode.querySelector(".ab-label"); if (l) l.textContent = mode ? (oneShot ? T.modeOnce : T.modeOn) : T.modeOff; }
     if (visNode) { const open = comments.filter((c) => c.status !== "resolved").length; const l = visNode.querySelector(".ab-label"); if (l) l.textContent = T.comments + " (" + open + ")" + (visible ? "" : " ·"); }
     document.body.classList.toggle("vl-c-mode", mode);
+  }
+  // on: comment mode; once: only until the next comment is sent or abandoned.
+  function setMode(on, once) {
+    mode = on;
+    oneShot = on && !!once;
+    store.set(KEY_MODE, on && !oneShot);
+    if (!on) { closePop(); if (hoverEl) { hoverEl.classList.remove("vl-c-hover"); hoverEl = null; } }
+    if (on) visible = true;
+    updateBar();
+    renderPins();
   }
   function bindBar() {
     const modeNode = document.getElementById("wp-admin-bar-valolink-comment-mode");
     const visNode = document.getElementById("wp-admin-bar-valolink-comments-visible");
-    if (modeNode) modeNode.addEventListener("click", (e) => { e.preventDefault(); mode = !mode; store.set(KEY_MODE, mode); if (!mode) { closePop(); if (hoverEl) { hoverEl.classList.remove("vl-c-hover"); hoverEl = null; } } if (mode) visible = true; updateBar(); renderPins(); });
+    if (modeNode) modeNode.addEventListener("click", (e) => { e.preventDefault(); setMode(!mode); });
     if (visNode) visNode.addEventListener("click", (e) => { e.preventDefault(); visible = !visible; store.set(KEY_VISIBLE, visible); closePop(); renderPins(); observe(5000); });
   }
 
@@ -346,7 +361,21 @@
     e.stopPropagation();
     openComposer(el, sel && el.contains(window.getSelection().anchorNode) ? sel : "");
   }, true);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePop(); });
+  // Keys, outside text fields and without Ctrl/Alt/Cmd: c one comment (again: off),
+  // Shift+C comment mode on or off, Escape closes the popover, then leaves the mode.
+  const typing = (t) => t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (pop) closePop();
+      else if (mode) setMode(false);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || typing(e.target)) return;
+    if (e.code !== "KeyC") return;
+    e.preventDefault();
+    if (e.shiftKey) setMode(!mode || oneShot);
+    else setMode(!mode, true);
+  });
 
   // ------------------------------------------------------------------ boot
   async function boot() {

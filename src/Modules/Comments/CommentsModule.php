@@ -70,7 +70,7 @@ final class CommentsModule implements Module
             'id'    => 'valolink-comment-mode',
             'title' => '<span class="ab-icon dashicons dashicons-admin-comments"></span><span class="ab-label">' . esc_html__('Kommentoi', 'valolink-plugin') . '</span>',
             'href'  => '#',
-            'meta'  => ['title' => __('Kommenttitila: napsauta sivun kohtaa ja kirjoita', 'valolink-plugin')],
+            'meta'  => ['title' => __('Kommenttitila: napsauta sivun kohtaa ja kirjoita. Näppäimet: C yksi kommentti, Shift+C kommenttitila päälle tai pois, Esc pois.', 'valolink-plugin')],
         ]);
         $bar->add_node([
             'id'    => 'valolink-comments-visible',
@@ -113,6 +113,7 @@ final class CommentsModule implements Module
                 'addressed' => __('muutos odottaa hyväksyntää', 'valolink-plugin'),
                 'resolved'  => __('ratkaistu', 'valolink-plugin'),
                 'modeOn'    => __('Kommentoi: päällä', 'valolink-plugin'),
+                'modeOnce'  => __('Kommentoi: yksi kommentti', 'valolink-plugin'),
                 'modeOff'   => __('Kommentoi', 'valolink-plugin'),
                 'comments'  => __('Kommentit', 'valolink-plugin'),
                 'none'      => __('Ei kommentteja tällä sivulla.', 'valolink-plugin'),
