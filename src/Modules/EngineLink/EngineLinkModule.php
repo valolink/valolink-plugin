@@ -21,11 +21,15 @@ final class EngineLinkModule implements Module
 
     public function should_load(Context $context): bool
     {
-        return $context->is_admin || $context->is_rest;
+        // Every request since 2026-10-29: the PHP error collector (EngineLink's
+        // after-update watch) has to see the front end, where visitors meet
+        // the errors. The admin and REST hooks only fire in their contexts.
+        return true;
     }
 
     public function register(): void
     {
+        (new ErrorCollector())->register();
         add_action('admin_menu', [$this, 'add_settings_page']);
         add_action('admin_post_' . self::REGEN_KEY_ACTION, [$this, 'handle_regen_key']);
         add_action('rest_api_init', [$this, 'register_routes']);
@@ -33,6 +37,7 @@ final class EngineLinkModule implements Module
 
     public function uninstall(): void
     {
+        ErrorCollector::drop();
         $this->settings->forget_module(self::MODULE_ID);
     }
 
@@ -163,6 +168,42 @@ final class EngineLinkModule implements Module
             'callback'            => [$this, 'handle_pages'],
             'permission_callback' => [$auth, 'check'],
         ]);
+
+        register_rest_route(self::REST_NAMESPACE, '/php-errors', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_php_errors'],
+            'permission_callback' => [$auth, 'check'],
+        ]);
+
+        register_rest_route(self::REST_NAMESPACE, '/order-counts', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_order_counts'],
+            'permission_callback' => [$auth, 'check'],
+        ]);
+    }
+
+    /** ?since=<ISO 8601 or unix>, default 24 h back, at most 14 days. */
+    public function handle_php_errors(\WP_REST_Request $request): \WP_REST_Response
+    {
+        $since = self::since_param($request, DAY_IN_SECONDS, ErrorCollector::KEEP_DAYS * DAY_IN_SECONDS);
+        return new \WP_REST_Response(ErrorCollector::report($since));
+    }
+
+    /** ?since=<ISO 8601 or unix>, default 7 days back, at most 60 days. */
+    public function handle_order_counts(\WP_REST_Request $request): \WP_REST_Response
+    {
+        $since = self::since_param($request, 7 * DAY_IN_SECONDS, 60 * DAY_IN_SECONDS);
+        return new \WP_REST_Response(OrderCounts::report($since));
+    }
+
+    private static function since_param(\WP_REST_Request $request, int $default, int $max): int
+    {
+        $raw   = $request->get_param('since');
+        $since = is_numeric($raw) ? (int) $raw : (is_string($raw) && $raw !== '' ? (int) strtotime($raw) : 0);
+        if ($since <= 0) {
+            $since = time() - $default;
+        }
+        return max($since, time() - $max);
     }
 
     public function handle_ping(): \WP_REST_Response

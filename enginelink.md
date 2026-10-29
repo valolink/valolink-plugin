@@ -227,3 +227,54 @@ The set grows, so treat an unknown name as opaque.
 - **Menus** — `menu.created`, `menu.updated`, `menu.deleted`, once per menu per request rather than once per item.
 - **Not logged:** saves with nobody signed in outside cron and WP-CLI (a visitor's form stored as a post, Accesslink proposals — which have their own `accesslink_*` rows), WordPress's internal types, menu items, product variations and WooCommerce's order records. The block editor's second save of a post for its meta boxes is folded into the first.
 - **Everything else** — `auth.login`, `auth.login_failed`, `auth.logout`; `plugin.installed`, `.updated`, `.activated`, `.deactivated`, `.deleted`; `theme.installed`, `.updated`, `.switched`; `core.updated`; `user.created`, `user.deleted`; `mail.sent`, `mail.failed`; and `accesslink_proposed`, `_applied`, `_rejected`, `_stale`, `_failed`.
+
+### GET /wp-json/enginelink/v1/php-errors
+
+EngineLink's after-update watch (2026-10-29): which PHP warnings and fatal
+errors the site has had, so a promote can be judged by what is *new* after it.
+`?since=<ISO 8601 or unix>` (default 24 h back, at most 14 days).
+
+Collected by the plugin itself (`ErrorCollector`), not read from a log file:
+where PHP errors go differs per host, and a raw log line can carry visitors'
+data. The EngineLink module loads on every request for this; its error
+handler chains to whatever handler was there before (PHP's own logging is
+unchanged), counts **warnings and fatals only** (no notices or
+deprecations), respects `@`, and writes one multi-row upsert per request that
+had any, into `{prefix}valolink_php_errors` (hour × group). A group is level +
+scrubbed message + file relative to ABSPATH (no line number, so the same
+warning survives an update of its plugin). Messages lose emails, IP
+addresses, query strings and numbers of 6+ digits and are capped at 300
+characters. Rows older than 14 days go in a daily cron. Uninstall drops the
+table, its two options and the cron.
+
+```json
+{
+  "collecting_since": "2026-10-29T10:00:00+00:00",
+  "since": "2026-10-28T10:00:00+00:00",
+  "groups": [
+    { "hash": "…", "level": "fatal", "file": "wp-content/plugins/x/x.php", "line": 12,
+      "message": "Uncaught Error: Call to undefined function …", "count": 3,
+      "first_seen": "…", "last_seen": "…" }
+  ],
+  "hours": [ { "hour": "2026-10-29T10:00:00+00:00", "level": "warning", "count": 40 } ]
+}
+```
+
+`groups` (at most 200, fatals first, then by count) aggregate the rows since
+`since`; `first_seen` is the first sighting *inside that window*.
+`collecting_since` is when the collector started on this site (null before
+its first cron scheduling): a window that starts earlier has no baseline.
+
+### GET /wp-json/enginelink/v1/order-counts
+
+WooCommerce orders per hour (UTC, by creation time) — counts only, no
+order, customer or amount. `?since=` (default 7 days, at most 60).
+`created` (every real order; checkout drafts, auto-drafts and trash left
+out), `paid` (processing + completed), `pending` (pending payment), `failed`
+(failed + cancelled). HPOS or the posts table, whichever WooCommerce uses.
+`woocommerce: false` and no hours when WooCommerce is not active.
+
+```json
+{ "woocommerce": true, "since": "…",
+  "hours": [ { "hour": "2026-10-29T09:00:00+00:00", "created": 2, "paid": 2, "pending": 0, "failed": 0 } ] }
+```
