@@ -320,10 +320,13 @@
 
   // ------------------------------------------------------------- admin bar
   function updateBar() {
+    const topNode = document.getElementById("wp-admin-bar-valolink-comments");
     const modeNode = document.getElementById("wp-admin-bar-valolink-comment-mode");
     const visNode = document.getElementById("wp-admin-bar-valolink-comments-visible");
+    // The menu's top: the open count, and the mode's name while it is on.
+    if (topNode) { const open = comments.filter((c) => c.status !== "resolved").length; topNode.classList.toggle("vl-c-on", mode); const l = topNode.querySelector(":scope > .ab-item .ab-label"); if (l) l.textContent = mode ? (oneShot ? T.modeOnce : T.modeOn) : T.comments + " (" + open + ")"; }
     if (modeNode) { modeNode.classList.toggle("vl-c-on", mode); const l = modeNode.querySelector(".ab-label"); if (l) l.textContent = mode ? (oneShot ? T.modeOnce : T.modeOn) : T.modeOff; }
-    if (visNode) { const open = comments.filter((c) => c.status !== "resolved").length; const l = visNode.querySelector(".ab-label"); if (l) l.textContent = T.comments + " (" + open + ")" + (visible ? "" : " ·"); }
+    if (visNode) { const l = visNode.querySelector(".ab-label"); if (l) l.textContent = visible ? T.hide : T.show; }
     document.body.classList.toggle("vl-c-mode", mode);
   }
   // on: comment mode; once: only until the next comment is sent or abandoned.
@@ -339,6 +342,8 @@
   function bindBar() {
     const modeNode = document.getElementById("wp-admin-bar-valolink-comment-mode");
     const visNode = document.getElementById("wp-admin-bar-valolink-comments-visible");
+    const topNode = document.getElementById("wp-admin-bar-valolink-comments");
+    if (topNode) topNode.querySelector(":scope > .ab-item").addEventListener("click", (e) => e.preventDefault());
     if (modeNode) modeNode.addEventListener("click", (e) => { e.preventDefault(); setMode(!mode); });
     if (visNode) visNode.addEventListener("click", (e) => { e.preventDefault(); visible = !visible; store.set(KEY_VISIBLE, visible); closePop(); renderPins(); observe(5000); });
   }

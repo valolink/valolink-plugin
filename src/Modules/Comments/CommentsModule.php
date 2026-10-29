@@ -66,17 +66,26 @@ final class CommentsModule implements Module
             return;
         }
         $open = is_singular() ? (new CommentRepository())->count_open((int) get_queried_object_id()) : 0;
+        // One menu (the admin bar was full): the count on top, the mode and visibility in it.
         $bar->add_node([
-            'id'    => 'valolink-comment-mode',
-            'title' => '<span class="ab-icon dashicons dashicons-admin-comments"></span><span class="ab-label">' . esc_html__('Kommentoi', 'valolink-plugin') . '</span>',
+            'id'    => 'valolink-comments',
+            'title' => '<span class="ab-icon dashicons dashicons-admin-comments"></span><span class="ab-label">' . esc_html(sprintf(__('Kommentit (%d)', 'valolink-plugin'), $open)) . '</span>',
             'href'  => '#',
-            'meta'  => ['title' => __('Kommenttitila: napsauta sivun kohtaa ja kirjoita. Näppäimet: C yksi kommentti, Shift+C kommenttitila päälle tai pois, Esc pois.', 'valolink-plugin')],
+            'meta'  => ['title' => __('Kommentit. Näppäimet: C yksi kommentti, Shift+C kommenttitila päälle tai pois, Esc pois.', 'valolink-plugin')],
         ]);
         $bar->add_node([
-            'id'    => 'valolink-comments-visible',
-            'title' => '<span class="ab-label">' . esc_html(sprintf(__('Kommentit (%d)', 'valolink-plugin'), $open)) . '</span>',
-            'href'  => '#',
-            'meta'  => ['title' => __('Näytä tai piilota kommentit', 'valolink-plugin')],
+            'parent' => 'valolink-comments',
+            'id'     => 'valolink-comment-mode',
+            'title'  => '<span class="ab-label">' . esc_html__('Kommentoi', 'valolink-plugin') . '</span>',
+            'href'   => '#',
+            'meta'   => ['title' => __('Kommenttitila: napsauta sivun kohtaa ja kirjoita (C yksi kommentti, Shift+C päälle tai pois)', 'valolink-plugin')],
+        ]);
+        $bar->add_node([
+            'parent' => 'valolink-comments',
+            'id'     => 'valolink-comments-visible',
+            'title'  => '<span class="ab-label">' . esc_html__('Piilota kommentit', 'valolink-plugin') . '</span>',
+            'href'   => '#',
+            'meta'   => ['title' => __('Näytä tai piilota kommentit', 'valolink-plugin')],
         ]);
     }
 
@@ -115,6 +124,8 @@ final class CommentsModule implements Module
                 'modeOn'    => __('Kommentoi: päällä', 'valolink-plugin'),
                 'modeOnce'  => __('Kommentoi: yksi kommentti', 'valolink-plugin'),
                 'modeOff'   => __('Kommentoi', 'valolink-plugin'),
+                'show'      => __('Näytä kommentit', 'valolink-plugin'),
+                'hide'      => __('Piilota kommentit', 'valolink-plugin'),
                 'comments'  => __('Kommentit', 'valolink-plugin'),
                 'none'      => __('Ei kommentteja tällä sivulla.', 'valolink-plugin'),
                 'page'      => __('sivu', 'valolink-plugin'),
