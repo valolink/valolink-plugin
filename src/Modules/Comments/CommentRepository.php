@@ -59,7 +59,7 @@ final class CommentRepository
      *
      * @return array<int, array<string, mixed>>
      */
-    public function list(?int $post_id = null, ?string $status = null, int $limit = 200): array
+    public function list(?int $post_id = null, ?string $status = null, int $limit = 200, ?string $url = null): array
     {
         global $wpdb;
         $where = ['parent_id IS NULL'];
@@ -67,6 +67,12 @@ final class CommentRepository
         if ($post_id !== null) {
             $where[] = 'post_id = %d';
             $args[]  = $post_id;
+        }
+        // Pages that are not one post (shop, categories): by address, its query strings aside.
+        if ($url !== null && $url !== '') {
+            $where[] = '(url = %s OR url LIKE %s)';
+            $args[]  = $url;
+            $args[]  = $wpdb->esc_like($url) . '?%';
         }
         if ($status !== null && $status !== '' && $status !== 'all') {
             $where[] = 'status = %s';
@@ -111,6 +117,14 @@ final class CommentRepository
         }
 
         return $out;
+    }
+
+    /** Open comments on the whole site. */
+    public function count_open_all(): int
+    {
+        global $wpdb;
+
+        return (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$this->table} WHERE parent_id IS NULL AND status <> %s", self::STATUS_RESOLVED)); // phpcs:ignore WordPress.DB.PreparedSQL
     }
 
     public function count_open(int $post_id): int

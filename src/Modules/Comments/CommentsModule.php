@@ -25,6 +25,10 @@ final class CommentsModule implements Module
     public const REST_NS    = 'valolink/v1';
     public const PURGE_DAYS = 90;
     public const PURGE_HOOK = 'valolink_comments_purge';
+    public const PAGE_SLUG  = 'valolink-comments';
+    public const STATUS_ACTION = 'valolink_comment_status';
+    /** Query arguments that do something when the address is opened (add to cart …): never kept with a comment. */
+    private const ACTION_ARGS = ['add-to-cart', 'added-to-cart', 'remove_item', 'undo_item', 'removed_item', 'quantity', '_wpnonce', 'wc-ajax'];
 
     public function should_load(Context $context): bool
     {
@@ -36,6 +40,8 @@ final class CommentsModule implements Module
         add_action('init', [CommentTable::class, 'maybe_install']);
         add_action('rest_api_init', [$this, 'register_routes']);
         add_action('admin_bar_menu', [$this, 'add_admin_bar'], 90);
+        add_action('admin_menu', [$this, 'add_admin_page']);
+        add_action('admin_post_' . self::STATUS_ACTION, [$this, 'handle_admin_status']);
         add_action('wp_enqueue_scripts', [$this, 'enqueue']);
         // Accesslink says so when a change it filed for a comment goes live.
         add_action('valolink_accesslink_applied', [$this, 'on_change_applied']);
@@ -82,6 +88,12 @@ final class CommentsModule implements Module
         ]);
         $bar->add_node([
             'parent' => 'valolink-comments',
+            'id'     => 'valolink-comments-all',
+            'title'  => '<span class="ab-label">' . esc_html(sprintf(__('Kaikki kommentit (%d)', 'valolink-plugin'), (new CommentRepository())->count_open_all())) . '</span>',
+            'href'   => admin_url('admin.php?page=' . self::PAGE_SLUG),
+        ]);
+        $bar->add_node([
+            'parent' => 'valolink-comments',
             'id'     => 'valolink-comments-visible',
             'title'  => '<span class="ab-label">' . esc_html__('Piilota kommentit', 'valolink-plugin') . '</span>',
             'href'   => '#',
@@ -103,7 +115,7 @@ final class CommentsModule implements Module
             'rest'    => esc_url_raw(rest_url(self::REST_NS . '/comments')),
             'nonce'   => wp_create_nonce('wp_rest'),
             'postId'  => is_singular() ? (int) get_queried_object_id() : 0,
-            'url'     => (string) (is_singular() ? get_permalink() : home_url(add_query_arg([]))),
+            'url'     => (string) (is_singular() ? get_permalink() : remove_query_arg(self::ACTION_ARGS, home_url(add_query_arg([])))),
             'user'    => ['id' => (int) $user->ID, 'name' => $user->display_name, 'admin' => current_user_can('manage_options')],
             'i18n'    => [
                 'write'     => __('Kirjoita kommentti…', 'valolink-plugin'),
@@ -137,6 +149,83 @@ final class CommentsModule implements Module
     // REST for the front end (cookie-authenticated editors)
     // -------------------------------------------------------------------------
 
+    // ------------------------------------------------------------ admin page
+
+    /** Valolink → Kommentit: every comment on the site in one list. */
+    public function add_admin_page(): void
+    {
+        add_submenu_page(
+            \Valolink\Plugin\Admin\SettingsPage::MENU_SLUG,
+            __('Kommentit', 'valolink-plugin'),
+            __('Kommentit', 'valolink-plugin'),
+            self::CAPABILITY,
+            self::PAGE_SLUG,
+            [$this, 'render_admin_page'],
+        );
+    }
+
+    public function render_admin_page(): void
+    {
+        if (!self::can_comment()) {
+            return;
+        }
+        $repo   = new CommentRepository();
+        $filter = isset($_GET['status']) ? sanitize_key((string) $_GET['status']) : 'open'; // phpcs:ignore WordPress.Security.NonceVerification
+        $filter = in_array($filter, ['open', 'resolved', 'all'], true) ? $filter : 'open';
+        $rows   = $repo->list(null, $filter === 'open' ? null : $filter, 500);
+        if ($filter === 'open') {
+            $rows = array_values(array_filter($rows, static fn (array $c): bool => $c['status'] !== CommentRepository::STATUS_RESOLVED));
+        }
+        $base  = admin_url('admin.php?page=' . self::PAGE_SLUG);
+        $label = ['open' => __('Avoimet', 'valolink-plugin'), 'resolved' => __('Ratkaistut', 'valolink-plugin'), 'all' => __('Kaikki', 'valolink-plugin')];
+        $when  = static fn (string $utc): string => wp_date('j.n.Y H:i', strtotime($utc . ' UTC'));
+        echo '<div class="wrap"><h1>' . esc_html__('Kommentit', 'valolink-plugin') . '</h1>';
+        echo '<p>' . esc_html__('Sivuille jätetyt kommentit. "Avaa sivulla" avaa sivun ja kommentin keskustelun.', 'valolink-plugin') . '</p>';
+        echo '<ul class="subsubsub">';
+        $links = [];
+        foreach ($label as $key => $name) {
+            $links[] = '<li><a href="' . esc_url(add_query_arg('status', $key, $base)) . '"' . ($key === $filter ? ' class="current"' : '') . '>' . esc_html($name) . ($key === 'open' ? ' <span class="count">(' . $repo->count_open_all() . ')</span>' : '') . '</a></li>';
+        }
+        echo implode(' | ', $links) . '</ul>';
+        echo '<table class="widefat striped" style="clear:both;margin-top:8px"><thead><tr><th style="width:18%">' . esc_html__('Sivu', 'valolink-plugin') . '</th><th>' . esc_html__('Kommentti', 'valolink-plugin') . '</th><th style="width:14%">' . esc_html__('Kirjoittaja ja aika', 'valolink-plugin') . '</th><th style="width:16%">' . esc_html__('Tila', 'valolink-plugin') . '</th></tr></thead><tbody>';
+        if ($rows === []) {
+            echo '<tr><td colspan="4">' . esc_html__('Ei kommentteja.', 'valolink-plugin') . '</td></tr>';
+        }
+        foreach ($rows as $c) {
+            $page = $c['post_id'] > 0 ? (string) get_the_title($c['post_id']) : '';
+            $path = (string) wp_parse_url($c['url'], PHP_URL_PATH);
+            $open = remove_query_arg(self::ACTION_ARGS, $c['url']) . '#vl-comment-' . $c['id'];
+            echo '<tr><td><strong>' . esc_html($page !== '' ? $page : $path) . '</strong><br><span class="description">' . esc_html($path) . '</span><div class="row-actions visible"><a href="' . esc_url($open) . '">' . esc_html__('Avaa sivulla', 'valolink-plugin') . '</a></div></td>';
+            echo '<td>' . nl2br(esc_html($c['text']));
+            if (!empty($c['quote'])) {
+                echo '<br><span class="description">“' . esc_html(mb_substr((string) $c['quote'], 0, 120)) . (mb_strlen((string) $c['quote']) > 120 ? '…' : '') . '”</span>';
+            }
+            foreach ((array) $c['replies'] as $r) {
+                echo '<div style="margin:6px 0 0 12px;padding-left:8px;border-left:2px solid #dcdcde"><strong>' . esc_html($r['author_name']) . '</strong> · ' . esc_html($when($r['created_at'])) . '<br>' . nl2br(esc_html($r['text'])) . '</div>';
+            }
+            echo '</td><td>' . esc_html($c['author_name']) . '<br><span class="description">' . esc_html($when($c['created_at'])) . '</span></td>';
+            $to = $c['status'] === CommentRepository::STATUS_RESOLVED ? 'open' : 'resolved';
+            echo '<td>' . esc_html($c['status'] === CommentRepository::STATUS_RESOLVED ? __('Ratkaistu', 'valolink-plugin') : ($c['status'] === 'addressed' ? __('Käsitelty', 'valolink-plugin') : __('Avoin', 'valolink-plugin')));
+            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-top:4px">';
+            wp_nonce_field(self::STATUS_ACTION . '_' . $c['id']);
+            echo '<input type="hidden" name="action" value="' . esc_attr(self::STATUS_ACTION) . '"><input type="hidden" name="id" value="' . (int) $c['id'] . '"><input type="hidden" name="to" value="' . esc_attr($to) . '"><input type="hidden" name="back" value="' . esc_attr($filter) . '">';
+            echo '<button class="button button-small">' . esc_html($to === 'resolved' ? __('Merkitse ratkaistuksi', 'valolink-plugin') : __('Avaa uudelleen', 'valolink-plugin')) . '</button></form></td></tr>';
+        }
+        echo '</tbody></table></div>';
+    }
+
+    public function handle_admin_status(): void
+    {
+        $id = (int) ($_POST['id'] ?? 0);
+        if (!self::can_comment() || !check_admin_referer(self::STATUS_ACTION . '_' . $id)) {
+            wp_die(esc_html__('Ei oikeutta.', 'valolink-plugin'), 403);
+        }
+        $to = ($_POST['to'] ?? '') === 'open' ? CommentRepository::STATUS_OPEN : CommentRepository::STATUS_RESOLVED;
+        (new CommentRepository())->set_status($id, $to, wp_get_current_user()->display_name);
+        wp_safe_redirect(add_query_arg('status', sanitize_key((string) ($_POST['back'] ?? 'open')), admin_url('admin.php?page=' . self::PAGE_SLUG)));
+        exit;
+    }
+
     public function register_routes(): void
     {
         $can = static fn (): bool => self::can_comment();
@@ -162,8 +251,9 @@ final class CommentsModule implements Module
     {
         $post_id = (int) $request->get_param('post_id');
         $status  = (string) ($request->get_param('status') ?? 'all');
+        $url     = $post_id > 0 ? null : esc_url_raw((string) ($request->get_param('url') ?? ''));
 
-        return new \WP_REST_Response(['comments' => (new CommentRepository())->list($post_id > 0 ? $post_id : null, $status)]);
+        return new \WP_REST_Response(['comments' => (new CommentRepository())->list($post_id > 0 ? $post_id : null, $status, 200, $url !== '' ? $url : null)]);
     }
 
     public function handle_create(\WP_REST_Request $request): \WP_REST_Response|\WP_Error

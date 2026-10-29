@@ -386,10 +386,19 @@
   async function boot() {
     bindBar();
     updateBar();
-    if (cfg.postId) {
-      try { comments = (await api("?post_id=" + cfg.postId + "&status=all")).comments || []; } catch (e) { comments = []; }
-    }
+    // One post by its id; any other page (shop, categories) by its address.
+    const query = cfg.postId ? "?post_id=" + cfg.postId : "?url=" + encodeURIComponent(String(cfg.url).split("?")[0].split("#")[0]);
+    try { comments = (await api(query + "&status=all")).comments || []; } catch (e) { comments = []; }
+    // From the comments list (#vl-comment-<id>): that comment's thread open, resolved ones shown.
+    const wanted = /^#vl-comment-(\d+)$/.exec(location.hash);
+    const target = wanted && comments.find((c) => c.id === Number(wanted[1]));
+    if (target) { visible = true; if (target.status === "resolved") showResolved = true; }
     renderPins();
+    if (target) {
+      const entry = pins.get(target.id);
+      if (entry) { entry.el.scrollIntoView({ behavior: "smooth", block: "center" }); setTimeout(() => openThread(target, entry.pin), 450); }
+      else openThread(target, panel || document.body);
+    }
     observe(15000);
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
