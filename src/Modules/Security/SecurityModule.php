@@ -425,6 +425,14 @@ final class SecurityModule implements Module
             $reason,
             $this->client_ip(),
         ));
+        if ($reason === 'replay') {
+            // Most replays are a person's double click: the first submit has
+            // already logged them in. Send them on to wp-admin (auth_redirect
+            // returns anyone else to the login form) instead of a bare 403.
+            nocache_headers();
+            wp_safe_redirect(admin_url(), 303);
+            exit;
+        }
         status_header(403);
         nocache_headers();
         // Stop here — before wp_signon(): no user lookup, no password hashing,
