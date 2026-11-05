@@ -12,13 +12,16 @@ use Valolink\Plugin\Settings;
 
 /**
  * Umami analytics: prints our Umami tracker on the front end for the website ID
- * set under Valolink → Umami, for visitors who are not logged in. wp-admin and
- * logged-in users (our own and the customer's editors) are left out of the stats.
+ * set under Valolink → Umami. wp-admin and users who can edit content (our own
+ * and the customer's editors) are left out of the stats; logged-in shop
+ * customers are visitors like any other.
  *
  * The script comes from cdn.valolink.fi, an alias of umami.valolink.fi whose
  * name ad blockers do not list. A staging clone keeps the production website
  * ID, so nothing is printed while the staging decision says staging — the
- * clone would otherwise report its visits as production's.
+ * clone would otherwise report its visits as production's. data-domains
+ * covers what that check cannot see: a clone serving production's cached HTML,
+ * tracker and all, is not counted because its hostname is not on the list.
  *
  * Its own module rather than a Scripts snippet so that event tracking can grow
  * here later.
@@ -31,6 +34,9 @@ final class UmamiModule implements Module
     public const SAVE_ACTION  = 'valolink_save_umami';
 
     public const SCRIPT_URL = 'https://cdn.valolink.fi/script.js';
+
+    /** Regex, as WP Rocket's delay exclusions are matched against the script tag. */
+    private const ROCKET_EXCLUSION = 'cdn\\.valolink\\.fi/script\\.js';
 
     private const UUID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/';
 
@@ -46,6 +52,9 @@ final class UmamiModule implements Module
         add_action('admin_menu', [$this, 'add_settings_page']);
         add_action('admin_post_' . self::SAVE_ACTION, [$this, 'handle_save']);
         add_action('wp_head', [$this, 'print_tracker'], 1);
+        // Delayed until the first click or scroll, a visitor who leaves without
+        // touching the page would never be counted.
+        add_filter('rocket_delay_js_exclusions', [$this, 'exclude_from_rocket_delay']);
     }
 
     public function uninstall(): void
@@ -61,17 +70,34 @@ final class UmamiModule implements Module
     {
         try {
             $website_id = $this->website_id();
-            if ($website_id === '' || is_user_logged_in() || StagingDetector::is_staging()) {
+            if ($website_id === '' || current_user_can('edit_posts') || StagingDetector::is_staging()) {
                 return;
             }
-            wp_print_script_tag([
+            $attributes = [
                 'defer'           => true,
                 'src'             => self::SCRIPT_URL,
                 'data-website-id' => $website_id,
-            ]);
+            ];
+            // Umami compares the exact hostname; the normalised host has no www.
+            $host = StagingDetector::home_hostname();
+            if ($host !== '') {
+                $attributes['data-domains'] = $host . ',www.' . $host;
+            }
+            if ($this->exclude_search()) {
+                $attributes['data-exclude-search'] = 'true';
+            }
+            wp_print_script_tag($attributes);
         } catch (\Throwable $e) {
             error_log('[valolink-plugin] umami: ' . $e->getMessage());
         }
+    }
+
+    /** @param mixed $exclusions */
+    public function exclude_from_rocket_delay($exclusions): array
+    {
+        $exclusions = is_array($exclusions) ? $exclusions : [];
+        $exclusions[] = self::ROCKET_EXCLUSION;
+        return $exclusions;
     }
 
     // -------------------------------------------------------------------------
@@ -116,7 +142,7 @@ final class UmamiModule implements Module
                 <?php
                 printf(
                     /* translators: %s: tracker script URL */
-                    esc_html__('Adds the Umami tracker (%s) to every front-end page for visitors who are not logged in; wp-admin and logged-in users are not tracked. Nothing is added while the site counts as staging, so a clone does not report its visits as the production site\'s.', 'valolink-plugin'),
+                    esc_html__('Adds the Umami tracker (%s) to every front-end page except to users who can edit content; wp-admin is not tracked, logged-in shop customers are. Only this site\'s own hostname is counted, and nothing is added while the site counts as staging, so a clone does not report its visits as the production site\'s.', 'valolink-plugin'),
                     '<code>' . esc_html(self::SCRIPT_URL) . '</code>',
                 );
                 ?>
@@ -140,6 +166,19 @@ final class UmamiModule implements Module
                             </p>
                         </td>
                     </tr>
+                    <tr>
+                        <th scope="row"><?php esc_html_e('Leave out query strings', 'valolink-plugin'); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="exclude_search" value="1"
+                                       <?php checked($this->exclude_search()); ?>>
+                                <?php esc_html_e('Record page addresses without the part after "?".', 'valolink-plugin'); ?>
+                            </label>
+                            <p class="description" style="max-width:700px;">
+                                <?php esc_html_e('Keeps ad click IDs (fbclid, gclid) and things like order keys out of the page list, so one page shows as one row. Umami reads campaigns from the same query string, so with this on UTM campaigns and ad clicks are no longer reported. Off by default.', 'valolink-plugin'); ?>
+                            </p>
+                        </td>
+                    </tr>
                 </tbody></table>
 
                 <?php submit_button(__('Save Umami Settings', 'valolink-plugin')); ?>
@@ -160,7 +199,10 @@ final class UmamiModule implements Module
         $args       = ['page' => self::SUBPAGE_SLUG];
 
         if ($website_id === '' || preg_match(self::UUID_PATTERN, $website_id) === 1) {
-            $this->settings->set_module_settings(self::MODULE_ID, ['website_id' => $website_id]);
+            $this->settings->set_module_settings(self::MODULE_ID, [
+                'website_id'     => $website_id,
+                'exclude_search' => !empty($_POST['exclude_search']),
+            ]);
             $args['updated'] = '1';
         } else {
             $args['invalid'] = '1';
@@ -178,5 +220,10 @@ final class UmamiModule implements Module
     {
         $id = $this->settings->get_module_setting(self::MODULE_ID, 'website_id', '');
         return is_string($id) && preg_match(self::UUID_PATTERN, $id) === 1 ? $id : '';
+    }
+
+    private function exclude_search(): bool
+    {
+        return (bool) $this->settings->get_module_setting(self::MODULE_ID, 'exclude_search', false);
     }
 }
