@@ -19,6 +19,7 @@ use Valolink\Plugin\Modules\Security\SecurityModule;
 use Valolink\Plugin\Modules\Staging\MuPluginInstaller;
 use Valolink\Plugin\Modules\Staging\StagingModule;
 use Valolink\Plugin\Modules\Toolbox\ToolboxModule;
+use Valolink\Plugin\Modules\Umami\UmamiModule;
 
 final class Plugin
 {
@@ -148,6 +149,15 @@ final class Plugin
             label: static fn (): string => __('Scripts', 'valolink-plugin'),
             description: static fn (): string => __('Manage JavaScript snippets and external script URLs with per-snippet loading strategy (head/async/defer/footer/on-interaction/on-scroll) and frontend/admin/logged-in/logged-out placement. Configure under Valolink → Scripts.', 'valolink-plugin'),
             class: ScriptsModule::class,
+            default_enabled: false,
+            constructor_args: [$settings],
+        ));
+
+        $registry->register(new ModuleManifest(
+            id: UmamiModule::MODULE_ID,
+            label: static fn (): string => __('Umami', 'valolink-plugin'),
+            description: static fn (): string => __('Adds our Umami analytics tracker to the front end for the website ID set under Valolink → Umami. Nothing is added on staging.', 'valolink-plugin'),
+            class: UmamiModule::class,
             default_enabled: false,
             constructor_args: [$settings],
         ));
