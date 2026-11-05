@@ -12,7 +12,8 @@ use Valolink\Plugin\Settings;
 
 /**
  * Umami analytics: prints our Umami tracker on the front end for the website ID
- * set under Valolink → Umami.
+ * set under Valolink → Umami, for visitors who are not logged in. wp-admin and
+ * logged-in users (our own and the customer's editors) are left out of the stats.
  *
  * The script comes from cdn.valolink.fi, an alias of umami.valolink.fi whose
  * name ad blockers do not list. A staging clone keeps the production website
@@ -60,7 +61,7 @@ final class UmamiModule implements Module
     {
         try {
             $website_id = $this->website_id();
-            if ($website_id === '' || StagingDetector::is_staging()) {
+            if ($website_id === '' || is_user_logged_in() || StagingDetector::is_staging()) {
                 return;
             }
             wp_print_script_tag([
@@ -115,7 +116,7 @@ final class UmamiModule implements Module
                 <?php
                 printf(
                     /* translators: %s: tracker script URL */
-                    esc_html__('Adds the Umami tracker (%s) to every front-end page. Nothing is added while the site counts as staging, so a clone does not report its visits as the production site\'s.', 'valolink-plugin'),
+                    esc_html__('Adds the Umami tracker (%s) to every front-end page for visitors who are not logged in; wp-admin and logged-in users are not tracked. Nothing is added while the site counts as staging, so a clone does not report its visits as the production site\'s.', 'valolink-plugin'),
                     '<code>' . esc_html(self::SCRIPT_URL) . '</code>',
                 );
                 ?>

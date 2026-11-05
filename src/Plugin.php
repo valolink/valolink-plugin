@@ -156,7 +156,7 @@ final class Plugin
         $registry->register(new ModuleManifest(
             id: UmamiModule::MODULE_ID,
             label: static fn (): string => __('Umami', 'valolink-plugin'),
-            description: static fn (): string => __('Adds our Umami analytics tracker to the front end for the website ID set under Valolink → Umami. Nothing is added on staging.', 'valolink-plugin'),
+            description: static fn (): string => __('Adds our Umami analytics tracker to the front end for the website ID set under Valolink → Umami. Logged-in users and wp-admin are not tracked, and nothing is added on staging.', 'valolink-plugin'),
             class: UmamiModule::class,
             default_enabled: false,
             constructor_args: [$settings],
