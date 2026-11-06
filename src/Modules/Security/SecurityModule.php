@@ -29,6 +29,7 @@ final class SecurityModule implements Module
         'remove_wlw_rsd',
         'generic_login_errors',
         'login_timing_guard',
+        'login_attempt_limit',
         'disable_file_editing',
         'header_hsts',
         'header_xframe',
@@ -122,6 +123,10 @@ final class SecurityModule implements Module
             // mu-plugin bootstrap-ordering hazards that bit the staging module.
             add_action('login_form', [$this, 'render_login_token']);
             add_action('login_init', [$this, 'enforce_login_timing'], 0);
+        }
+
+        if ($this->is_enabled('login_attempt_limit')) {
+            (new LoginLimiter())->register();
         }
 
         if ($this->is_enabled('disable_file_editing')) {
@@ -219,6 +224,11 @@ final class SecurityModule implements Module
                         'login_timing_guard',
                         __('Invisible login bot filter', 'valolink-plugin'),
                         __('Plants a signed, single-use token in the login form and rejects credential submissions with no token, a forged token, or an implausibly fast submit — the fingerprint of bots that POST straight to wp-login.php. Invisible to real users; blocked attempts are dropped before password checking, so they never reach the database or the event log. Enable per site.', 'valolink-plugin'),
+                    ); ?>
+                    <?php $this->checkbox_row(
+                        'login_attempt_limit',
+                        __('Limit failed logins per IP', 'valolink-plugin'),
+                        __('After 10 failed logins from one address within 30 minutes, that address cannot log in for 15 minutes, and the login form says "Too many login attempts, try again in N minutes" (in Finnish on Finnish sites) instead of the site going quiet. Covers wp-login.php and the WooCommerce My account login alike. A successful login clears the count.', 'valolink-plugin'),
                     ); ?>
                 </tbody></table>
 
@@ -341,6 +351,11 @@ final class SecurityModule implements Module
     public function generic_login_error(string $error): string
     {
         // Only override messages that leak which half of the credentials was wrong.
+        // Customers see this on WooCommerce's My account page too, and the plugin has
+        // no translation files, so a Finnish site gets it in Finnish here.
+        if (str_starts_with(determine_locale(), 'fi')) {
+            return 'Kirjautuminen epäonnistui. Tarkista käyttäjätunnus ja salasana ja yritä uudelleen.';
+        }
         return __('Login failed. Check your username and password and try again.', 'valolink-plugin');
     }
 
