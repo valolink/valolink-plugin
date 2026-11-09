@@ -28,6 +28,7 @@ final class ToolboxModule implements Module
         'allow_svg_uploads',
         'allow_json_uploads',
         'allow_webp_uploads',
+        'clean_filenames',
         // Frontend cleanup
         'disable_emojis',
         'disable_embeds',
@@ -58,6 +59,9 @@ final class ToolboxModule implements Module
     private const COMPETING_EMOJI_PLUGINS = [
         'disable-emojis/disable-emojis.php',
     ];
+    private const COMPETING_FILENAME_PLUGINS = [
+        'sanitize-spanish-filenames/sanitize-spanish-filenames.php', // "Clean Filenames"
+    ];
 
     public function __construct(private readonly Settings $settings) {}
 
@@ -84,6 +88,10 @@ final class ToolboxModule implements Module
         if ($this->is_enabled('allow_webp_uploads')) {
             add_filter('upload_mimes',              [$this, 'add_webp_mime']);
             add_filter('wp_check_filetype_and_ext', [$this, 'permit_webp_check'], 10, 4);
+        }
+
+        if ($this->is_enabled('clean_filenames')) {
+            add_filter('sanitize_file_name', [$this, 'clean_filename'], 10, 1);
         }
 
         if ($this->is_enabled('disable_emojis')) {
@@ -180,6 +188,11 @@ final class ToolboxModule implements Module
                         'allow_webp_uploads',
                         __('Allow WebP uploads', 'valolink-plugin'),
                         __('Forces .webp uploads through on hosts whose libmagic returns a non-image MIME for them. Core supports WebP natively; this is only needed if your server rejects it.', 'valolink-plugin'),
+                    ); ?>
+                    <?php $this->checkbox_row(
+                        'clean_filenames',
+                        __('Clean upload file names', 'valolink-plugin'),
+                        __('Uploaded files get plain names: ä, ö and å become a and o, other letters are transliterated to Latin, spaces become hyphens, everything is lower case and anything outside a–z, 0–9, dot, hyphen and underscore is dropped ("Ääkköset Öljy.JPG" → "aakkoset-oljy.jpg"). Replaces the Clean Filenames plugin; existing files keep their names.', 'valolink-plugin'),
                     ); ?>
                 </tbody></table>
 
@@ -290,6 +303,40 @@ final class ToolboxModule implements Module
             admin_url('admin.php'),
         ));
         exit;
+    }
+
+    // -------------------------------------------------------------------------
+    // Clean file names
+    // -------------------------------------------------------------------------
+
+    /**
+     * sanitize_file_name runs on every upload (media library, forms) after core's
+     * own cleanup. Same result as the Clean Filenames plugin it replaces: accents
+     * off, typographic quotes and @ % dropped, spaces and + to hyphens, every dot
+     * but the extension's to a hyphen, nothing outside [a-z0-9_.-], lower case.
+     * Cyrillic and other scripts go through intl's transliterator when the
+     * server has it, instead of the plugin's hand-written tables.
+     */
+    public function clean_filename(mixed $filename): string
+    {
+        $name = remove_accents((string) $filename);
+        if (function_exists('transliterator_transliterate') && preg_match('/[^\x00-\x7F]/', $name)) {
+            $latin = transliterator_transliterate('Any-Latin; Latin-ASCII', $name);
+            if (is_string($latin)) {
+                $name = $latin;
+            }
+        }
+        $name = str_replace('×', 'x', $name);
+        $name = (string) preg_replace('/[\s+]+/u', '-', $name);
+        $name = (string) preg_replace('/\.(?=.*\.)/', '-', $name);
+        $name = (string) preg_replace('/[^a-zA-Z0-9_.-]/', '', $name);
+        $name = strtolower($name);
+
+        // A name made only of dropped characters would leave just ".jpg".
+        if ($name === '' || str_starts_with($name, '.')) {
+            $name = 'file' . $name;
+        }
+        return $name;
     }
 
     // -------------------------------------------------------------------------
@@ -627,6 +674,12 @@ final class ToolboxModule implements Module
 
     private function render_conflict_notices(): void
     {
+        if ($this->is_enabled('clean_filenames')) {
+            PluginDetector::render_conflict_notice(
+                PluginDetector::find_active_in(self::COMPETING_FILENAME_PLUGINS),
+                __('Clean upload file names: another file-name plugin is active:', 'valolink-plugin'),
+            );
+        }
         if ($this->is_enabled('allow_svg_uploads')) {
             PluginDetector::render_conflict_notice(
                 PluginDetector::find_active_in(self::COMPETING_SVG_PLUGINS),
