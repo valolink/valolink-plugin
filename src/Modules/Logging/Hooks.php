@@ -48,6 +48,9 @@ final class Hooks
     /** @var array<int, true> menus already logged in this request */
     private array $menus_logged = [];
 
+    /** Headers of the mail being sent, as the caller gave them (see remember_mail_headers). */
+    private mixed $pending_headers = null;
+
     /** @param bool $store_mail_bodies Logging setting "store mail bodies" (off by default). */
     public function __construct(private readonly bool $store_mail_bodies = false) {}
 
@@ -88,6 +91,20 @@ final class Hooks
         // Email — covers both native wp_mail and our Resend-routed sends.
         add_action('wp_mail_succeeded', [$this, 'on_mail_sent'],   10, 1);
         add_action('wp_mail_failed',    [$this, 'on_mail_failed'], 10, 1);
+        if ($this->store_mail_bodies) {
+            add_filter('wp_mail', [$this, 'remember_mail_headers'], PHP_INT_MAX);
+        }
+    }
+
+    /**
+     * wp_mail_succeeded hands over the headers after wp_mail parsed them, with
+     * From, Cc, Bcc, Reply-To and Content-Type taken out. Keep the full set as
+     * the last wp_mail filter sees it (after the staging intercept's rewrite).
+     */
+    public function remember_mail_headers(mixed $atts): mixed
+    {
+        $this->pending_headers = is_array($atts) ? ($atts['headers'] ?? null) : null;
+        return $atts;
     }
 
     public function on_login(string $user_login, \WP_User $user): void
@@ -256,7 +273,7 @@ final class Hooks
             '__message' => 'Email sent: ' . (string) ($mail_data['subject'] ?? '(no subject)'),
         ];
         if ($this->store_mail_bodies) {
-            $context += self::mail_body_fields($mail_data);
+            $context += self::mail_body_fields($this->with_pending_headers($mail_data));
         }
         EventLogger::log('mail.sent', $context);
     }
@@ -272,7 +289,17 @@ final class Hooks
             'error_code'   => $error->get_error_code(),
             'error_message'=> $error->get_error_message(),
             '__message'    => 'Email failed: ' . $error->get_error_message(),
-        ] + ($this->store_mail_bodies && is_array($data) ? self::mail_body_fields($data) : []), 'warning');
+        ] + ($this->store_mail_bodies && is_array($data) ? self::mail_body_fields($this->with_pending_headers($data)) : []), 'warning');
+    }
+
+    /** @param array<string, mixed> $mail */
+    private function with_pending_headers(array $mail): array
+    {
+        if ($this->pending_headers !== null && $this->pending_headers !== [] && $this->pending_headers !== '') {
+            $mail['headers'] = $this->pending_headers;
+        }
+        $this->pending_headers = null;
+        return $mail;
     }
 
     /**
@@ -291,10 +318,17 @@ final class Hooks
         if (is_string($headers)) {
             $headers = preg_split('/\r\n|\r|\n/', $headers) ?: [];
         }
-        $headers = array_values(array_filter(array_map(
-            static fn($h): string => trim((string) $h),
-            is_array($headers) ? $headers : [],
-        ), static fn(string $h): bool => $h !== ''));
+        // By wp_mail_succeeded, wp_mail has parsed the custom headers into
+        // name => value pairs (From, Cc, Bcc, Reply-To and Content-Type are
+        // taken out); a caller's raw list keeps numeric keys.
+        $lines = [];
+        foreach (is_array($headers) ? $headers : [] as $name => $value) {
+            $line = is_string($name) ? $name . ': ' . trim((string) $value) : trim((string) $value);
+            if ($line !== '') {
+                $lines[] = $line;
+            }
+        }
+        $headers = $lines;
 
         $attachments = $mail['attachments'] ?? [];
         if (is_string($attachments)) {
