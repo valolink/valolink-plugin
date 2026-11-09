@@ -12,6 +12,7 @@ use Valolink\Plugin\Modules\Branding\BrandingModule;
 use Valolink\Plugin\Modules\Comments\CommentsModule;
 use Valolink\Plugin\Modules\Email\EmailModule;
 use Valolink\Plugin\Modules\EngineLink\EngineLinkModule;
+use Valolink\Plugin\Modules\FormGuard\FormGuardModule;
 use Valolink\Plugin\Modules\Logging\LoggingModule;
 use Valolink\Plugin\Modules\MaintenancePage\MaintenancePageModule;
 use Valolink\Plugin\Modules\Scripts\ScriptsModule;
@@ -194,6 +195,15 @@ final class Plugin
             label: static fn (): string => __('Security', 'valolink-plugin'),
             description: static fn (): string => __('Per-feature hardening toggles (disable XML-RPC, etc.). Configure under Valolink → Security.', 'valolink-plugin'),
             class: SecurityModule::class,
+            default_enabled: false,
+            constructor_args: [$settings],
+        ));
+
+        $registry->register(new ModuleManifest(
+            id: FormGuardModule::MODULE_ID,
+            label: static fn (): string => __('Form guard', 'valolink-plugin'),
+            description: static fn (): string => __('Spam check for Contact Form 7, WooCommerce sign-in, lost password, comments and reviews, and registration: a signed single-use token fetched by JavaScript plus an invisible decoy field. Replaces WP Armour and the standalone Valolink CF7 Guard; rejections go to the Event Log. Configure under Valolink → Form guard.', 'valolink-plugin'),
+            class: FormGuardModule::class,
             default_enabled: false,
             constructor_args: [$settings],
         ));
