@@ -282,8 +282,28 @@ final class LogViewerPage
                                 <?php else : ?>
                                     <?php echo esc_html($row['message'] ?? ''); ?>
                                     <?php if (!empty($row['context'])) :
-                                        $decoded = json_decode((string) $row['context'], true);
+                                        $decoded   = json_decode((string) $row['context'], true);
+                                        $mail_body = null;
+                                        $body_type = 'text';
+                                        if (is_array($decoded) && isset($decoded['body'])) {
+                                            $mail_body = (string) $decoded['body'];
+                                            $body_type = ($decoded['body_type'] ?? '') === 'html' ? 'html' : 'text';
+                                            unset($decoded['body']);
+                                        }
                                         ?>
+                                        <?php if ($mail_body !== null) : ?>
+                                            <details class="valolink-context valolink-mail-body">
+                                                <summary><?php esc_html_e('mail body', 'valolink-plugin'); ?></summary>
+                                                <?php if ($body_type === 'html') : ?>
+                                                    <?php // sandbox="" : no scripts, no forms, no same-origin access to wp-admin. ?>
+                                                    <iframe sandbox="" referrerpolicy="no-referrer" loading="lazy"
+                                                            title="<?php esc_attr_e('mail body', 'valolink-plugin'); ?>"
+                                                            srcdoc="<?php echo esc_attr($mail_body); ?>"></iframe>
+                                                <?php else : ?>
+                                                    <pre><?php echo esc_html($mail_body); ?></pre>
+                                                <?php endif; ?>
+                                            </details>
+                                        <?php endif; ?>
                                         <details class="valolink-context">
                                             <summary><?php esc_html_e('context', 'valolink-plugin'); ?></summary>
                                             <pre><?php echo esc_html(wp_json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)); ?></pre>
@@ -349,7 +369,7 @@ final class LogViewerPage
             <?php endif; ?>
 
             <hr style="margin:24px 0 16px;">
-            <h2><?php esc_html_e('Retention', 'valolink-plugin'); ?></h2>
+            <h2><?php esc_html_e('Retention and mail bodies', 'valolink-plugin'); ?></h2>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="valolink-log-retention">
                 <input type="hidden" name="action" value="<?php echo esc_attr(self::RETENTION_ACTION); ?>">
                 <?php wp_nonce_field(self::RETENTION_ACTION); ?>
@@ -370,6 +390,19 @@ final class LogViewerPage
                 <span class="description">
                     <?php esc_html_e('Older entries are pruned daily. Set to 0 to keep forever.', 'valolink-plugin'); ?>
                 </span>
+                <p>
+                    <label>
+                        <input type="checkbox" name="store_mail_bodies" value="1" <?php checked($this->store_mail_bodies()); ?>>
+                        <?php esc_html_e('Store mail bodies', 'valolink-plugin'); ?>
+                    </label>
+                    &nbsp;<?php esc_html_e('and keep them for', 'valolink-plugin'); ?>
+                    <input type="number" name="mail_body_retention_days" min="0" step="1" class="small-text"
+                           value="<?php echo esc_attr((string) $this->mail_body_retention_days()); ?>">
+                    <?php esc_html_e('days', 'valolink-plugin'); ?>
+                    <br><span class="description">
+                        <?php esc_html_e('Sent and failed mails get their body, headers and attachment names, so a customer\'s "I never got the mail" can be checked here. Bodies hold customers\' details, so they are cleared sooner than the row; 0 keeps them as long as the row. EngineLink sees only their size.', 'valolink-plugin'); ?>
+                    </span>
+                </p>
             </form>
 
             <style>
@@ -381,6 +414,7 @@ final class LogViewerPage
                 .valolink-log-page { color: #646970; font-size: 12px; }
                 .valolink-muted { color: #999; }
                 .valolink-context summary { cursor: pointer; color: #2271b1; font-size: 12px; }
+                .valolink-mail-body iframe { display: block; width: 700px; max-width: 100%; height: 480px; margin-top: 4px; border: 1px solid #dcdcde; background: #fff; }
                 .valolink-context pre { background: #f6f7f7; border: 1px solid #dcdcde; padding: 8px; margin-top: 4px; font-size: 11px; overflow-x: auto; max-width: 700px; }
                 .valolink-level { display: inline-block; padding: 1px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
                 .valolink-level-info    { background: #e0f2fe; color: #0369a1; }
@@ -481,6 +515,12 @@ final class LogViewerPage
 
         $days = max(0, (int) ($_POST['retention_days'] ?? self::DEFAULT_RETENTION_DAYS));
         $this->settings->set_module_setting(LoggingModule::MODULE_ID, 'retention_days', $days);
+        $this->settings->set_module_setting(LoggingModule::MODULE_ID, 'store_mail_bodies', !empty($_POST['store_mail_bodies']));
+        $this->settings->set_module_setting(
+            LoggingModule::MODULE_ID,
+            'mail_body_retention_days',
+            max(0, (int) ($_POST['mail_body_retention_days'] ?? LoggingModule::DEFAULT_MAIL_BODY_RETENTION_DAYS)),
+        );
 
         $this->redirect_back();
     }
@@ -491,6 +531,20 @@ final class LogViewerPage
             LoggingModule::MODULE_ID,
             'retention_days',
             self::DEFAULT_RETENTION_DAYS,
+        );
+    }
+
+    private function store_mail_bodies(): bool
+    {
+        return (bool) $this->settings->get_module_setting(LoggingModule::MODULE_ID, 'store_mail_bodies', false);
+    }
+
+    private function mail_body_retention_days(): int
+    {
+        return (int) $this->settings->get_module_setting(
+            LoggingModule::MODULE_ID,
+            'mail_body_retention_days',
+            LoggingModule::DEFAULT_MAIL_BODY_RETENTION_DAYS,
         );
     }
 

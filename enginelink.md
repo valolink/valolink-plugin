@@ -208,6 +208,8 @@ Query args: `event` (string), `user_login` (string), `level` (string), `before` 
 
 `next_cursor` is the last returned id when a full page was served, `null` when there are no more rows.
 
+Mail rows (`mail.sent`, `mail.failed`) carry `body_type`, `headers` and `attachments` in `context` when the site stores mail bodies (Logging setting, off by default). The body itself is never sent: `context.body_bytes` gives its size, and it is read in the site's Event Log. After the body retention (30 days by default) the row has `body_pruned: true` instead.
+
 ### GET /wp-json/enginelink/v1/log-events
 
 Distinct event names with counts, for building filter dropdowns:

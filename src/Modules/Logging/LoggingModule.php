@@ -18,6 +18,7 @@ final class LoggingModule implements Module
 
     private const DEFAULT_RETENTION_DAYS       = 90;
     private const FAILED_LOGIN_RETENTION_DAYS   = 14;   // failed logins are high-volume noise — age out sooner
+    public const DEFAULT_MAIL_BODY_RETENTION_DAYS = 30; // bodies hold customers' details; the row itself stays longer
     private const ROTATE_BATCH                  = 1000;
 
     public function __construct(private readonly Settings $settings) {}
@@ -38,7 +39,7 @@ final class LoggingModule implements Module
     {
         LogTable::maybe_install();
 
-        (new Hooks())->register();
+        (new Hooks((bool) $this->settings->get_module_setting(self::MODULE_ID, 'store_mail_bodies', false)))->register();
 
         // REST endpoint for EngineLink
         add_action('rest_api_init', [$this, 'register_routes']);
@@ -117,6 +118,11 @@ final class LoggingModule implements Module
             $row['id']      = (int) $row['id'];
             $row['user_id'] = $row['user_id'] !== null ? (int) $row['user_id'] : null;
             $row['context'] = $row['context'] ? json_decode((string) $row['context'], true) : null;
+            // Mail bodies stay on the site: EngineLink gets their size, not the text.
+            if (is_array($row['context']) && isset($row['context']['body'])) {
+                $row['context']['body_bytes'] = strlen((string) $row['context']['body']);
+                unset($row['context']['body']);
+            }
             return $row;
         }, $rows);
 
@@ -154,6 +160,9 @@ final class LoggingModule implements Module
         global $wpdb;
         $table     = LogTable::table_name();
         $retention = (int) $this->settings->get_module_setting(self::MODULE_ID, 'retention_days', self::DEFAULT_RETENTION_DAYS);
+
+        $this->prune_mail_bodies($retention);
+
         if ($retention <= 0) {
             return;
         }
@@ -201,6 +210,58 @@ final class LoggingModule implements Module
 
         if ($deleted_total > 0) {
             error_log("[valolink-plugin] rotation: pruned {$deleted_total} log rows");
+        }
+    }
+
+    /**
+     * Clears the body from mail rows older than the body retention; the row,
+     * with recipient, subject, headers and attachment names, stays until the
+     * general retention. Runs in PHP rather than with JSON_REMOVE so it works
+     * on any MySQL or MariaDB. About 50 mails a day on a busy shop.
+     */
+    private function prune_mail_bodies(int $retention): void
+    {
+        global $wpdb;
+        $table = LogTable::table_name();
+        $days  = (int) $this->settings->get_module_setting(
+            self::MODULE_ID,
+            'mail_body_retention_days',
+            self::DEFAULT_MAIL_BODY_RETENTION_DAYS,
+        );
+        if ($days <= 0 || ($retention > 0 && $days >= $retention)) {
+            return;
+        }
+        $cutoff = gmdate('Y-m-d H:i:s', time() - $days * DAY_IN_SECONDS);
+
+        $pruned = 0;
+        for ($i = 0; $i < 20; $i++) {
+            $rows = $wpdb->get_results($wpdb->prepare(
+                "SELECT id, context FROM $table
+                 WHERE event IN ('mail.sent', 'mail.failed') AND created_at < %s AND context LIKE %s
+                 ORDER BY id LIMIT %d",
+                $cutoff,
+                '%' . $wpdb->esc_like('"body":') . '%',
+                200,
+            ), ARRAY_A);
+            if (!$rows) {
+                break;
+            }
+            foreach ($rows as $row) {
+                $context = json_decode((string) $row['context'], true);
+                if (!is_array($context)) {
+                    continue;
+                }
+                unset($context['body'], $context['body_truncated']);
+                $context['body_pruned'] = true;
+                $wpdb->update($table, ['context' => wp_json_encode($context)], ['id' => (int) $row['id']], ['%s'], ['%d']);
+                $pruned++;
+            }
+            if (count($rows) < 200) {
+                break;
+            }
+        }
+        if ($pruned > 0) {
+            error_log("[valolink-plugin] rotation: cleared {$pruned} mail bodies");
         }
     }
 

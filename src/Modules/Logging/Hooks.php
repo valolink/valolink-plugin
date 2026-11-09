@@ -42,8 +42,14 @@ final class Hooks
         'comment_status' => 'comments',
     ];
 
+    /** A mail body larger than this is cut; WooCommerce's HTML mails run about 12 KB. */
+    private const MAIL_BODY_MAX_BYTES = 262144;
+
     /** @var array<int, true> menus already logged in this request */
     private array $menus_logged = [];
+
+    /** @param bool $store_mail_bodies Logging setting "store mail bodies" (off by default). */
+    public function __construct(private readonly bool $store_mail_bodies = false) {}
 
     public function register(): void
     {
@@ -244,11 +250,15 @@ final class Hooks
     {
         $to = $mail_data['to'] ?? null;
         if (is_array($to)) $to = implode(', ', $to);
-        EventLogger::log('mail.sent', [
+        $context = [
             'to'        => (string) ($to ?? ''),
             'subject'   => (string) ($mail_data['subject'] ?? ''),
             '__message' => 'Email sent: ' . (string) ($mail_data['subject'] ?? '(no subject)'),
-        ]);
+        ];
+        if ($this->store_mail_bodies) {
+            $context += self::mail_body_fields($mail_data);
+        }
+        EventLogger::log('mail.sent', $context);
     }
 
     public function on_mail_failed(\WP_Error $error): void
@@ -262,7 +272,58 @@ final class Hooks
             'error_code'   => $error->get_error_code(),
             'error_message'=> $error->get_error_message(),
             '__message'    => 'Email failed: ' . $error->get_error_message(),
-        ], 'warning');
+        ] + ($this->store_mail_bodies && is_array($data) ? self::mail_body_fields($data) : []), 'warning');
+    }
+
+    /**
+     * The body, headers and attachment names of a mail, for the mail rows when
+     * bodies are stored. The daily rotation clears `body` after the body
+     * retention (LoggingModule::prune_mail_bodies); the rest stays with the row.
+     *
+     * @param array<string, mixed> $mail wp_mail's arguments as wp_mail_succeeded / wp_mail_failed hand them over
+     * @return array<string, mixed>
+     */
+    public static function mail_body_fields(array $mail): array
+    {
+        $body = (string) ($mail['message'] ?? '');
+
+        $headers = $mail['headers'] ?? [];
+        if (is_string($headers)) {
+            $headers = preg_split('/\r\n|\r|\n/', $headers) ?: [];
+        }
+        $headers = array_values(array_filter(array_map(
+            static fn($h): string => trim((string) $h),
+            is_array($headers) ? $headers : [],
+        ), static fn(string $h): bool => $h !== ''));
+
+        $attachments = $mail['attachments'] ?? [];
+        if (is_string($attachments)) {
+            $attachments = preg_split('/\r\n|\r|\n/', $attachments) ?: [];
+        }
+        $attachments = array_values(array_filter(array_map(
+            static fn($a): string => wp_basename((string) $a),
+            is_array($attachments) ? $attachments : [],
+        )));
+
+        // WooCommerce and most plugins set text/html through the
+        // wp_mail_content_type filter, not a header, so fall back to the markup.
+        $is_html = (bool) preg_grep('/^content-type:\s*text\/html/i', $headers)
+            || (bool) preg_match('/<(html|body|table|div|p|br|a)\b/i', $body);
+
+        $fields = [
+            'body_type' => $is_html ? 'html' : 'text',
+            'body'      => strlen($body) > self::MAIL_BODY_MAX_BYTES ? mb_strcut($body, 0, self::MAIL_BODY_MAX_BYTES) : $body,
+        ];
+        if (strlen($body) > self::MAIL_BODY_MAX_BYTES) {
+            $fields['body_truncated'] = strlen($body);
+        }
+        if ($headers) {
+            $fields['headers'] = $headers;
+        }
+        if ($attachments) {
+            $fields['attachments'] = $attachments;
+        }
+        return $fields;
     }
 
     /**
