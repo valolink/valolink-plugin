@@ -28,13 +28,18 @@ RSYNC_OPTS=(-az)
 [[ "${DEV_RSYNC_DELETE:-false}" == "true" ]] && RSYNC_OPTS+=(--delete)
 [[ -n "${DEV_LINUX_USER:-}" ]]               && RSYNC_OPTS+=(--chown="${DEV_LINUX_USER}:${DEV_LINUX_USER}")
 
+# Only what a release ships (build.sh) belongs on a site; the rest of the
+# repo (notes, agent files, tooling) would be publicly readable there.
 RSYNC_EXCLUDES=(
-  --exclude='.git/'
-  --exclude='.direnv/'
-  --exclude='.env'
+  --exclude='.*'
+  --exclude='*.md'
   --exclude='vendor/'
   --exclude='node_modules/'
   --exclude='bin/'
+  --exclude='dist/'
+  --exclude='tests/'
+  --exclude='flake.*'
+  --exclude='*.sh'
 )
 
 do_sync() {
@@ -65,4 +70,5 @@ watchexec \
   --ignore 'vendor/**' \
   --ignore 'node_modules/**' \
   --ignore 'bin/**' \
+  --ignore 'dist/**' \
   -- "$SCRIPT_DIR/sync-dev.sh" --sync-only
