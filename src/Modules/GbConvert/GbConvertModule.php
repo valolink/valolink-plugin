@@ -374,6 +374,25 @@ final class GbConvertModule implements Module
                 )); ?>
             </p>
             <?php
+            // GP's content link colours print `.inside-article a { color }` (and :hover), which outranks a
+            // v2 Text block's `.gb-text-<id>` — v1's `a.gb-button-<id>` tied with it and came later.
+            $gp = (array) get_option('generate_settings', []);
+            $gp_links = array_filter([
+                'content_link_color'       => (string) ($gp['content_link_color'] ?? ''),
+                'content_link_hover_color' => (string) ($gp['content_link_hover_color'] ?? ''),
+            ]);
+            if ($gp_links && get_template() === 'generatepress') : ?>
+                <div class="notice notice-warning inline"><p>
+                    <?php echo esc_html(sprintf(
+                        /* translators: 1: content link colours, 2: global link colours */
+                        __('GeneratePress has content link colours set (%1$s; global link colours: %2$s). Its `.inside-article a` rules outrank the colours of converted link buttons, so they would take the link colour. Clear them under Customizer → Colors → Content (links then use the global colours) and compare hover colours with the live site: these rules may also have been hiding a class\'s own hover colour.', 'valolink-plugin'),
+                        implode(', ', $gp_links),
+                        implode(', ', array_filter([(string) ($gp['link_color'] ?? ''), (string) ($gp['link_color_hover'] ?? '')])),
+                    )); ?>
+                </p></div>
+            <?php endif; ?>
+
+            <?php
             $legacy = self::legacy_css_classes();
             if ($legacy) :
                 $kept = array_filter(array_keys($legacy), [self::class, 'keepable']);

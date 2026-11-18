@@ -81,6 +81,12 @@
 			if (al(a.alignmentTablet)) addAt(styles, MQ.tabletDown, al(a.alignmentTablet));
 			if (al(a.alignmentMobile)) addAt(styles, MQ.mobile, al(a.alignmentMobile));
 		}
+		// v1 printed `border: 2px solid` with no colour, so the border took the text colour (and
+		// beat a class's border colour); v2 writes width and style only.
+		const bo = a.borders || {};
+		['Top', 'Right', 'Bottom', 'Left'].forEach(side => {
+			if (bo['border' + side + 'Width'] && !bo['border' + side + 'Color'] && !styles['border' + side + 'Color']) styles['border' + side + 'Color'] = 'currentColor';
+		});
 		// Wide/full alignment was a class on v1's container.
 		if (a.align === 'wide' || a.align === 'full') className = (className + ' align' + a.align).trim();
 		// Advanced backgrounds (GB Pro): plain gradients on the block itself map to background-image.
@@ -134,7 +140,8 @@
 					return s.outerHTML;
 				};
 				const size = ta.iconStyles && ta.iconStyles.width;
-				const iconStyles = { svg: { width: size || '1em', height: (ta.iconStyles && ta.iconStyles.height) || size || '1em' } };
+				// v1's icon wrapper had line-height: 0.
+				const iconStyles = { lineHeight: '0', svg: { width: size || '1em', height: (ta.iconStyles && ta.iconStyles.height) || size || '1em' } };
 
 				// A closed v2 content box still shows its own padding and margins, so the v1 content's
 				// styles go on an element inside it, as in GB's own v2 accordion pattern.
