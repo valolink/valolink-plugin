@@ -173,6 +173,8 @@ final class GbConvertModule implements Module
             $name === 'generateblocks/button-container'                    => __('button container', 'valolink-plugin'),
             !empty($a['useDynamicData']) || !empty($a['dynamicContentType']) || !empty($a['dynamicLinkType'])
                                                                            => __('dynamic data', 'valolink-plugin'),
+            !empty($a['useAdvBackgrounds']) && !self::adv_backgrounds_mappable((array) ($a['advBackgrounds'] ?? []))
+                                                                           => __('advanced background', 'valolink-plugin'),
             !empty($a['useGlobalStyle']) || !empty($a['isGlobalStyle'])    => __('global style', 'valolink-plugin'),
             $role !== '' && !in_array($role, self::ACCORDION_ROLES, true)  => sprintf(__('variant "%s"', 'valolink-plugin'), $role),
             !empty($a['googleFont'])                                       => __('Google font', 'valolink-plugin'),
@@ -181,6 +183,65 @@ final class GbConvertModule implements Module
                                                                            => __('legacy layout', 'valolink-plugin'),
             default                                                        => null,
         };
+    }
+
+    /**
+     * v1 class names the site's own CSS refers to, with where. v2 blocks carry
+     * none of them (.gb-container, .gb-headline-text, .gb-container-<id>…), so
+     * rules written for v1 stop applying — on valolink.fi `.gb-container
+     * { position: relative; z-index: 1 }` held up the card notches and hero tabs.
+     * Converted blocks keep the ones listed here (editor.js), so those rules
+     * still match; classes on wrappers v2 does not have can only be reported.
+     *
+     * @return array<string, list<string>> class name => sources
+     */
+    public static function legacy_css_classes(): array
+    {
+        $sources = [
+            __('Additional CSS', 'valolink-plugin')                => function_exists('wp_get_custom_css') ? wp_get_custom_css() : '',
+            __('GenerateBlocks global styles', 'valolink-plugin') => (string) get_option('generateblocks_style_css', ''),
+        ];
+        if (is_child_theme() && is_readable(get_stylesheet_directory() . '/style.css')) {
+            $sources[__('child theme style.css', 'valolink-plugin')] = (string) file_get_contents(get_stylesheet_directory() . '/style.css');
+        }
+        $found = [];
+        foreach ($sources as $source => $css) {
+            $css = preg_replace('#/\*.*?\*/#s', '', (string) $css);
+            preg_match_all('/\.(gb-(?:container|grid-wrapper|grid-column|headline|headline-text|button|button-text|button-wrapper|image|inside-container|icon)(?:-[0-9a-f]{8})?)(?![\w-])/', (string) $css, $m);
+            foreach (array_unique($m[1]) as $class) {
+                $found[$class][] = $source;
+            }
+        }
+        ksort($found);
+
+        return $found;
+    }
+
+    /** Whether editor.js can put this class on a converted block (v1 put it on the block itself). */
+    public static function keepable(string $class): bool
+    {
+        return (bool) preg_match('/^gb-(?:container|grid-wrapper|headline|headline-text|button|button-text|image)(?:-[0-9a-f]{8})?$/', $class);
+    }
+
+    /**
+     * editor.js carries over one plain gradient on the block itself; image layers,
+     * pseudo-element targets, hover states and per-device layers stay v1.
+     *
+     * @param array<int, mixed> $layers
+     */
+    private static function adv_backgrounds_mappable(array $layers): bool
+    {
+        if (count($layers) > 1) {
+            return false;
+        }
+        foreach ($layers as $g) {
+            if (!is_array($g) || ($g['type'] ?? '') !== 'gradient' || ($g['target'] ?? 'self') !== 'self'
+                || ($g['device'] ?? 'all') !== 'all' || ($g['state'] ?? 'normal') !== 'normal') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     // -------------------------------------------------------------------------
@@ -249,8 +310,9 @@ final class GbConvertModule implements Module
         $handle = 'valolink-gb-convert-editor';
         wp_enqueue_script($handle, self::asset_url('editor.js'), ['wp-blocks', 'wp-data', 'wp-editor', 'wp-block-editor', 'wp-notices', 'wp-dom-ready'], self::version(), true);
         wp_add_inline_script($handle, 'window.valolinkGbConvert = ' . wp_json_encode([
-            'mode'     => $mode,
-            'adminUrl' => add_query_arg('page', self::SUBPAGE_SLUG, admin_url('admin.php')),
+            'mode'        => $mode,
+            'adminUrl'    => add_query_arg('page', self::SUBPAGE_SLUG, admin_url('admin.php')),
+            'keepClasses' => array_values(array_filter(array_keys(self::legacy_css_classes()), [self::class, 'keepable'])),
         ]) . ';', 'before');
     }
 
@@ -311,6 +373,23 @@ final class GbConvertModule implements Module
                     count(array_filter($rows, static fn (array $r): bool => (bool) $r['v1'])),
                 )); ?>
             </p>
+            <?php
+            $legacy = self::legacy_css_classes();
+            if ($legacy) :
+                $kept = array_filter(array_keys($legacy), [self::class, 'keepable']);
+                $lost = array_diff(array_keys($legacy), $kept);
+                $list = static fn (array $classes): string => implode(', ', array_map(static fn (string $c): string => '.' . $c . ' (' . implode(', ', $legacy[$c]) . ')', $classes));
+                ?>
+                <div class="notice notice-<?php echo $lost ? 'warning' : 'info'; ?> inline"><p>
+                    <?php if ($kept) : ?>
+                        <?php echo esc_html(sprintf(__('The site\'s CSS refers to v1 class names: %s. Converted blocks keep these classes, so those rules still apply.', 'valolink-plugin'), $list($kept))); ?>
+                    <?php endif; ?>
+                    <?php if ($lost) : ?>
+                        <?php echo esc_html(sprintf(__('These belong to v1 wrappers that v2 blocks do not have, so their rules stop applying — check them by hand: %s.', 'valolink-plugin'), $list($lost))); ?>
+                    <?php endif; ?>
+                </p></div>
+            <?php endif; ?>
+
             <p class="description">
                 <?php esc_html_e('Preview opens the post in the editor converted but unsaved: check it there or with Preview, then Save/Update to keep it, or leave without saving. Convert saves straight away, one post after another in a hidden editor. Before either, the post\'s v1 content is copied aside once; Restore puts it back. Blocks listed under "Stays v1" are left as they are.', 'valolink-plugin'); ?>
             </p>

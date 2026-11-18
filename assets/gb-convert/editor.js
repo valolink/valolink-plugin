@@ -30,11 +30,74 @@
 	const HOVER = '&:is(:hover, :focus)';
 	const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+	// v1 class names the site's CSS refers to (GbConvertModule::legacy_css_classes()); a converted
+	// block keeps the ones v1 put on that block, so rules like `.gb-container { position: relative }` still apply.
+	const KEEP = new Set(cfg.keepClasses || []);
+	function legacyClasses(b) {
+		const a = b.attributes;
+		const base = { 'generateblocks/container': 'gb-container', 'generateblocks/grid': 'gb-grid-wrapper', 'generateblocks/headline': 'gb-headline', 'generateblocks/button': 'gb-button', 'generateblocks/image': 'gb-image' }[b.name];
+		if (!base) return [];
+		const own = [base, base + '-' + a.uniqueId];
+		if (b.name === 'generateblocks/headline' && !a.hasIcon) own.push('gb-headline-text');
+		if (b.name === 'generateblocks/button' && !a.hasIcon) own.push('gb-button-text');
+		return own.filter(c => KEEP.has(c));
+	}
+	function withClasses(block, classes) {
+		if (!classes.length) return block;
+		const cur = (block.attributes.className || '').split(/\s+/).filter(Boolean);
+		const className = [...new Set([...cur, ...classes])].join(' ');
+		return { ...block, attributes: { ...block.attributes, className } };
+	}
+
+	// GB's media queries, as its v2 blocks write them.
+	const MQ = {
+		desktop: '@media (min-width:1025px)',
+		tablet: '@media (max-width:1024px) and (min-width:768px)',
+		tabletDown: '@media (max-width:1024px)',
+		mobile: '@media (max-width:767px)',
+	};
+	const addAt = (styles, at, add) => { styles[at] = { ...(styles[at] || {}), ...add }; };
+	const advGradientOk = g => g && g.type === 'gradient' && (g.target || 'self') === 'self' && (g.device || 'all') === 'all' && (g.state || 'normal') === 'normal';
+
+	// v1 attributes GB's transforms drop (found by transforming each attribute in use on
+	// valolink.fi on its own and comparing): put their CSS into the v2 styles.
+	function restoreDropped(b, el) {
+		const a = b.attributes;
+		const styles = { ...el.attributes.styles };
+		let className = el.attributes.className || '';
+		// Hide on device (GB Pro): v1 printed display:none !important per device.
+		if (a.hideOnDesktop) addAt(styles, MQ.desktop, { display: 'none !important' });
+		if (a.hideOnTablet) addAt(styles, MQ.tablet, { display: 'none !important' });
+		if (a.hideOnMobile) addAt(styles, MQ.mobile, { display: 'none !important' });
+		// v1 icons were `.gb-icon svg { fill: currentColor }`; v2 text blocks only get it for buttons.
+		if (a.icon && (b.name === 'generateblocks/headline' || b.name === 'generateblocks/button')) {
+			const svgKey = Object.keys(styles).find(k => /\bsvg$/.test(k) && !k.startsWith('@')) || '.gb-shape svg';
+			if (!(styles[svgKey] || {}).fill) styles[svgKey] = { ...(styles[svgKey] || {}), fill: 'currentColor' };
+		}
+		// Image alignment sat on v1's wrapper <figure>; v2 media is the <img> alone.
+		if (b.name === 'generateblocks/image') {
+			const al = v => (v === 'center' ? { display: 'block', marginLeft: 'auto', marginRight: 'auto' } : v === 'right' ? { display: 'block', marginLeft: 'auto' } : null);
+			if (al(a.alignment)) Object.assign(styles, al(a.alignment));
+			if (al(a.alignmentTablet)) addAt(styles, MQ.tabletDown, al(a.alignmentTablet));
+			if (al(a.alignmentMobile)) addAt(styles, MQ.mobile, al(a.alignmentMobile));
+		}
+		// Wide/full alignment was a class on v1's container.
+		if (a.align === 'wide' || a.align === 'full') className = (className + ' align' + a.align).trim();
+		// Advanced backgrounds (GB Pro): plain gradients on the block itself map to background-image.
+		if (a.useAdvBackgrounds && (a.advBackgrounds || []).length) {
+			const g = a.advBackgrounds[0];
+			const stop = s => (s === '' || s === undefined || s === null ? '' : ' ' + s + '%');
+			styles.backgroundImage = 'linear-gradient(' + (g.direction || 0) + 'deg, ' + g.colorOne + stop(g.stopOne) + ', ' + g.colorTwo + stop(g.stopTwo) + ')';
+		}
+		return { ...el, attributes: { ...el.attributes, styles, className } };
+	}
+
 	function staysReason(b, inLoop) {
 		const a = b.attributes;
 		if (inLoop) return 'query loop';
 		if (b.name === 'generateblocks/button-container') return 'button container';
 		if (a.useDynamicData || a.dynamicContentType || a.dynamicLinkType) return 'dynamic data';
+		if (a.useAdvBackgrounds && ((a.advBackgrounds || []).length > 1 || !(a.advBackgrounds || []).every(advGradientOk))) return 'advanced background';
 		return null; // the transforms' own isMatch() refuses the rest
 	}
 
@@ -75,30 +138,30 @@
 
 				// A closed v2 content box still shows its own padding and margins, so the v1 content's
 				// styles go on an element inside it, as in GB's own v2 accordion pattern.
-				const inner = createBlock('generateblocks/element', { tagName: 'div', styles: v2Of(content, 'generateblocks/element').attributes.styles },
-					content.innerBlocks.flatMap(c => conv(c, null, false)));
+				const inner = withClasses(createBlock('generateblocks/element', { tagName: 'div', styles: v2Of(content, 'generateblocks/element').attributes.styles },
+					content.innerBlocks.flatMap(c => conv(c, null, false))), legacyClasses(content));
 
 				bump(report.converted, 'accordion item');
-				return createBlock('generateblocks-pro/accordion-item', {
+				return withClasses(createBlock('generateblocks-pro/accordion-item', {
 					tagName: 'div',
 					styles: v2Of(item, 'generateblocks/element').attributes.styles,
 					openByDefault: !!item.attributes.accordionItemOpen,
 				}, [
-					createBlock('generateblocks-pro/accordion-toggle', { tagName: ta.buttonType === 'link' ? 'div' : 'button', styles }, [
+					withClasses(createBlock('generateblocks-pro/accordion-toggle', { tagName: ta.buttonType === 'link' ? 'div' : 'button', styles }, [
 						createBlock('generateblocks/text', { tagName: 'span', content: ta.text || t.attributes.content }),
 						createBlock('generateblocks-pro/accordion-toggle-icon', {
 							tagName: 'span', styles: iconStyles,
 							openIcon: svg('gb-accordion__icon'), closeIcon: svg('gb-accordion__icon-open'),
 						}),
-					]),
+					]), legacyClasses(toggle)),
 					createBlock('generateblocks-pro/accordion-content', { tagName: 'div' }, [inner]),
-				]);
+				]), legacyClasses(item));
 			});
 			const a = v2Of(acc, 'generateblocks/element').attributes;
 			const html = {};
 			if (acc.attributes.accordionTransition) html['data-transition'] = acc.attributes.accordionTransition;
 			if (acc.attributes.accordionMultipleOpen) html['data-accordion-multiple-open'] = '';
-			return [createBlock('generateblocks-pro/accordion', { tagName: 'div', styles: a.styles, htmlAttributes: html, className: a.className }, items)];
+			return [withClasses(createBlock('generateblocks-pro/accordion', { tagName: 'div', styles: a.styles, htmlAttributes: html, className: a.className }, items), legacyClasses(acc))];
 		}
 
 		// GB's grid transform looks column widths up in a small table: 33.33% + 66.66% comes out as three
@@ -111,6 +174,11 @@
 				const t = s.widthTablet || d;
 				return [d, t, s.widthMobile || t];
 			});
+			// v1 horizontal gap per breakpoint, inherited downwards like the widths.
+			const ga = grid.attributes;
+			const gd = Number(ga.horizontalGap) || 0;
+			const gt = ga.horizontalGapTablet === '' || ga.horizontalGapTablet === undefined ? gd : Number(ga.horizontalGapTablet) || 0;
+			const gaps = [gd, gt, ga.horizontalGapMobile === '' || ga.horizontalGapMobile === undefined ? gt : Number(ga.horizontalGapMobile) || 0];
 			const template = i => {
 				const w = at.map(x => /^\d+(\.\d+)?%$/.test(x[i]) ? parseFloat(x[i]) : NaN);
 				if (!w.length || w.some(isNaN)) return null;
@@ -120,8 +188,12 @@
 				}
 				const sum = w.reduce((s, v) => s + v, 0);
 				if (sum < 98 || sum > 102) return null;
-				const min = Math.min(...w);
-				return w.map(v => 'minmax(0, ' + Math.round(v / min * 100) / 100 + 'fr)').join(' ');
+				// A v1 column was w% of (row + gap) minus the gap, i.e. w% - (1 - w/100) * gap.
+				const g = gaps[i];
+				return w.map(v => {
+					const off = Math.round((1 - v / 100) * g * 100) / 100;
+					return off ? 'calc(' + v + '% - ' + off + 'px)' : v + '%';
+				}).join(' ');
 			};
 			const styles = { ...el.attributes.styles };
 			const media = Object.keys(styles).filter(k => k.startsWith('@media') && /max-width:\s*\d+/.test(k))
@@ -131,7 +203,6 @@
 			if (t && media[0]) styles[media[0]] = { ...styles[media[0]], gridTemplateColumns: t === d ? '' : t };
 			if (m && media[1]) styles[media[1]] = { ...styles[media[1]], gridTemplateColumns: m === (t || d) ? '' : m };
 			// The transform drops the v1 grid's vertical alignment.
-			const ga = grid.attributes;
 			const align = v => (v && v !== 'inherit' ? v : '');
 			if (align(ga.verticalAlignment)) styles.alignItems = ga.verticalAlignment;
 			if (align(ga.verticalAlignmentTablet) && media[0]) styles[media[0]] = { ...styles[media[0]], alignItems: ga.verticalAlignmentTablet };
@@ -163,6 +234,7 @@
 				const r = !why && target ? switchToBlockType(b, target) : null;
 				if (r && r.length) {
 					res = b.name === 'generateblocks/grid' ? [gridColumns(b, r[0])] : r;
+					res = [withClasses(restoreDropped(b, res[0]), legacyClasses(b)), ...res.slice(1)];
 					bump(report.converted, short);
 				} else {
 					bump(report.stays, why || (b.attributes.variantRole ? 'variant "' + b.attributes.variantRole + '"' : 'no transform (' + short + ')'));
