@@ -13,6 +13,7 @@ use Valolink\Plugin\Modules\Comments\CommentsModule;
 use Valolink\Plugin\Modules\Email\EmailModule;
 use Valolink\Plugin\Modules\EngineLink\EngineLinkModule;
 use Valolink\Plugin\Modules\FormGuard\FormGuardModule;
+use Valolink\Plugin\Modules\GbConvert\GbConvertModule;
 use Valolink\Plugin\Modules\Logging\LoggingModule;
 use Valolink\Plugin\Modules\MaintenancePage\MaintenancePageModule;
 use Valolink\Plugin\Modules\Scripts\ScriptsModule;
@@ -159,6 +160,15 @@ final class Plugin
             label: static fn (): string => __('Umami', 'valolink-plugin'),
             description: static fn (): string => __('Adds our Umami analytics tracker to the front end for the website ID set under Valolink → Umami. Editors and wp-admin are not tracked (logged-in shop customers are), and nothing is added on staging.', 'valolink-plugin'),
             class: UmamiModule::class,
+            default_enabled: false,
+            constructor_args: [$settings],
+        ));
+
+        $registry->register(new ModuleManifest(
+            id: GbConvertModule::MODULE_ID,
+            label: static fn (): string => __('GenerateBlocks v2 conversion', 'valolink-plugin'),
+            description: static fn (): string => __('Converts GenerateBlocks v1 blocks (container, grid, headline, button, image, Pro accordion) to v2 blocks with GenerateBlocks\' own transforms: preview a post converted in the editor, or convert many in a row, each backed up first with a Restore button. wp-admin only; switch it off when the site is done. Under Valolink → GenerateBlocks v2.', 'valolink-plugin'),
+            class: GbConvertModule::class,
             default_enabled: false,
             constructor_args: [$settings],
         ));
