@@ -28,8 +28,11 @@ namespace Valolink\Plugin\Modules\Accesslink;
  * (an attachment), pattern (a synced pattern with slot values), shortcode (one
  * registered shortcode — the site's own menus and widgets), block (a block that
  * renders itself, from a short allowlist: search, site logo, mini-cart,
- * customer account; scalar attributes only). Heading,
- * paragraph, text, button and image take "slot": "Name" — in a synced pattern
+ * customer account; scalar attributes only).
+ * Text and button take "icon": an inline SVG (shapes only; GenerateBlocks'
+ * icon, before the words, or after them with "icon_after": true; with empty
+ * words, the icon alone). A text node may be h2–h6 for a heading with an
+ * icon. Heading, paragraph, text, button and image take "slot": "Name" — in a synced pattern
  * that block's content becomes an override each page fills in. Classes must be
  * global styles that exist. Blocks are built as parsed-block arrays and written
  * by WordPress' own serialize_blocks(), so the comment JSON is escaped exactly
@@ -41,7 +44,8 @@ final class BlockCompiler
     public const MAX_DEPTH = 8;
 
     private const ELEMENT_TAGS = ['div', 'section', 'article', 'aside', 'header', 'footer', 'nav', 'figure', 'ul', 'ol', 'li'];
-    private const TEXT_TAGS    = ['p', 'span', 'div', 'strong', 'small', 'figcaption'];
+    /** h2–h6 for a heading with an icon (GenerateBlocks' Headline); a plain heading is a heading node. */
+    private const TEXT_TAGS    = ['p', 'span', 'div', 'strong', 'small', 'figcaption', 'h2', 'h3', 'h4', 'h5', 'h6'];
     private const INLINE       = [
         'strong' => [], 'b' => [], 'em' => [], 'i' => [], 'br' => [], 'sup' => [], 'sub' => [], 'mark' => [],
         'a' => ['href' => true, 'target' => true, 'rel' => true],
@@ -246,9 +250,9 @@ final class BlockCompiler
         if ($classes !== []) {
             $attrs['globalClasses'] = $classes;
         }
-        $class = trim('gb-text ' . implode(' ', $classes));
+        [$attrs, $inner, $class] = $this->with_icon($node, $attrs, $classes, $this->inline((string) $node['text'], $path), $path);
 
-        return $this->block('generateblocks/text', $attrs, [], sprintf('<%s class="%s">%s</%1$s>', $tag, esc_attr($class), $this->inline((string) $node['text'], $path)));
+        return $this->block('generateblocks/text', $attrs, [], sprintf('<%s%s>%s</%1$s>', $tag, self::class_attr($class), $inner));
     }
 
     private function button(array $node, string $path): ?array
@@ -274,9 +278,60 @@ final class BlockCompiler
         foreach ($html_attrs as $name => $value) {
             $html .= sprintf(' %s="%s"', $name, esc_attr($value));
         }
-        $class = trim('gb-text ' . implode(' ', $classes));
+        [$attrs, $inner, $class] = $this->with_icon($node, $attrs, $classes, $this->inline((string) $node['button'], $path), $path);
 
-        return $this->block('generateblocks/text', $attrs, [], sprintf('<a class="%s"%s>%s</a>', esc_attr($class), $html, $this->inline((string) $node['button'], $path)));
+        return $this->block('generateblocks/text', $attrs, [], sprintf('<a%s%s>%s</a>', self::class_attr($class), $html, $inner));
+    }
+
+    /** An icon block without global classes saves no class attribute at all. */
+    private static function class_attr(string $class): string
+    {
+        return $class === '' ? '' : ' class="' . esc_attr($class) . '"';
+    }
+
+    /**
+     * GenerateBlocks Text with an icon saves the words in an inner span.gb-text
+     * and the SVG in span.gb-shape (the icon attribute is read back from there),
+     * and the outer tag then carries only the global classes.
+     *
+     * @return array{0: array, 1: string, 2: string} attrs, inner HTML, outer class
+     */
+    private function with_icon(array $node, array $attrs, array $classes, string $words, string $path): array
+    {
+        if (!isset($node['icon'])) {
+            return [$attrs, $words, trim('gb-text ' . implode(' ', $classes))];
+        }
+        $svg = trim(wp_kses((string) $node['icon'], self::svg_allowed()));
+        if (!preg_match('#^<svg[\s>].*</svg>$#is', $svg)) {
+            $this->issues[] = sprintf('%s: icon is one inline <svg> (shapes only: no script, style, links or foreign objects).', $path);
+
+            return [$attrs, $words, trim('gb-text ' . implode(' ', $classes))];
+        }
+        $after = !empty($node['icon_after']);
+        if ($after) {
+            $attrs['iconLocation'] = 'after';
+        }
+        $shape = '<span class="gb-shape">' . $svg . '</span>';
+        // The words span is saved even when empty (an icon on its own).
+        $text = '<span class="gb-text">' . $words . '</span>';
+
+        return [$attrs, $after ? $text . $shape : $shape . $text, implode(' ', $classes)];
+    }
+
+    /** ContentSanitizer's SVG subset, without the HTML the post allowlist adds. */
+    private static function svg_allowed(): array
+    {
+        static $allowed = null;
+        if ($allowed === null) {
+            $svg_tags = ['svg', 'g', 'path', 'circle', 'ellipse', 'rect', 'line', 'polygon', 'polyline', 'defs', 'mask', 'clippath', 'lineargradient', 'radialgradient', 'stop', 'title', 'desc'];
+            $allowed = array_intersect_key(ContentSanitizer::allowed_html(), array_flip($svg_tags));
+            // Icon sets cut shapes with a mask or clip path on the shape itself (WooCommerce's logo).
+            foreach (['path', 'circle', 'ellipse', 'rect', 'polygon', 'polyline'] as $shape) {
+                $allowed[$shape] += ['mask' => true, 'clip-path' => true];
+            }
+        }
+
+        return $allowed;
     }
 
     private function list(array $node, string $path): ?array

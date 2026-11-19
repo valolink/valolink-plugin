@@ -80,6 +80,9 @@ try {
         'details-closed' => ['details' => 'Toimitus ja <strong>käyttöönotto</strong>', 'class' => 'vlc-list', 'children' => [['paragraph' => 'Sisältö.'], ['list' => ['Yksi', 'Kaksi']]]],
         'details-open' => ['details' => 'Takuu', 'open' => true, 'children' => [['paragraph' => 'Auki.']]],
         'pattern-with-slots' => ['pattern' => $pattern_id, 'slots' => ['Otsikko' => 'Ohitettu', 'Painike' => ['text' => 'Klikkaa', 'url' => '/x/']]],
+        'text-icon-before' => ['text' => 'Ikonilla', 'tag' => 'h3', 'class' => 'vlc-eyebrow', 'icon' => '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4 12h16" stroke="currentColor"/></svg>'],
+        'button-icon-after' => ['button' => 'Eteenpäin', 'href' => '/x/', 'class' => 'vlc-button', 'icon' => '<svg viewBox="0 0 24 24"><path d="M4 12h16"/></svg>', 'icon_after' => true],
+        'text-icon-only' => ['text' => '', 'tag' => 'div', 'icon' => '<svg viewBox="0 0 24 24"><defs><mask id="m"><rect width="24" height="24" fill="white"/></mask></defs><path mask="url(#m)" d="M4 12h16"/></svg>'],
         'mixed-escapes' => ['element' => 'section', 'class' => 'vlc-section--alt', 'children' => [['paragraph' => 'Lainaus "tuplat" & \'yksittäiset\' <b>b</b> -- viivat']]],
     ];
     if ($image_id > 0) {
@@ -108,6 +111,9 @@ try {
     check('paragraph class', str_contains($sg, '<p class="vlc-lead">Johdanto <strong>vahvalla</strong> ja <a href="/x/">linkillä</a>.</p>'));
     check('heading level 3', str_contains($sg, '<!-- wp:heading {"level":3} -->'));
     check('pattern slots', str_contains($out['pattern-with-slots'] ?? '', '"content":{"Otsikko":{"content":"Ohitettu"},"Painike":{"text":"Klikkaa","url":"/x/"}}'), $out['pattern-with-slots'] ?? '');
+    check('icon: words in span.gb-text, outer has only the classes', str_contains($out['text-icon-before'] ?? '', '<h3 class="vlc-eyebrow"><span class="gb-shape"><svg') && str_contains($out['text-icon-before'] ?? '', '</svg></span><span class="gb-text">Ikonilla</span></h3>'), $out['text-icon-before'] ?? '');
+    check('icon after: iconLocation and order', str_contains($out['button-icon-after'] ?? '', '"iconLocation":"after"') && str_contains($out['button-icon-after'] ?? '', '<span class="gb-text">Eteenpäin</span><span class="gb-shape">'), $out['button-icon-after'] ?? '');
+    check('icon only: empty words span, no class attribute, mask kept', str_contains($out['text-icon-only'] ?? '', '<div><span class="gb-shape">') && str_contains($out['text-icon-only'] ?? '', '</span><span class="gb-text"></span></div>') && str_contains($out['text-icon-only'] ?? '', 'mask="url(#m)"'), $out['text-icon-only'] ?? '');
     check('stable ids for a seed', ($compiler->compile($fixtures['text-span-div'], 'golden-text-span-div')['markup'] ?? '') === ($out['text-span-div'] ?? 'x'));
 
     $bad = [
@@ -118,7 +124,10 @@ try {
         'javascript href' => ['button' => 'x', 'href' => 'javascript:alert(1)'],
         'missing pattern' => ['pattern' => 999999999],
         'unknown slot' => ['pattern' => $pattern_id, 'slots' => ['Nope' => 'x']],
+        'icon that is not an svg' => ['text' => 'x', 'icon' => '<img src=x onerror=alert(1)>'],
     ];
+    $r = $compiler->compile(['text' => 'x', 'icon' => '<svg viewBox="0 0 1 1"><script>alert(1)</script><path onclick="alert(1)" d="M0 0"/><foreignObject><p>x</p></foreignObject></svg>'], 'svg-strip');
+    check('icon: script, handlers and foreignObject stripped', !is_wp_error($r) && !preg_match('/<script|onclick|foreignObject/i', $r['markup']), is_wp_error($r) ? $r->get_error_message() : $r['markup']);
     foreach ($bad as $name => $tree) {
         $r = $compiler->compile($tree, 'bad');
         check('refused: ' . $name, is_wp_error($r), is_wp_error($r) ? '' : 'compiled');
