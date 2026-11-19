@@ -85,6 +85,24 @@ final class Library
         ], array_values((array) ($this->showcase['pages'] ?? [])));
     }
 
+    /**
+     * The page a showcase page is the converted version of: "replaces": {"id": <page id>,
+     * "sha1": [<sha1 of that page's content as converted>, …]}; one hash per site it was
+     * converted on (live and staging content differ by GenerateBlocks ids).
+     *
+     * @return array{id: int, sha1: list<string>}|null
+     */
+    public function replaces(string $slug): ?array
+    {
+        foreach ((array) ($this->showcase['pages'] ?? []) as $p) {
+            if (sanitize_title((string) $p['slug']) === $slug && isset($p['replaces']['id'])) {
+                return ['id' => (int) $p['replaces']['id'], 'sha1' => array_values(array_map('strval', (array) ($p['replaces']['sha1'] ?? [])))];
+            }
+        }
+
+        return null;
+    }
+
     /** "@name" references in a tree → the icon's SVG, the pattern's id. */
     public function resolve(array $node): array
     {

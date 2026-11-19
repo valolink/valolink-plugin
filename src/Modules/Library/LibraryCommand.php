@@ -177,6 +177,81 @@ final class LibraryCommand
         \WP_CLI::success("Showcase:\n" . implode("\n", $urls));
     }
 
+    /**
+     * Puts a showcase page's content into the page it replaces (its "replaces" in
+     * showcase.json), so a converted page goes live at its own URL with its own
+     * title and meta. Refused when the target changed since the conversion was
+     * made from it. The old content is kept for --back (and as a revision).
+     * Run showcase first, on the same site: the copy is that page's content.
+     *
+     * ## OPTIONS
+     *
+     * <dir>
+     * : The library directory.
+     *
+     * <slug>
+     * : The showcase page.
+     *
+     * [--back]
+     * : Put the replaced content back.
+     *
+     * [--force]
+     * : Swap even though the target changed since; with --back, restore even though the page was edited after the swap.
+     *
+     * ## EXAMPLES
+     *
+     *     wp valolink library swap ~/valolink-fi/library vl-muunnos-etusivu
+     */
+    public function swap(array $args, array $assoc): void
+    {
+        $library = $this->library($args[0]);
+        $slug = sanitize_title($args[1]);
+        $target = $library->replaces($slug) ?? \WP_CLI::error($slug . ' replaces no page (no "replaces" in showcase.json).');
+        $post = get_post($target['id']);
+        if (!$post instanceof \WP_Post || $post->post_type === 'revision') {
+            \WP_CLI::error(sprintf('No post %d here.', $target['id']));
+        }
+        $undo = new Undo();
+        $key = 'swap:' . $post->ID;
+        $force = !empty($assoc['force']);
+
+        if (!empty($assoc['back'])) {
+            if (!$undo->has($key)) {
+                \WP_CLI::error(sprintf('Nothing kept for %d.', $post->ID));
+            }
+            $kept = $undo->get($key);
+            if (sha1($post->post_content) !== $kept['swapped'] && !$force) {
+                \WP_CLI::error(sprintf('%d was edited after the swap; --force puts the old content back anyway.', $post->ID));
+            }
+            $this->guard(static fn (): int => PatternWriter::write($post->ID, ['post_content' => $kept['content']]));
+            $undo->forget($key);
+            $undo->save();
+            $this->purge();
+            \WP_CLI::success(sprintf('%s: old content back.', get_permalink($post->ID)));
+
+            return;
+        }
+
+        $preview = get_page_by_path($slug, OBJECT, 'page');
+        if (!$preview instanceof \WP_Post || !get_post_meta($preview->ID, Showcase::META, true)) {
+            \WP_CLI::error($slug . ' is not built here: run showcase first.');
+        }
+        $now = sha1($post->post_content);
+        if ($now === sha1($preview->post_content)) {
+            \WP_CLI::success('Already swapped.');
+
+            return;
+        }
+        if (!in_array($now, $target['sha1'], true) && !$force) {
+            \WP_CLI::error(sprintf('%d changed since it was converted (sha1 %s is not in "replaces"). Convert it again from its current content, or --force.', $post->ID, $now));
+        }
+        $undo->keep($key, ['content' => $post->post_content, 'swapped' => sha1($preview->post_content)]);
+        $this->guard(static fn (): int => PatternWriter::write($post->ID, ['post_content' => $preview->post_content]));
+        $undo->save();
+        $this->purge();
+        \WP_CLI::success(sprintf('%s now has the content of %s. Back with --back.', get_permalink($post->ID), $slug));
+    }
+
     // -------------------------------------------------------------------------
 
     private function library(string $dir): Library
