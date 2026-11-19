@@ -267,7 +267,8 @@
 
 	function editorReady() {
 		return new Promise(resolve => {
-			const ready = () => select('core/editor').getCurrentPostId()
+			// the core/editor store can register after this script runs on a slow load
+			const ready = () => select('core/editor')?.getCurrentPostId()
 				&& (!select('core/editor').__unstableIsEditorReady || select('core/editor').__unstableIsEditorReady())
 				&& getBlockType('generateblocks/element');
 			if (ready()) return resolve();
