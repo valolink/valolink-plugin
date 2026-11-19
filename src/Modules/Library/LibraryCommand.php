@@ -280,11 +280,23 @@ final class LibraryCommand
         }
     }
 
+    /**
+     * Clears WP Rocket, then has one page rendered at once. The web server may
+     * keep serving a deleted cached page for a while (nginx open_file_cache:
+     * 60 s on hzweb1), and that page links to the minified stylesheet just
+     * deleted, so the site goes unstyled until a fresh render writes it back
+     * at the same path. A query string bypasses Rocket's page cache.
+     */
     private function purge(): void
     {
-        if (function_exists('rocket_clean_domain')) {
-            rocket_clean_minify();
-            rocket_clean_domain();
+        if (!function_exists('rocket_clean_domain')) {
+            return;
+        }
+        rocket_clean_minify();
+        rocket_clean_domain();
+        $r = wp_remote_get(add_query_arg('vl-library', (string) time(), home_url('/')), ['timeout' => 30, 'sslverify' => false]);
+        if (is_wp_error($r) || wp_remote_retrieve_response_code($r) !== 200) {
+            \WP_CLI::warning('Could not render the front page after clearing the cache; open it once now, or pages may be unstyled for up to a minute.');
         }
     }
 }
