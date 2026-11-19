@@ -251,7 +251,22 @@ The source's postmeta is copied to the translation, minus the edit lock. This is
 
 The draft is created and linked immediately, as `create` does; approval sets its status, defaulting to the source's rather than to `publish`, so translating a draft does not publish it. The staleness gate hashes the **source**: if the original changes before approval the proposal goes `stale`, because it is no longer a translation of what is published.
 
-Not covered, and worth saying plainly because a translated page is not a translated site: **menus** are per-language in Polylang and are not touched, **theme and plugin strings** are not touched, and **internal links keep pointing at source-language pages**. Term translations (`pll_save_term_translations`) are not wired up either, so a translated post cannot yet be categorised.
+`excerpt` (and `post_excerpt` on `create` and `update`) keeps its markup through `wp_kses_post`. WooCommerce's short description is TinyMCE HTML; the plain-text cleaning it used to get flattened every proposed one to a single run-on line, which is how the first English products on staging.tarinakoru.fi were queued (2026-11-19).
+
+Not covered, and worth saying plainly because a translated page is not a translated site: **menus** are per-language in Polylang and are not touched, **theme and plugin strings** are not touched, and **internal links keep pointing at source-language pages**.
+
+### GET /terms · action `translate_term`
+
+A translated shop is mostly words that are in no post: the category a product sits in, the attribute values under its title, the sidebar filter. `GET /terms` lists the taxonomies whose terms Polylang translates and agents may reach (the blog's and the site's own, plus `product_cat`, `product_tag`, `product_brand` and the `pa_*` attribute taxonomies when products are allowed). `GET /terms?taxonomy=product_cat` (optional `lang`, `search`) returns its terms in every language with `id`, `name`, `slug`, `description`, `parent`, `count`, `lang`, `translations` and, on a translation, `source_id`. A translation still carrying its original's name is marked `untranslated` — the Valolink WooCommerce Polylang module creates those when a translated product needs a category nobody has translated, so the product is never left uncategorised.
+
+```json
+{ "action": "translate_term", "taxonomy": "product_cat", "target_id": 42, "lang": "en",
+  "name": "Earrings", "slug": "earrings", "description": "…" }
+```
+
+`target_id` is any member of the term's group. If the group has a member in `lang`, approval renames it (`pll_update_term`); if not, approval creates it with `pll_insert_term` in the original's group, under the translation of the original's parent where one exists, with the original's term meta (minus WooCommerce's `product_count_*`). `slug` and `description` are optional and left as they are when omitted; the description goes through `wp_kses_post`. The default language is refused (`source_language`): those terms are the originals, renamed in wp-admin.
+
+**Nothing is written at propose time**, unlike `create_translation`: a term has no draft state, and a new one appears in menus, filters and term widgets the moment it exists. The row is `entity_type: term`, its `post_type` column holds the taxonomy and `target_id` the translation (null until approval creates it). The staleness gate hashes the translation's name, slug and description, or records that there was none. One case is not stale: a translation created in between that still carries the original's name is the shop's placeholder, and approval renames that one. Approval purges the page cache, since a term's name shows on pages no caching plugin ties to it.
 
 ### GET /menus · GET /menus/{id} · action `update_menu`
 
@@ -311,7 +326,7 @@ Present when WooCommerce is active and an operator has ticked `product` under *A
 
 Price, sale and stock live in postmeta **and** in `wc_product_meta_lookup`, the table the shop's filtering and sorting query instead of the meta. Writing the meta directly, or through `wp_update_post`, desynchronises the two. So those fields go through `ProductApplier`, which uses `wc_get_product()` setters and one `save()` — and **every write to a product ends in that save**, including a change that only touched its description. The save with nothing to set is deliberate: WooCommerce's own editor ends every edit in `WC_Product::save()`, feed and search integrations listen for the `woocommerce_update_product` it fires, and it fills in whatever Woo meta a product drafted as a bare post lacks, so a `create` arrives as a complete simple product, lookup row included. Woo's product instance cache is invalidated by `clean_post_cache` and meta writes, so the post-level write before it is read back fresh.
 
-`GET /content/{id}` on a product adds a `product` object: `type`, `currency`, `prices_include_tax`, the active `price`, `on_sale`, every product field with its current value, `variations` on a variable product, and `proposable` — the fields this product takes here, given its type and the switch below. `GET /content?fields=product` adds a short version per row, so a price audit is one call. `GET /taxonomies` adds `product_categories` and `product_tags`.
+`GET /content/{id}` on a product adds a `product` object: `type`, `currency`, `prices_include_tax`, the active `price`, `on_sale`, every product field with its current value, `variations` on a variable product, `attributes` (a custom one with its `options`, a global one with its `taxonomy` and `terms`), and `proposable` — the fields this product takes here, given its type and the switch below. `GET /content?fields=product` adds a short version per row, so a price audit is one call. `GET /taxonomies` adds `product_categories` and `product_tags`.
 
 Fields are WooCommerce's own REST API names, so what an agent already knows about Woo carries over:
 
@@ -325,6 +340,7 @@ Fields are WooCommerce's own REST API names, so what an agent already knows abou
 | `sku` | Unique across the shop, checked with WooCommerce's own `wc_product_has_unique_sku()`; the refusal names the product holding it. |
 | `stock_status` | Only while stock is not managed. With `manage_stock` on, WooCommerce derives the status from the quantity at save and would overwrite a proposed one, so that is refused rather than silently lost. |
 | `manage_stock`, `stock_quantity`, `backorders` | Quantity and backorders only with `manage_stock` true, and turning it on needs a quantity. Refused outright while stock management is off shop-wide. |
+| `attribute_words` | The words of the product's own (custom) attributes, keyed by the attribute's current name: `{"Malli": {"name": "Model", "options": {"Tappi": "Stud"}}}`. Words only — no attribute or option is added or removed — so it needs no commerce switch. Refused on a global attribute (its words are terms: `translate_term`), on an unknown attribute or option (the refusal lists the valid ones), on an empty option or one containing `\|`, and when two options or two attributes would end up reading the same, since WooCommerce keys custom attributes and variation choices by the sanitised name. Each changed attribute is replaced by a clone — modified in place, WooCommerce compares the same objects, sees no change and saves nothing — then every variation's choices and the default choices are re-pointed to the new words, so the variation menu keeps matching something. Diffed and hashed as one `Name: option \| option` line per custom attribute. Not on a `create`. |
 
 By product type: **simple** takes everything; **external** takes prices and SKU but no stock, since WooCommerce keeps none for it; **variable** and **grouped** take SKU, visibility and featured only — a variable product's prices and stock live on its variations, which are not proposable yet. Types a plugin adds (bundles, subscriptions) get that same conservative set, since their prices are computed somewhere Accesslink has never seen. A `create` makes a simple product.
 
@@ -439,7 +455,7 @@ Send `X-Accesslink-Agent: <name>` to identify the caller in the queue and the au
 | `post_status` | `draft`, `pending`, `publish`, `private`. Settable on an update as well as a create, so unpublishing and publishing can be proposed. |
 | `sidebar_layout`, `content_container`, `hide_title` | GeneratePress per-page layout, present only when that theme is active: the same three choices as the editor's Layout panel, with `default` meaning "inherit the site setting". A page built from full-width front-page sections wants `no-sidebar` and `full-width`, or it opens inside whatever the theme default is. Refused on `gp_elements`. |
 | `element_type`, `block_type`, `hook`, `custom_hook`, `hook_priority`, `display_conditions`, `exclude_conditions`, `user_conditions` | What a GeneratePress Element *does*, in the names `GET /elements` returns. Only on `gp_elements`, and listed only when that type is allowed. Hooks are validated against GP Premium's own list; condition rules are checked for shape (`{"rule": "post:page", "object": "712"}`), not against the site's rule catalogue — the editor is where a wrong one shows up immediately. |
-| `product_categories`, `product_tags`, `catalog_visibility`, `featured`, and — with the commerce switch on — `regular_price`, `sale_price`, `date_on_sale_from`, `date_on_sale_to`, `sku`, `stock_status`, `manage_stock`, `stock_quantity`, `backorders` | WooCommerce product fields. Only on `product`, and listed only when that type is allowed. See *WooCommerce products*. |
+| `product_categories`, `product_tags`, `catalog_visibility`, `featured`, `attribute_words`, and — with the commerce switch on — `regular_price`, `sale_price`, `date_on_sale_from`, `date_on_sale_to`, `sku`, `stock_status`, `manage_stock`, `stock_quantity`, `backorders` | WooCommerce product fields. Only on `product`, and listed only when that type is allowed. See *WooCommerce products*. |
 
 A `create` also takes a top-level `slug`. A new draft has nothing to redirect from, so it needs none of the care a rename does; renaming an existing post is still not offered.
 
@@ -540,7 +556,7 @@ Sites differ, and absence of a plugin narrows what Accesslink offers instead of 
 
 Named here so nobody assumes otherwise. The roadmap (`ROADMAP.md`, *Accesslink follow-ups*) carries the order and the reasoning.
 
-- **WooCommerce beyond simple products.** Variations — a variable product's prices and stock — and attributes, gallery images, shipping and tax class, upsells and cross-sells, changing a product's type, and an external product's URL. Nor does the front-end preview render a proposed price yet.
+- **WooCommerce beyond simple products.** Variations — a variable product's prices and stock, and a variation's own description — and attributes beyond their words, gallery images, shipping and tax class, upsells and cross-sells, changing a product's type, and an external product's URL. Nor does the front-end preview render a proposed price yet.
 - **Attachment fields.** Alt text, title and caption of media items. Reads exist; there is no applier for the `attachment` entity yet, and on GenerateBlocks pages the rendered alt lives in the block markup rather than on the attachment.
 - **ACF beyond scalar fields.** Repeaters, flexible content, relationships and the object kinds are readable but refused on write.
 - **Avada, the rest.** The page grid (rows, columns), Avada's own page options (`_fusion` meta), creating Layouts (they apply as drafts, so it needs a create that writes nothing until approval), the Global Layout, and resolving which Layout an archive or the search page gets.

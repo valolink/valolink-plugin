@@ -59,4 +59,29 @@ interface TranslationAdapter
 
     /** Remove a post from its translation group, leaving the others linked. */
     public function unlink(int $post_id): void;
+
+    /** Whether this taxonomy's terms have languages and translations. */
+    public function is_translated_taxonomy(string $taxonomy): bool;
+
+    /**
+     * The term's translation group.
+     *
+     * @return array<string, int> language slug => term id, including itself
+     */
+    public function term_translations(int $term_id): array;
+
+    /**
+     * Create a term in $lang, joined to $translations' group.
+     *
+     * @param array{parent?: int, slug?: string, description?: string} $args
+     * @param array<string, int> $translations existing group members
+     */
+    public function insert_term(string $name, string $taxonomy, string $lang, array $args, array $translations): int|\WP_Error;
+
+    /**
+     * Rename a term, or change its slug or description, inside its language.
+     *
+     * @param array{name?: string, slug?: string, description?: string} $args
+     */
+    public function update_term(int $term_id, string $taxonomy, array $args): true|\WP_Error;
 }

@@ -87,7 +87,7 @@ final class GuideBuilder
             ],
             'translations' => [
                 'label'   => 'Translations',
-                'summary' => 'Reading what exists in which language, and proposing a translation.',
+                'summary' => 'Reading what exists in which language, and translating pages, products, categories, tags and attribute terms.',
                 'when'    => TranslationAdapterFactory::detect()->available(),
             ],
             'elements' => [
@@ -548,6 +548,13 @@ final class GuideBuilder
         $md[] = '  `categories` and `tags` are the blog\'s; products do not have them.';
         $md[] = '- `catalog_visibility` — ' . implode(', ', array_keys(wc_get_product_visibility_options()))
             . '. `featured` — true or false.';
+        $md[] = '- `' . ProductApplier::ATTRIBUTE_FIELD . '` — the words of the product\'s own attributes, the ones listed in';
+        $md[] = '  `product.attributes` with `options` (a global attribute lists `terms` instead; its words';
+        $md[] = '  are terms). Keyed by the attribute\'s current name; give its new `name` and/or `options`';
+        $md[] = '  as old → new: `{"Malli": {"name": "Model", "options": {"Tappi": "Stud", "Koukku": "Hook"}}}`.';
+        $md[] = '  Only words change — which attributes and options there are stays — and the variations';
+        $md[] = '  and default choices follow the new words. This is how a translated product gets its';
+        $md[] = '  attributes in its own language.';
 
         if ($commerce) {
             $tax = wc_tax_enabled()
@@ -830,6 +837,56 @@ final class GuideBuilder
         $md[] = 'across only what is **absent**; a value already there is never overwritten, so it';
         $md[] = 'cannot undo the English SEO title you just corrected. It is refused when there is';
         $md[] = 'nothing missing.';
+        $md[] = '';
+        $md[] = '**Translate what the original says, nothing more.** A field that is empty in the';
+        $md[] = 'original stays empty in the translation — a missing description is not an invitation';
+        $md[] = 'to write one — and no sentence goes in that the original does not have. If something';
+        $md[] = 'is missing that you think should be there, say so in `note` instead.';
+        $md[] = '';
+
+        if ($this->service->products_allowed() && $tr->is_translated_type(ProductApplier::POST_TYPE)) {
+            $synced = (bool) apply_filters('valolink_accesslink_product_translations_synced', false);
+            $md[] = '### Translating a product';
+            $md[] = '';
+            $md[] = '1. `create_translation` with `title`, `slug` and `excerpt` (the short description,';
+            $md[] = '   as HTML — keep its tags). If `GET /content/{id}` reports the description\'s `format`';
+            $md[] = '   as `classic`, leave `texts` out and send the translated `post_content` in step 2.';
+            if ($synced) {
+                $md[] = '   On this site the shop copies everything that is not words from the original as';
+                $md[] = '   soon as the draft exists — type, prices, stock, SKU, images, categories, tags,';
+                $md[] = '   attributes and variations — and keeps them in step with it. Translate words only.';
+            } else {
+                $md[] = '   This site does not sync product data between languages: the draft gets the';
+                $md[] = '   original\'s postmeta (prices, SKU, stock) but not its categories, and a variable';
+                $md[] = '   product\'s variations are not copied. Say so in `note`.';
+            }
+            $md[] = '2. `update` on the new product: `post_content` (classic descriptions), `seo_title` /';
+            $md[] = '   `seo_description` where the original has them, and `' . ProductApplier::ATTRIBUTE_FIELD . '` for its own';
+            $md[] = '   attributes (see the products section).';
+            $md[] = '3. The words around it are terms: its categories, tags and global attribute values.';
+            $md[] = '   Translate each one once with `translate_term` (below); every product shares them.';
+            $md[] = '';
+        }
+
+        $md[] = '### Translating categories, tags and attribute terms';
+        $md[] = '';
+        $md[] = "`GET {$base}/terms` lists the translatable taxonomies; `GET {$base}/terms?taxonomy=product_cat`";
+        $md[] = '(optionally `&lang=`) lists one\'s terms in every language with their `translations`.';
+        $md[] = 'A term marked `untranslated` is a translation still carrying its original\'s name — the';
+        $md[] = 'shop makes those when a translated product needs a category no one has translated yet,';
+        $md[] = 'and copies the original\'s description into it, so when the original has a description,';
+        $md[] = 'send its translation too.';
+        $md[] = '';
+        $md[] = '```json';
+        $md[] = '{ "action": "translate_term", "taxonomy": "product_cat", "target_id": 42, "lang": "'
+            . ($tr->languages()[1]['slug'] ?? 'en') . '",';
+        $md[] = '  "name": "Earrings", "slug": "earrings", "description": "Translated description, if the original has one.",';
+        $md[] = '  "note": "Why." }';
+        $md[] = '```';
+        $md[] = '';
+        $md[] = '`target_id` is the original term or its translation. If the translation exists it is';
+        $md[] = 'renamed; if not, approval creates it in the original\'s group. `slug` and `description`';
+        $md[] = 'are optional — left out, they stay as they are. Nothing is written before approval.';
         $md[] = '';
         $md[] = 'A translated page is not a translated site. Navigation menus are not editable';
         $md[] = 'through this API at all, and internal links keep pointing at source-language';

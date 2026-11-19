@@ -272,6 +272,14 @@ final class AccesslinkModule implements Module
             'permission_callback' => [$auth, 'check_read'],
         ]);
 
+        // A taxonomy's terms in every language with their translation groups,
+        // for translate_term — categories, tags and product attribute terms.
+        register_rest_route(self::REST_NAMESPACE, '/terms', [
+            'methods'             => \WP_REST_Server::READABLE,
+            'callback'            => [$this, 'handle_terms'],
+            'permission_callback' => [$auth, 'check_read'],
+        ]);
+
         // GeneratePress Elements are readable and editable as an ordinary post
         // type once the operator allows it; this exposes the `_generate_*` meta
         // that says what each one actually does and where it appears.
@@ -684,6 +692,25 @@ final class AccesslinkModule implements Module
         );
 
         return new \WP_REST_Response($result);
+    }
+
+    public function handle_terms(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        if (!TranslationAdapterFactory::detect()->available()) {
+            return new \WP_Error('translation_unavailable', 'This site has no multilingual plugin, so terms have no translations.', ['status' => 404]);
+        }
+        $terms = $this->service()->term_translator();
+        $taxonomy = sanitize_key((string) $request->get_param('taxonomy'));
+        if ($taxonomy === '') {
+            return new \WP_REST_Response(['taxonomies' => $terms->taxonomies()]);
+        }
+        $result = $terms->list(
+            $taxonomy,
+            sanitize_key((string) $request->get_param('lang')),
+            sanitize_text_field((string) $request->get_param('search')),
+        );
+
+        return is_wp_error($result) ? $result : new \WP_REST_Response($result);
     }
 
     public function handle_languages(): \WP_REST_Response
@@ -1163,9 +1190,11 @@ final class AccesslinkModule implements Module
             // authenticated by an Accesslink key — there is no WP user behind
             // one. The link is for whichever human the agent hands it to, so it
             // has to exist regardless of who asked.
-            'edit_link'    => $change['target_id']
-                ? admin_url('post.php?post=' . (int) $change['target_id'] . '&action=edit')
-                : null,
+            'edit_link'    => !$change['target_id'] ? null : (
+                ($change['entity_type'] ?? 'post') === 'term'
+                    ? admin_url('term.php?taxonomy=' . rawurlencode((string) $change['post_type']) . '&tag_ID=' . (int) $change['target_id'])
+                    : admin_url('post.php?post=' . (int) $change['target_id'] . '&action=edit')
+            ),
         ];
     }
 
@@ -1360,7 +1389,8 @@ final class AccesslinkModule implements Module
         }
 
         $change = (new ChangeRepository())->find($change_id);
-        if ($change === null || $change['status'] !== ChangeRepository::STATUS_PENDING) {
+        if ($change === null || $change['status'] !== ChangeRepository::STATUS_PENDING
+            || ($change['entity_type'] ?? 'post') !== 'post') {
             return $posts;
         }
 

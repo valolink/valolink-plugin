@@ -51,6 +51,17 @@ final class PostApplier
     }
 
     /**
+     * An excerpt keeps its markup. WooCommerce's short description is edited
+     * in TinyMCE and printed as HTML — paragraphs, line breaks, the odd span
+     * — and the plain-text cleaning every other string gets flattened each
+     * proposed one to a single run-on line.
+     */
+    public static function sanitize_excerpt(string $value): string
+    {
+        return trim(wp_kses_post($value));
+    }
+
+    /**
      * Every field an agent may set on this site right now.
      *
      * Element and product fields are listed only when the site both has the
@@ -89,7 +100,12 @@ final class PostApplier
         }
         if (ProductApplier::available()
             && ($post_types === null || in_array(ProductApplier::POST_TYPE, $post_types, true))) {
-            $fields = array_merge($fields, array_keys(ProductApplier::TERM_FIELDS), ProductApplier::MERCHANDISING_FIELDS);
+            $fields = array_merge(
+                $fields,
+                array_keys(ProductApplier::TERM_FIELDS),
+                ProductApplier::MERCHANDISING_FIELDS,
+                [ProductApplier::ATTRIBUTE_FIELD],
+            );
             if ($commerce) {
                 $fields = array_merge($fields, ProductApplier::COMMERCE_FIELDS);
             }
@@ -207,6 +223,12 @@ final class PostApplier
         if (in_array($field, ProductApplier::FIELDS, true)) {
             return $post->post_type === ProductApplier::POST_TYPE && ProductApplier::available()
                 ? (new ProductApplier())->read_field($post_id, $field)
+                : '';
+        }
+
+        if ($field === ProductApplier::ATTRIBUTE_FIELD) {
+            return $post->post_type === ProductApplier::POST_TYPE && ProductApplier::available()
+                ? (new ProductApplier())->read_attribute_words($post_id)
                 : '';
         }
 
@@ -487,7 +509,7 @@ final class PostApplier
             }
         }
 
-        $product_fields = array_intersect_key($fields, array_flip(ProductApplier::FIELDS));
+        $product_fields = array_intersect_key($fields, array_flip([...ProductApplier::FIELDS, ProductApplier::ATTRIBUTE_FIELD]));
         if ($product_fields !== []) {
             if ($post_type !== ProductApplier::POST_TYPE || !ProductApplier::available()) {
                 return new \WP_Error(

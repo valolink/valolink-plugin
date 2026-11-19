@@ -74,4 +74,30 @@ final class UnsupportedTranslationAdapter implements TranslationAdapter
             sprintf('Translations are not writable on this site (detected: %s).', $this->detected),
         );
     }
+
+    public function is_translated_taxonomy(string $taxonomy): bool
+    {
+        return false;
+    }
+
+    public function term_translations(int $term_id): array
+    {
+        return [];
+    }
+
+    public function insert_term(string $name, string $taxonomy, string $lang, array $args, array $translations): int|\WP_Error
+    {
+        return new \WP_Error(
+            'translation_unavailable',
+            sprintf('Translations are not writable on this site (detected: %s).', $this->detected),
+        );
+    }
+
+    public function update_term(int $term_id, string $taxonomy, array $args): true|\WP_Error
+    {
+        return new \WP_Error(
+            'translation_unavailable',
+            sprintf('Translations are not writable on this site (detected: %s).', $this->detected),
+        );
+    }
 }

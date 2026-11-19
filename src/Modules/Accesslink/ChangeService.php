@@ -151,6 +151,12 @@ final class ChangeService
             );
         }
 
+        if ($action === ChangeRepository::ACTION_TRANSLATE_TERM) {
+            return $this->announce(
+                $this->propose_translate_term($input, $note_early, $requested_by, $idempotency_key),
+            );
+        }
+
         // Refused by name rather than dropped with the other unknown fields:
         // an agent that sent a price and got a 201 for the title alone would
         // report the price as proposed.
@@ -1153,7 +1159,7 @@ final class ChangeService
             'post_status'  => 'draft',
             'post_title'   => $title,
             'post_content' => $content,
-            'post_excerpt' => sanitize_textarea_field((string) ($input['excerpt'] ?? '')),
+            'post_excerpt' => PostApplier::sanitize_excerpt((string) ($input['excerpt'] ?? '')),
         ];
         if (!empty($input['slug'])) {
             $postarr['post_name'] = sanitize_title((string) $input['slug']);
@@ -1240,6 +1246,63 @@ final class ChangeService
             'post_id'   => (int) $new_id,
             'source_id' => $source_id,
             'lang'      => $lang,
+            'by'        => $requested_by,
+        ]);
+
+        return $this->repo->find($id) ?? [];
+    }
+
+    public function term_translator(): TermTranslator
+    {
+        return new TermTranslator(TranslationAdapterFactory::detect(), $this->products_allowed());
+    }
+
+    /**
+     * A category, tag or attribute term's name in another language — renaming
+     * the translation that exists, or creating it in the original's group.
+     * Nothing is written until approval: a term has no draft.
+     */
+    private function propose_translate_term(
+        array $input,
+        ?string $note,
+        ?string $requested_by,
+        ?string $idempotency_key,
+    ): array|\WP_Error {
+        if (!TranslationAdapterFactory::detect()->available()) {
+            return new \WP_Error('translation_unavailable', 'No writable multilingual plugin on this site.', ['status' => 400]);
+        }
+
+        $terms = $this->term_translator();
+        $p = $terms->prepare($input);
+        if (is_wp_error($p)) {
+            return $p;
+        }
+        $source = get_term($p['source_id'], $p['taxonomy']);
+
+        $id = $this->repo->insert([
+            'action'          => ChangeRepository::ACTION_TRANSLATE_TERM,
+            'entity_type'     => 'term',
+            'target_id'       => $p['existing_id'] ?: null,
+            // The row's type column holds the taxonomy for a term change.
+            'post_type'       => $p['taxonomy'],
+            'base_hash'       => $terms->state($p['existing_id'], $p['taxonomy']),
+            'payload'         => $p + ['source_lang' => TranslationAdapterFactory::detect()->default_language()],
+            'summary'         => $this->summarize(sprintf(
+                '%s → %s: %s',
+                $source instanceof \WP_Term ? $source->name : (string) $p['source_id'],
+                $p['lang'],
+                $p['name'],
+            )),
+            'note'            => $note,
+            'requested_by'    => $requested_by,
+            'idempotency_key' => $idempotency_key,
+        ]);
+
+        $this->audit('accesslink_proposed', [
+            'change_id' => $id,
+            'action'    => ChangeRepository::ACTION_TRANSLATE_TERM,
+            'term_id'   => $p['existing_id'] ?: $p['source_id'],
+            'lang'      => $p['lang'],
             'by'        => $requested_by,
         ]);
 
@@ -1515,6 +1578,50 @@ final class ChangeService
                 $target_id,
                 (string) ($change['payload']['requested_status'] ?? 'publish'),
             );
+        } elseif ($change['action'] === ChangeRepository::ACTION_TRANSLATE_TERM) {
+            $p = (array) $change['payload'];
+            $taxonomy = (string) ($p['taxonomy'] ?? '');
+            $terms = $this->term_translator();
+            if (!get_term((int) ($p['source_id'] ?? 0), $taxonomy) instanceof \WP_Term) {
+                return $this->fail($id, 'The original term no longer exists.');
+            }
+
+            $now = $terms->translation_of((int) $p['source_id'], $taxonomy, (string) $p['lang']);
+            if ((int) $p['existing_id'] > 0) {
+                if ($now !== (int) $p['existing_id']
+                    || !hash_equals((string) $change['base_hash'], $terms->state($now, $taxonomy))) {
+                    return $this->mark_stale(
+                        $id,
+                        $target_id,
+                        'The translation was changed after this was proposed. Re-read GET /terms and propose again.',
+                    );
+                }
+            } elseif ($now > 0) {
+                // Made since the proposal — typically by the shop's own sync,
+                // which names a missing translation like its original until a
+                // person names it. That one is what this proposal is for.
+                if (!$terms->is_placeholder($now, (int) $p['source_id'], $taxonomy)) {
+                    return $this->mark_stale(
+                        $id,
+                        $now,
+                        sprintf(
+                            'A %s translation of this term was made after this was proposed (%d). Re-read GET /terms and propose against it.',
+                            (string) $p['lang'],
+                            $now,
+                        ),
+                    );
+                }
+                $p['existing_id'] = $now;
+            }
+
+            $result = $terms->apply($p);
+            if (!is_wp_error($result)) {
+                $this->repo->update($id, ['target_id' => $result]);
+                $target_id = $result;
+                // A term's name shows in menus, filters and breadcrumbs on
+                // pages no caching plugin connects to it.
+                CacheCleaner::purge_site();
+            }
         } else {
             $status = (string) ($change['payload']['requested_status'] ?? 'publish');
             $result = $this->applier->set_status($target_id, $status);
@@ -1717,6 +1824,18 @@ final class ChangeService
                 // and an Editor's approval apply another. What the post
                 // already contains is not the agent's and passes through.
                 $out[$field] = ContentSanitizer::filter((string) $value, false, $current_content);
+                continue;
+            }
+
+            if ($field === 'post_excerpt') {
+                $out[$field] = PostApplier::sanitize_excerpt((string) $value);
+                continue;
+            }
+
+            if ($field === ProductApplier::ATTRIBUTE_FIELD) {
+                // Kept as a map; validate() checks it against the product's
+                // attributes and refuses with the ones it has.
+                $out[$field] = ProductApplier::sanitize_attribute_words($value);
                 continue;
             }
 

@@ -111,6 +111,7 @@ final class QueuePage
         $is_menu = $change['action'] === ChangeRepository::ACTION_UPDATE_MENU;
         $is_sync_meta = $change['action'] === ChangeRepository::ACTION_SYNC_TRANSLATION_META;
         $is_style = in_array($change['action'], ChangeRepository::STYLE_ACTIONS, true);
+        $is_term = $change['action'] === ChangeRepository::ACTION_TRANSLATE_TERM;
         ?>
         <div class="card" style="max-width:none;margin-bottom:1em;padding:1em;">
             <h3 style="margin-top:0;">
@@ -205,6 +206,8 @@ final class QueuePage
                         </a>
                     <?php endif; ?>
                 </p>
+            <?php elseif ($is_term) : ?>
+                <?php $this->render_term_translation($change); ?>
             <?php elseif ($is_menu) : ?>
                 <?php $this->render_menu_diff($change); ?>
             <?php elseif ($is_style) : ?>
@@ -231,7 +234,21 @@ final class QueuePage
             <?php endif; ?>
 
             <p>
-                <?php if ($is_menu) : ?>
+                <?php if ($is_term) : ?>
+                    <?php
+                    $taxonomy = (string) $change['post_type'];
+                    $term_links = array_filter([
+                        __('Open the original term', 'valolink-plugin') => (int) ($change['payload']['source_id'] ?? 0),
+                        __('Open the current translation', 'valolink-plugin') => $target_id,
+                    ]);
+                    ?>
+                    <?php foreach ($term_links as $label => $term_id) : ?>
+                        <a class="button" target="_blank" rel="noopener"
+                           href="<?php echo esc_url(admin_url('term.php?taxonomy=' . rawurlencode($taxonomy) . '&tag_ID=' . $term_id)); ?>">
+                            <?php echo esc_html($label); ?>
+                        </a>
+                    <?php endforeach; ?>
+                <?php elseif ($is_menu) : ?>
                     <a class="button" target="_blank" rel="noopener"
                        href="<?php echo esc_url(admin_url('nav-menus.php?menu=' . $target_id)); ?>">
                         <?php esc_html_e('Open this menu in the editor', 'valolink-plugin'); ?>
@@ -362,6 +379,12 @@ final class QueuePage
                 // Read the same way current_value() reads the stored layout,
                 // so an unchanged area or condition is an unchanged line.
                 $proposed = (new AvadaLayouts())->format_proposed((int) $change['target_id'], $field, $proposed);
+            } elseif ($field === ProductApplier::ATTRIBUTE_FIELD) {
+                // The same "Name: option | option" lines current_value() gives.
+                $product = ProductApplier::available() ? wc_get_product((int) $change['target_id']) : null;
+                $proposed = $product instanceof \WC_Product
+                    ? ProductApplier::attribute_lines($product, (array) $proposed)
+                    : '';
             } elseif (is_array($proposed)) {
                 if (in_array($field, ElementReader::CONDITION_FIELDS, true)) {
                     // Same JSON shape current_value() produces, so equal
@@ -386,6 +409,54 @@ final class QueuePage
             if (in_array($field, ProductApplier::PRICE_FIELDS, true) && ProductApplier::available()) {
                 $this->render_price_preview($current, $proposed);
             }
+        }
+    }
+
+    /**
+     * A term translation: which term, into what, and its words before and
+     * after. "Before" is the translation as it stands — often a copy the
+     * shop's sync made under the original's name — or nothing yet.
+     */
+    private function render_term_translation(array $change): void
+    {
+        $p        = (array) ($change['payload'] ?? []);
+        $taxonomy = (string) $change['post_type'];
+        $source   = get_term((int) ($p['source_id'] ?? 0), $taxonomy);
+        $current  = (int) $change['target_id'] > 0 ? get_term((int) $change['target_id'], $taxonomy) : null;
+        $label    = get_taxonomy($taxonomy);
+        ?>
+        <p>
+            <?php
+            printf(
+                /* translators: 1: term name, 2: taxonomy label, 3: source language, 4: target language. */
+                esc_html__('Translation of the term %1$s (%2$s, %3$s) into %4$s.', 'valolink-plugin'),
+                '<strong>' . esc_html($source instanceof \WP_Term ? $source->name : '?') . '</strong>',
+                esc_html($label instanceof \WP_Taxonomy ? (string) $label->labels->singular_name : $taxonomy),
+                esc_html((string) ($p['source_lang'] ?? '?')),
+                '<strong>' . esc_html((string) ($p['lang'] ?? '?')) . '</strong>',
+            );
+            echo ' ';
+            echo $current instanceof \WP_Term
+                ? esc_html__('Approving renames the existing translation; it appears wherever the term does — menus, filters, product pages.', 'valolink-plugin')
+                : esc_html__('There is no translation yet; approving creates it, linked to the original.', 'valolink-plugin');
+            ?>
+        </p>
+        <?php
+        $rows = [
+            'name'        => (string) ($p['name'] ?? ''),
+            'slug'        => (string) ($p['slug'] ?? ''),
+            'description' => $p['description'] ?? null,
+        ];
+        foreach ($rows as $field => $proposed) {
+            if ($proposed === null || ($field === 'slug' && $proposed === '')) {
+                continue;
+            }
+            $before = $current instanceof \WP_Term ? (string) $current->{$field} : '';
+            if ($before === $proposed) {
+                continue;
+            }
+            echo '<h4>' . esc_html($field) . '</h4>';
+            $this->render_field_diff($before, (string) $proposed);
         }
     }
 

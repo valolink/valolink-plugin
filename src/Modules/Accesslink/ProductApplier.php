@@ -47,6 +47,15 @@ final class ProductApplier
     public const TERM_FIELDS = ['product_categories' => 'product_cat', 'product_tags' => 'product_tag'];
 
     /**
+     * The words of a product's own (custom) attributes: their names and
+     * options, which a translation keeps in its own language. Only words —
+     * which attributes and how many options stay as they are, and the
+     * variations follow the new words. A global attribute's words are terms,
+     * translated with `translate_term`.
+     */
+    public const ATTRIBUTE_FIELD = 'attribute_words';
+
+    /**
      * What each product type accepts. A variable product's prices and stock
      * live on its variations, a grouped one has none of its own, and an
      * external one is sold elsewhere. Types a plugin adds — bundles,
@@ -110,6 +119,7 @@ final class ProductApplier
         if ($product->is_type('variable')) {
             $out['variations'] = count($product->get_children());
         }
+        $out['attributes'] = self::attributes($product);
 
         // Said outright rather than left to a refused proposal: which of the
         // fields above this product takes here, given its type and whether
@@ -118,8 +128,363 @@ final class ProductApplier
             self::fields_for_type($product->get_type()),
             static fn (string $f): bool => $commerce || !in_array($f, self::COMMERCE_FIELDS, true),
         ));
+        if (self::custom_attributes($product) !== []) {
+            $out['proposable'][] = self::ATTRIBUTE_FIELD;
+        }
 
         return $out;
+    }
+
+    /**
+     * The product's attributes as the shop shows them: a custom one with its
+     * options, a global one with its terms (whose ids `translate_term` takes).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function attributes(\WC_Product $product): array
+    {
+        $out = [];
+        foreach ($product->get_attributes('edit') as $attribute) {
+            if (!$attribute instanceof \WC_Product_Attribute) {
+                continue;
+            }
+            $row = [
+                'name'      => $attribute->is_taxonomy() ? wc_attribute_label($attribute->get_name()) : $attribute->get_name(),
+                'taxonomy'  => $attribute->is_taxonomy() ? $attribute->get_name() : null,
+                'variation' => $attribute->get_variation(),
+            ];
+            if ($attribute->is_taxonomy()) {
+                $row['terms'] = array_map(
+                    static fn (\WP_Term $t): array => ['id' => (int) $t->term_id, 'name' => $t->name, 'slug' => $t->slug],
+                    (array) ($attribute->get_terms() ?: []),
+                );
+            } else {
+                $row['options'] = array_values(array_map('strval', $attribute->get_options()));
+            }
+            $out[] = $row;
+        }
+
+        return $out;
+    }
+
+    /** @return array<int, \WC_Product_Attribute> */
+    private static function custom_attributes(\WC_Product $product): array
+    {
+        return array_values(array_filter(
+            $product->get_attributes('edit'),
+            static fn ($a): bool => $a instanceof \WC_Product_Attribute && !$a->is_taxonomy(),
+        ));
+    }
+
+    /** The current value of attribute_words, for the staleness hash and the review diff. */
+    public function read_attribute_words(int $post_id): string
+    {
+        $product = wc_get_product($post_id);
+
+        return $product instanceof \WC_Product ? self::attribute_lines($product, []) : '';
+    }
+
+    /**
+     * One line per custom attribute, "Name: option | option", with $words
+     * applied — so the queue diffs a proposal line by line against what the
+     * product has.
+     *
+     * @param array<string, array<string, mixed>> $words
+     */
+    public static function attribute_lines(\WC_Product $product, array $words): string
+    {
+        $lines = [];
+        foreach (self::custom_attributes($product) as $attribute) {
+            $name = $attribute->get_name();
+            $new = is_array($words[$name] ?? null) ? $words[$name] : [];
+            $map = is_array($new['options'] ?? null) ? $new['options'] : [];
+            $options = array_map(
+                static fn ($o): string => (string) ($map[(string) $o] ?? $o),
+                $attribute->get_options(),
+            );
+            $lines[] = (string) ($new['name'] ?? $name) . ': ' . implode(' | ', $options);
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Strings cleaned, shape kept. A malformed entry stays in, marked, so
+     * check() refuses it by name instead of the proposal quietly shrinking.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    public static function sanitize_attribute_words(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return ['' => ['invalid' => true]];
+        }
+
+        $out = [];
+        foreach ($value as $name => $words) {
+            $name = sanitize_text_field((string) $name);
+            if (!is_array($words)) {
+                $out[$name] = ['invalid' => true];
+                continue;
+            }
+            $entry = [];
+            if (array_key_exists('name', $words)) {
+                $entry['name'] = sanitize_text_field((string) $words['name']);
+            }
+            if (array_key_exists('options', $words)) {
+                if (!is_array($words['options'])) {
+                    $entry['invalid'] = true;
+                } else {
+                    foreach ($words['options'] as $old => $new) {
+                        $entry['options'][sanitize_text_field((string) $old)] = sanitize_text_field(is_scalar($new) ? (string) $new : '');
+                    }
+                }
+            }
+            $out[$name] = $entry;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Whether attribute_words fits this product: every name a custom attribute
+     * it has, every option one of that attribute's, and the result still a
+     * valid set — no empty or duplicate option, no two attributes left with
+     * the same name.
+     *
+     * @param array<string, array<string, mixed>> $words
+     */
+    private static function check_attribute_words(\WC_Product $product, array $words): true|\WP_Error
+    {
+        $shape = 'attribute_words maps a custom attribute\'s current name to its words: '
+            . '{"Malli": {"name": "Model", "options": {"Tappi": "Stud", "Koukku": "Hook"}}}.';
+        if ($words === []) {
+            return new \WP_Error('bad_attribute_words', $shape, ['status' => 400]);
+        }
+        if ($product->get_id() === 0) {
+            return new \WP_Error(
+                'attribute_words_on_create',
+                'attribute_words translates the attributes a product already has; it cannot be part of a create.',
+                ['status' => 400],
+            );
+        }
+
+        $custom = [];
+        foreach (self::custom_attributes($product) as $attribute) {
+            $custom[$attribute->get_name()] = $attribute;
+        }
+        $global = [];
+        foreach ($product->get_attributes('edit') as $attribute) {
+            if ($attribute instanceof \WC_Product_Attribute && $attribute->is_taxonomy()) {
+                $global[wc_attribute_label($attribute->get_name())] = $attribute->get_name();
+                $global[$attribute->get_name()] = $attribute->get_name();
+            }
+        }
+
+        foreach ($words as $name => $entry) {
+            if (!isset($custom[$name])) {
+                if (isset($global[$name])) {
+                    return new \WP_Error(
+                        'global_attribute',
+                        sprintf(
+                            '%s is a global attribute (%s), so its words are terms. Translate them with translate_term — see GET /terms?taxonomy=%s.',
+                            $name,
+                            $global[$name],
+                            $global[$name],
+                        ),
+                        ['status' => 400],
+                    );
+                }
+
+                return new \WP_Error(
+                    'unknown_attribute',
+                    sprintf(
+                        'This product has no custom attribute "%s". Its custom attributes: %s.',
+                        $name,
+                        $custom === [] ? 'none' : implode(', ', array_keys($custom)),
+                    ),
+                    ['status' => 400],
+                );
+            }
+            if (!empty($entry['invalid'])) {
+                return new \WP_Error('bad_attribute_words', $shape, ['status' => 400]);
+            }
+            if (array_key_exists('name', $entry) && $entry['name'] === '') {
+                return new \WP_Error('bad_attribute_name', sprintf('The new name for %s is empty.', $name), ['status' => 400]);
+            }
+
+            $options = array_map('strval', $custom[$name]->get_options());
+            $map = (array) ($entry['options'] ?? []);
+            foreach ($map as $old => $new) {
+                if (!in_array((string) $old, $options, true)) {
+                    return new \WP_Error(
+                        'unknown_option',
+                        sprintf('"%s" is not an option of %s. Its options: %s.', $old, $name, implode(' | ', $options)),
+                        ['status' => 400],
+                    );
+                }
+                if ($new === '' || str_contains((string) $new, WC_DELIMITER)) {
+                    return new \WP_Error(
+                        'bad_option',
+                        sprintf('The new word for "%s" must be non-empty and contain no "%s", which separates options.', $old, WC_DELIMITER),
+                        ['status' => 400],
+                    );
+                }
+            }
+            $after = array_map(static fn (string $o): string => mb_strtolower((string) ($map[$o] ?? $o)), $options);
+            if (count(array_unique($after)) !== count($after)) {
+                return new \WP_Error(
+                    'duplicate_option',
+                    sprintf('Two options of %s would read the same, and a customer could not tell them apart.', $name),
+                    ['status' => 400],
+                );
+            }
+        }
+
+        // WooCommerce keys a custom attribute, and its variations' choices, by
+        // the sanitised name, so two names that sanitise alike would merge.
+        $keys = [];
+        foreach ($product->get_attributes('edit') as $attribute) {
+            if (!$attribute instanceof \WC_Product_Attribute) {
+                continue;
+            }
+            if ($attribute->is_taxonomy()) {
+                $keys[] = $attribute->get_name();
+                continue;
+            }
+            $key = sanitize_title((string) ($words[$attribute->get_name()]['name'] ?? $attribute->get_name()));
+            if (str_starts_with($key, 'pa_')) {
+                return new \WP_Error('bad_attribute_name', 'A custom attribute\'s name cannot start with "pa_", which marks global attributes.', ['status' => 400]);
+            }
+            $keys[] = $key;
+        }
+        if (count(array_unique($keys)) !== count($keys)) {
+            return new \WP_Error(
+                'duplicate_attribute',
+                'Two attributes would end up with the same name. Give each its own.',
+                ['status' => 400],
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * Put the new words on the product (saved by the caller) and its default
+     * choices. Returns what the variations need: per old attribute key, the
+     * new key and the option renames.
+     *
+     * Each attribute is replaced by a changed clone. Modified in place, the
+     * array WooCommerce compares against would be the same objects, the
+     * product would see no change and the save would write nothing.
+     *
+     * @param array<string, array<string, mixed>> $words
+     * @return array<string, array{0: string, 1: array<string, string>}>
+     */
+    private static function set_attribute_words(\WC_Product $product, array $words): array
+    {
+        $renames = [];
+        $attributes = [];
+        foreach ($product->get_attributes('edit') as $key => $attribute) {
+            if (!$attribute instanceof \WC_Product_Attribute || $attribute->is_taxonomy() || !isset($words[$attribute->get_name()])) {
+                $attributes[$key] = $attribute;
+                continue;
+            }
+            $name = $attribute->get_name();
+            $entry = $words[$name];
+            $map = [];
+            foreach (array_map('strval', $attribute->get_options()) as $option) {
+                $map[$option] = (string) ($entry['options'][$option] ?? $option);
+            }
+            $new_name = (string) ($entry['name'] ?? $name);
+
+            $changed = clone $attribute;
+            $changed->set_name($new_name);
+            $changed->set_options(array_values($map));
+            $attributes[sanitize_title($new_name)] = $changed;
+            $renames[sanitize_title($name)] = [sanitize_title($new_name), $map];
+        }
+
+        $product->set_attributes($attributes);
+        $product->set_default_attributes(self::rename_choices($product->get_default_attributes('edit'), $renames));
+
+        return $renames;
+    }
+
+    /**
+     * A variation's choices (or the product's defaults), attribute key =>
+     * option, in the new words. A choice of "any" stays any.
+     *
+     * @param array<string, string> $choices
+     * @param array<string, array{0: string, 1: array<string, string>}> $renames
+     * @return array<string, string>
+     */
+    private static function rename_choices(array $choices, array $renames): array
+    {
+        $out = [];
+        foreach ($choices as $key => $value) {
+            if (!isset($renames[$key])) {
+                $out[$key] = $value;
+                continue;
+            }
+            [$new_key, $map] = $renames[$key];
+            $new_value = (string) $value;
+            if ($new_value !== '') {
+                foreach ($map as $old => $new) {
+                    if ($value === $old || sanitize_title((string) $value) === sanitize_title($old)) {
+                        $new_value = $new;
+                        break;
+                    }
+                }
+            }
+            $out[$new_key] = $new_value;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Every variation of the product, published or not, re-pointed at the
+     * renamed attributes — without this the variation menu on the product
+     * page offers words no variation matches, and nothing can be bought.
+     *
+     * @param array<string, array{0: string, 1: array<string, string>}> $renames
+     */
+    private static function rename_variation_choices(\WC_Product $product, array $renames): void
+    {
+        if ($renames === [] || !$product->is_type('variable')) {
+            return;
+        }
+        $ids = get_posts([
+            'post_type'   => 'product_variation',
+            'post_parent' => $product->get_id(),
+            'post_status' => ['publish', 'private'],
+            'numberposts' => -1,
+            'fields'      => 'ids',
+        ]);
+        // The choices are re-keyed in the variations' own `attribute_*` meta. WC_Product_Variation
+        // cannot do it: once the parent is saved it builds a variation's attributes from the
+        // parent's new keys, finds no meta under them and reports every choice as "any".
+        foreach ($ids as $id) {
+            $id = (int) $id;
+            $choices = [];
+            foreach (array_keys($renames) as $key) {
+                if (metadata_exists('post', $id, 'attribute_' . $key)) {
+                    $choices[$key] = (string) get_post_meta($id, 'attribute_' . $key, true);
+                }
+            }
+            if ($choices === []) {
+                continue;
+            }
+            // All old keys go before any new one is written, so swapped names survive.
+            foreach (array_keys($choices) as $key) {
+                delete_post_meta($id, 'attribute_' . $key);
+            }
+            foreach (self::rename_choices($choices, $renames) as $key => $value) {
+                update_post_meta($id, 'attribute_' . $key, wp_slash($value));
+            }
+        }
+        wc_delete_product_transients($product->get_id());
     }
 
     /**
@@ -376,6 +741,13 @@ final class ProductApplier
      */
     public function check(array $fields, \WC_Product $product): true|\WP_Error
     {
+        if (array_key_exists(self::ATTRIBUTE_FIELD, $fields)) {
+            $words = self::check_attribute_words($product, (array) $fields[self::ATTRIBUTE_FIELD]);
+            if (is_wp_error($words)) {
+                return $words;
+            }
+        }
+
         $fields = self::normalise($fields);
         if (is_wp_error($fields)) {
             return $fields;
@@ -526,6 +898,7 @@ final class ProductApplier
         if (is_wp_error($check)) {
             return $check;
         }
+        $words = (array) ($fields[self::ATTRIBUTE_FIELD] ?? []);
         $fields = self::normalise($fields);
         if (is_wp_error($fields)) {
             return $fields;
@@ -535,9 +908,11 @@ final class ProductApplier
             foreach ($fields as $field => $value) {
                 self::set($product, $field, $value);
             }
+            $renames = $words !== [] ? self::set_attribute_words($product, $words) : [];
             // Aligns stock status with quantity, then writes meta, terms and
             // the lookup row, and clears Woo's caches.
             $product->save();
+            self::rename_variation_choices($product, $renames);
         } catch (\WC_Data_Exception $e) {
             return new \WP_Error($e->getErrorCode(), $e->getMessage(), ['status' => 400]);
         } catch (\Throwable $e) {

@@ -28,6 +28,7 @@ final class ChangeRepository
     public const ACTION_SYNC_TRANSLATION_META = 'sync_translation_meta';
     public const ACTION_SET_STYLE          = 'set_style';
     public const ACTION_SET_TOKENS         = 'set_tokens';
+    public const ACTION_TRANSLATE_TERM     = 'translate_term';
 
     /**
      * Every action `propose()` accepts.
@@ -47,6 +48,7 @@ final class ChangeRepository
         self::ACTION_MOVE_BLOCK,
         self::ACTION_CREATE_TRANSLATION,
         self::ACTION_SET_LANGUAGE,
+        self::ACTION_TRANSLATE_TERM,
         self::ACTION_UPDATE_MENU,
         self::ACTION_SYNC_TRANSLATION_META,
         self::ACTION_SET_STYLE,
@@ -64,6 +66,7 @@ final class ChangeRepository
         self::ACTION_CREATE_TRANSLATION,
         self::ACTION_SET_LANGUAGE,
         self::ACTION_SYNC_TRANSLATION_META,
+        self::ACTION_TRANSLATE_TERM,
     ];
 
     /**

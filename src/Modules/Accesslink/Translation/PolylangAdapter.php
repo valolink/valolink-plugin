@@ -169,4 +169,65 @@ final class PolylangAdapter implements TranslationAdapter
 
         return (int) $id;
     }
+
+    public function is_translated_taxonomy(string $taxonomy): bool
+    {
+        return $this->available()
+            && function_exists('pll_is_translated_taxonomy')
+            && (bool) pll_is_translated_taxonomy($taxonomy);
+    }
+
+    public function term_translations(int $term_id): array
+    {
+        if (!$this->available() || !function_exists('pll_get_term_translations')) {
+            return [];
+        }
+
+        $out = [];
+        foreach ((array) pll_get_term_translations($term_id) as $lang => $id) {
+            $out[(string) $lang] = (int) $id;
+        }
+
+        return $out;
+    }
+
+    public function insert_term(string $name, string $taxonomy, string $lang, array $args, array $translations): int|\WP_Error
+    {
+        if (!$this->available() || !function_exists('pll_insert_term')) {
+            return new \WP_Error('no_translation_plugin', 'This Polylang cannot create terms in a language (needs 3.7 or later).');
+        }
+
+        // pll_insert_term, not wp_insert_term: core refuses a name or slug its
+        // translation already uses, and Polylang is what lets "Kaulakorut" and
+        // its English twin both be called "Necklaces" until someone renames one.
+        $result = pll_insert_term($name, $taxonomy, $lang, $args + ['translations' => $translations]);
+        if (is_wp_error($result)) {
+            return $result;
+        }
+        $id = (int) ($result['term_id'] ?? 0);
+        if ($id <= 0) {
+            return new \WP_Error('insert_term_failed', 'Polylang did not create the term.');
+        }
+
+        if (function_exists('pll_save_term_translations')) {
+            pll_save_term_translations($translations + [$lang => $id]);
+        }
+
+        return $id;
+    }
+
+    public function update_term(int $term_id, string $taxonomy, array $args): true|\WP_Error
+    {
+        if (!$this->available()) {
+            return new \WP_Error('no_translation_plugin', 'No usable multilingual plugin on this site.');
+        }
+
+        // Polylang's own update where it has one, so its language filters run
+        // as they do when the term is renamed in wp-admin.
+        $result = function_exists('pll_update_term')
+            ? pll_update_term($term_id, $args)
+            : wp_update_term($term_id, $taxonomy, $args);
+
+        return is_wp_error($result) ? $result : true;
+    }
 }
