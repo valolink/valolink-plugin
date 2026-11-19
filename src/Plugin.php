@@ -57,6 +57,7 @@ final class Plugin
 
             if (defined('WP_CLI') && WP_CLI) {
                 \WP_CLI::add_command('valolink blocks', \Valolink\Plugin\Modules\Blocks\LocalStylesCommand::class);
+                \WP_CLI::add_command('valolink library', \Valolink\Plugin\Modules\Library\LibraryCommand::class);
             }
         } catch (\Throwable $e) {
             error_log(sprintf(

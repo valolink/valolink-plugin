@@ -30,5 +30,6 @@ final class Uninstaller
         }
 
         delete_option(Settings::OPTION_KEY);
+        delete_option(Modules\Library\Undo::OPTION);
     }
 }
