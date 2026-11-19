@@ -80,6 +80,9 @@
 			if (al(a.alignment)) Object.assign(styles, al(a.alignment));
 			if (al(a.alignmentTablet)) addAt(styles, MQ.tabletDown, al(a.alignmentTablet));
 			if (al(a.alignmentMobile)) addAt(styles, MQ.mobile, al(a.alignmentMobile));
+			// v2 prints a srcset, and SVG "sizes" (150w…2048w) are all the same file; with width:auto a
+			// big candidate shrinks the icon to a dot. Leave the width to the img's width attribute.
+			if (/\.svg(\?|$)/i.test(el.attributes.htmlAttributes?.src || '') && styles.width === 'auto') delete styles.width;
 		}
 		// v1 printed `border: 2px solid` with no colour, so the border took the text colour (and
 		// beat a class's border colour); v2 writes width and style only.
@@ -95,7 +98,10 @@
 			const stop = s => (s === '' || s === undefined || s === null ? '' : ' ' + s + '%');
 			styles.backgroundImage = 'linear-gradient(' + (g.direction || 0) + 'deg, ' + g.colorOne + stop(g.stopOne) + ', ' + g.colorTwo + stop(g.stopTwo) + ')';
 		}
-		return { ...el, attributes: { ...el.attributes, styles, className } };
+		// v1 printed a button without a URL as a <span>; the transform makes it an <a> without href,
+		// which then picks up the theme's `a.button` colours.
+		const tagName = b.name === 'generateblocks/button' && !a.url && el.attributes.tagName === 'a' ? 'span' : el.attributes.tagName;
+		return { ...el, attributes: { ...el.attributes, styles, className, tagName } };
 	}
 
 	function staysReason(b, inLoop) {
