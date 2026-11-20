@@ -541,8 +541,8 @@ final class GuideBuilder
         $md[] = "fields that particular product takes here. `GET {$base}/content?post_type=product&fields=product`";
         $md[] = 'gives the short version per row, so a price audit is one call.';
         $md[] = '';
-        $md[] = 'Product fields go in `fields` on a `create` or an `update`, in the names WooCommerce\'s';
-        $md[] = 'own REST API uses:';
+        $md[] = 'Product fields go in `fields` on a `create` or an `update` (`POST ' . $base . '/changes`),';
+        $md[] = 'in the names WooCommerce\'s own REST API uses:';
         $md[] = '';
         $md[] = "- `product_categories`, `product_tags` — existing term slugs from `GET {$base}/taxonomies`.";
         $md[] = '  `categories` and `tags` are the blog\'s; products do not have them.';
@@ -768,6 +768,7 @@ final class GuideBuilder
         $md[] = '## Translations';
         $md[] = '';
         $md[] = 'This site is multilingual (' . $tr->plugin() . '). Languages: ' . implode(', ', $langs) . '.';
+        $md[] = "Every action in this section is a proposal: `POST {$base}/changes` with the JSON shown.";
         $md[] = '';
         $md[] = "- `GET {$base}/languages` — the list above, with names and locales.";
         $md[] = "- `GET {$base}/content/{id}/translations` — which languages a post exists in,";
