@@ -51,9 +51,15 @@ final class QueuePage
             <?php if ($pending === []) : ?>
                 <p><?php esc_html_e('Nothing waiting for review.', 'valolink-plugin'); ?></p>
             <?php else : ?>
+                <?php $this->render_bulk_form(); ?>
                 <?php foreach ($pending as $change) : ?>
                     <?php $this->render_change($change); ?>
                 <?php endforeach; ?>
+                <p>
+                    <button type="submit" form="vl-bulk" class="button button-primary" name="decision" value="approve_selected">
+                        <?php esc_html_e('Approve selected', 'valolink-plugin'); ?>
+                    </button>
+                </p>
             <?php endif; ?>
 
             <?php if ($recent !== []) : ?>
@@ -115,6 +121,9 @@ final class QueuePage
         ?>
         <div class="card" style="max-width:none;margin-bottom:1em;padding:1em;">
             <h3 style="margin-top:0;">
+                <input type="checkbox" form="vl-bulk" name="change_ids[]" class="vl-bulk-pick"
+                       value="<?php echo esc_attr((string) $change['id']); ?>"
+                       aria-label="<?php esc_attr_e('Select for bulk approval', 'valolink-plugin'); ?>">
                 <?php echo $is_create ? '+ ' : '&#9998; '; ?>
                 <?php echo esc_html((string) $change['summary']); ?>
                 <span style="font-weight:normal;color:#666;">
@@ -973,8 +982,62 @@ final class QueuePage
         }
     }
 
+    /**
+     * One form for every card's checkbox (they point at it with `form=`, since a
+     * card's own Approve/Reject form cannot hold another). Approving a selection
+     * runs each change through the same approve() as its own button, oldest
+     * first, so review the cards before ticking them: this saves clicks, not
+     * reading.
+     */
+    private function render_bulk_form(): void
+    {
+        ?>
+        <form id="vl-bulk" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+            <?php wp_nonce_field(AccesslinkModule::REVIEW_NONCE); ?>
+            <input type="hidden" name="action" value="<?php echo esc_attr(AccesslinkModule::REVIEW_ACTION); ?>">
+            <p>
+                <label>
+                    <input type="checkbox" id="vl-bulk-all">
+                    <?php esc_html_e('Select all shown', 'valolink-plugin'); ?>
+                </label>
+                <button class="button button-primary" name="decision" value="approve_selected">
+                    <?php esc_html_e('Approve selected', 'valolink-plugin'); ?>
+                </button>
+                <span class="description"><?php esc_html_e('Each is applied on its own, oldest first, exactly as its Approve button would.', 'valolink-plugin'); ?></span>
+            </p>
+        </form>
+        <script>
+            document.getElementById('vl-bulk-all').addEventListener('change', function (e) {
+                document.querySelectorAll('.vl-bulk-pick').forEach(function (box) { box.checked = e.target.checked; });
+            });
+        </script>
+        <?php
+    }
+
     private function render_notice(string $msg): void
     {
+        if ($msg === 'bulk') {
+            $parts = array_map('intval', explode('.', isset($_GET['vl_bulk']) ? sanitize_text_field(wp_unslash($_GET['vl_bulk'])) : ''));
+            [$applied, $stale, $failed, $left] = array_pad($parts, 4, 0);
+            $text = sprintf(
+                /* translators: 1: applied, 2: stale, 3: failed */
+                __('Approved %1$d. Stale: %2$d, failed: %3$d — those stay listed below under Recently resolved.', 'valolink-plugin'),
+                $applied,
+                $stale,
+                $failed,
+            );
+            if ($left > 0) {
+                /* translators: %d: changes not reached */
+                $text .= ' ' . sprintf(__('%d were not reached before the time limit; they are still selectable below.', 'valolink-plugin'), $left);
+            }
+            printf(
+                '<div class="notice notice-%s is-dismissible"><p>%s</p></div>',
+                esc_attr($failed > 0 || $stale > 0 || $left > 0 ? 'warning' : 'success'),
+                esc_html($text),
+            );
+            return;
+        }
+
         $map = [
             'approved' => [__('Change applied.', 'valolink-plugin'), 'success'],
             'rejected' => [__('Change rejected.', 'valolink-plugin'), 'success'],

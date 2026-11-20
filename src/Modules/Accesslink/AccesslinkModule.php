@@ -1212,6 +1212,13 @@ final class AccesslinkModule implements Module
         $id       = isset($_POST['change_id']) ? (int) $_POST['change_id'] : 0;
         $decision = isset($_POST['decision']) ? sanitize_key(wp_unslash($_POST['decision'])) : '';
 
+        if ($decision === 'approve_selected') {
+            $ids = isset($_POST['change_ids']) && is_array($_POST['change_ids'])
+                ? array_map('intval', wp_unslash($_POST['change_ids']))
+                : [];
+            $this->approve_selected($ids);
+        }
+
         // Explicit allowlist — anything unrecognised must not fall through to
         // one of the two destructive branches.
         if (!in_array($decision, ['approve', 'reject', 'reply'], true)) {
@@ -1446,6 +1453,49 @@ final class AccesslinkModule implements Module
         nocache_headers();
 
         return $posts;
+    }
+
+    /**
+     * The changes ticked on the queue page, approved one by one exactly as their
+     * own Approve buttons would — each applied and stale-checked on its own, so
+     * one failure stops nothing else. Oldest first: a translation's draft before
+     * the update that fills it. The run stops after ~20 s and reports what is
+     * left, because a shared host's time limit would otherwise cut it off with
+     * no word of how far it got.
+     *
+     * @param list<int> $ids
+     */
+    private function approve_selected(array $ids): void
+    {
+        $ids = array_values(array_unique(array_filter($ids, static fn (int $id): bool => $id > 0)));
+        sort($ids);
+        if ($ids === []) {
+            $this->redirect_back('failed');
+        }
+
+        $service = $this->service();
+        $started = microtime(true);
+        $counts  = ['applied' => 0, 'stale' => 0, 'failed' => 0, 'left' => 0];
+        foreach ($ids as $i => $id) {
+            if (microtime(true) - $started > 20) {
+                $counts['left'] = count($ids) - $i;
+                break;
+            }
+            $result = $service->approve($id);
+            if (is_wp_error($result) || $result['status'] === ChangeRepository::STATUS_FAILED) {
+                $counts['failed']++;
+            } elseif ($result['status'] === ChangeRepository::STATUS_STALE) {
+                $counts['stale']++;
+            } else {
+                $counts['applied']++;
+            }
+        }
+
+        wp_safe_redirect(add_query_arg(
+            ['page' => self::SUBPAGE_SLUG, 'vl_msg' => 'bulk', 'vl_bulk' => implode('.', $counts)],
+            admin_url('admin.php'),
+        ));
+        exit;
     }
 
     private function redirect_back(string $msg): void
