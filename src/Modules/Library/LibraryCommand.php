@@ -281,11 +281,14 @@ final class LibraryCommand
     }
 
     /**
-     * Clears WP Rocket, then has one page rendered at once. The web server may
-     * keep serving a deleted cached page for a while (nginx open_file_cache:
-     * 60 s on hzweb1), and that page links to the minified stylesheet just
-     * deleted, so the site goes unstyled until a fresh render writes it back
-     * at the same path. A query string bypasses Rocket's page cache.
+     * Clears WP Rocket, then has pages rendered at once. Rocket deletes its
+     * minified stylesheets, and the web server may keep serving a deleted
+     * cached page for a while (nginx open_file_cache: 60 s on hzweb1) that
+     * links to them, so the site goes unstyled until a page is rendered again
+     * and the stylesheets are written back at the same paths. Only a plain URL
+     * does that (Rocket does not optimize a request with a query string), and
+     * the front page itself may be the stale copy that never reaches PHP, so
+     * the pages edited last are rendered too.
      */
     private function purge(): void
     {
@@ -294,9 +297,16 @@ final class LibraryCommand
         }
         rocket_clean_minify();
         rocket_clean_domain();
-        $r = wp_remote_get(add_query_arg('vl-library', (string) time(), home_url('/')), ['timeout' => 30, 'sslverify' => false]);
-        if (is_wp_error($r) || wp_remote_retrieve_response_code($r) !== 200) {
-            \WP_CLI::warning('Could not render the front page after clearing the cache; open it once now, or pages may be unstyled for up to a minute.');
+        $front = (int) get_option('page_on_front');
+        $pages = get_posts(['post_type' => 'page', 'post_status' => 'publish', 'orderby' => 'modified', 'order' => 'DESC',
+            'posts_per_page' => 3, 'exclude' => $front ? [$front] : [], 'fields' => 'ids']);
+        $rendered = 0;
+        foreach (array_merge([home_url('/')], array_map('get_permalink', $pages)) as $url) {
+            $r = wp_remote_get($url, ['timeout' => 30, 'sslverify' => false]);
+            $rendered += (!is_wp_error($r) && wp_remote_retrieve_response_code($r) === 200) ? 1 : 0;
+        }
+        if ($rendered === 0) {
+            \WP_CLI::warning('Could not render any page after clearing the cache; open a few pages now, or the site may be unstyled for up to a minute.');
         }
     }
 }
