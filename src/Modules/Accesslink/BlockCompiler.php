@@ -65,8 +65,8 @@ final class BlockCompiler
     /** @var array<string, true> */
     private array $slots = [];
 
-    /** Dynamic blocks a tree may place: self-closing, rendered by their own PHP. */
-    private const DYNAMIC_BLOCKS = ['core/search', 'core/site-logo', 'woocommerce/mini-cart', 'woocommerce/customer-account'];
+    /** Dynamic blocks a tree may place: self-closing, rendered by their own PHP (generatepress/dynamic-content: the post in a GP content template). */
+    private const DYNAMIC_BLOCKS = ['core/search', 'core/site-logo', 'generatepress/dynamic-content', 'woocommerce/mini-cart', 'woocommerce/customer-account'];
 
     /** Blocks whose content a synced pattern lets each page override (GB Text through the Blocks module). */
     private const SLOT_BLOCKS = ['core/heading', 'core/paragraph', 'core/image', 'generateblocks/text'];
