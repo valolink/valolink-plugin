@@ -64,7 +64,7 @@ final class SelfUpdate
             self::reactivate($basename, $network);
         }
         if ($result !== true) {
-            $errors = $skin->get_error_messages();
+            $errors = $skin->get_errors()->get_error_messages();
             if (is_wp_error($result)) {
                 $errors[] = $result->get_error_message();
             }
@@ -84,7 +84,7 @@ final class SelfUpdate
     }
 
     /** Back into the active list, as activate_plugin() would, without including the plugin again. */
-    private static function reactivate(string $basename, bool $network): void
+    public static function reactivate(string $basename, bool $network): void
     {
         if ($network) {
             $sitewide = (array) get_site_option('active_sitewide_plugins', []);

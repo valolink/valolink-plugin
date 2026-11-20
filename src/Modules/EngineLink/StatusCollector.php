@@ -90,14 +90,20 @@ final class StatusCollector
 
     private function themes(): array
     {
-        $theme = wp_get_theme();
+        $theme       = wp_get_theme();
+        $update_data = get_site_transient('update_themes');
+        $update      = is_object($update_data) && is_array($update_data->response ?? null)
+            ? ($update_data->response[$theme->get_stylesheet()] ?? null)
+            : null;
 
         return [
             'active' => [
-                'name'    => $theme->get('Name'),
-                'slug'    => $theme->get_stylesheet(),
-                'version' => $theme->get('Version'),
-                'author'  => wp_strip_all_tags((string) $theme->get('Author')),
+                'name'             => $theme->get('Name'),
+                'slug'             => $theme->get_stylesheet(),
+                'version'          => $theme->get('Version'),
+                'author'           => wp_strip_all_tags((string) $theme->get('Author')),
+                'update_available' => is_array($update),
+                'new_version'      => is_array($update) ? ($update['new_version'] ?? null) : null,
             ],
         ];
     }
@@ -161,9 +167,14 @@ final class StatusCollector
             ? count((array) $theme_data->response)
             : 0;
 
+        // The newest release of the running branch, which /update installs
+        // unless it is told `major`.
+        $minor = SiteUpdate::core_offer(false);
+
         return [
             'wordpress_update_available' => $wp_update,
             'new_wordpress_version'      => $wp_new,
+            'minor_wordpress_version'    => $minor ? (string) ($minor->version ?? $minor->current) : null,
             'plugin_updates_count'       => $plugin_count,
             'theme_updates_count'        => $theme_count,
         ];

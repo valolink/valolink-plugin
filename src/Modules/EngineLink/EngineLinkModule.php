@@ -163,6 +163,12 @@ final class EngineLinkModule implements Module
             'permission_callback' => [$auth, 'check'],
         ]);
 
+        register_rest_route(self::REST_NAMESPACE, '/update', [
+            'methods'             => \WP_REST_Server::CREATABLE,
+            'callback'            => [$this, 'handle_update'],
+            'permission_callback' => [$auth, 'check'],
+        ]);
+
         register_rest_route(self::REST_NAMESPACE, '/pages', [
             'methods'             => \WP_REST_Server::READABLE,
             'callback'            => [$this, 'handle_pages'],
@@ -222,6 +228,18 @@ final class EngineLinkModule implements Module
     public function handle_self_update(): \WP_REST_Response|\WP_Error
     {
         $result = SelfUpdate::run();
+
+        return is_wp_error($result) ? $result : new \WP_REST_Response($result);
+    }
+
+    /** Body or query: type = plugin | theme | core, slug (not for core), major (core only). */
+    public function handle_update(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        $result = SiteUpdate::run(
+            (string) $request->get_param('type'),
+            (string) $request->get_param('slug'),
+            filter_var($request->get_param('major'), FILTER_VALIDATE_BOOLEAN),
+        );
 
         return is_wp_error($result) ? $result : new \WP_REST_Response($result);
     }

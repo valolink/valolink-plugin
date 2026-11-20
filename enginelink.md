@@ -53,7 +53,9 @@ Full snapshot of the site's current state. This is the main endpoint EngineLink 
       "name": "Astra",
       "slug": "astra",
       "version": "4.6.2",
-      "author": "Brainstorm Force"
+      "author": "Brainstorm Force",
+      "update_available": false,
+      "new_version": null
     }
   },
   "plugins": [
@@ -70,6 +72,7 @@ Full snapshot of the site's current state. This is the main endpoint EngineLink 
   "updates": {
     "wordpress_update_available": false,
     "new_wordpress_version": null,
+    "minor_wordpress_version": null,
     "plugin_updates_count": 2,
     "theme_updates_count": 0
   },
@@ -136,6 +139,48 @@ own messages when the upgrade fails. WordPress's upgrader deactivates an active 
 and leaves reactivation to the browser; the endpoint puts it back in the active list (network-wide
 on a multisite when it was) without loading it twice, then refreshes the staging mu-loader.
 Tested 2026-10-22 on pohja.demolink.fi: 0.2.11 → 0.2.12 in 2 s, active afterwards, front page 200.
+
+### POST /wp-json/enginelink/v1/update
+
+Since 0.2.21. Updates one installed plugin, one installed theme or WordPress itself, for sites
+EngineLink has no other way onto. It installs what WordPress's own update check offers for that
+item — what the Update link in wp-admin would install — with WordPress's own upgraders. The request
+names what to update, never where from: there is no URL or zip parameter, and nothing is installed,
+activated, deactivated or deleted. A leaked key can at most trigger official updates.
+
+Body (JSON or form):
+
+| Field | |
+|---|---|
+| `type` | `plugin`, `theme` or `core` |
+| `slug` | plugin: the basename `/status` reports (`contact-form-7/wp-contact-form-7.php`) or the bare directory (`contact-form-7`); theme: its stylesheet directory; not used for core |
+| `major` | core only. Without it core takes the newest release of its own branch (7.1.4 → 7.1.5); with it the newest release there is |
+
+```json
+{ "type": "plugin", "slug": "contact-form-7/wp-contact-form-7.php", "updated": true, "from": "6.2.5", "to": "6.2.6" }
+{ "type": "theme", "slug": "generatepress", "updated": false, "from": "3.6.1", "to": "3.6.1", "reason": "up_to_date" }
+{ "type": "core", "slug": "wordpress", "updated": false, "from": "7.1.5", "to": "7.1.5", "reason": "major_only", "available": "7.2" }
+```
+
+`from` and `to` are read from the files before and after, not from the offer. One item per request,
+and one request at a time: a second one while an update runs is a 409 (`valolink_update_running`).
+Other refusals: 400 for an unknown `type`; 404 when the plugin or theme is not installed; 409 under
+`DISALLOW_FILE_MODS`, when WordPress cannot write its files directly, or when WordPress knows of a
+newer version but has no package for it (`valolink_no_package`: a paid plugin or theme whose licence
+is not active on the site); 500 with WordPress's own messages when the upgrade fails. The plugin
+itself named as the target goes through `self-update`.
+
+Plugins and themes run through `bulk_upgrade()` like wp-admin's own AJAX updates: the site is in
+maintenance mode for the seconds it takes and an active plugin stays active. WordPress's upgrader
+empties its update list afterwards, so the route runs the update check again and the next `/status`
+still lists the updates that are left. There is no rollback: where WordPress keeps a temporary
+backup it restores it when the install itself fails, but an update that installs cleanly and then
+breaks the site has to be fixed by hand. `/status` gained `themes.active.update_available` /
+`new_version` and `updates.minor_wordpress_version` (the release `core` installs without `major`)
+in the same version.
+
+Tested 2026-11-20 on the localwp scratch site (`tests/site-update-wp.php`): akismet 5.7 → 5.7.2
+staying active, twentytwentythree → 1.7, core 7.1.4 → 7.1.5, front page 200 afterwards.
 
 ### GET /wp-json/enginelink/v1/pages
 
