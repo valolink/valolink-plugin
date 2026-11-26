@@ -23,8 +23,9 @@ use Valolink\Plugin\Settings;
  * A port of the standalone valolink-cf7-guard plugin (0.2.0, Pirkkala and
  * Lempäälä hautauspalvelu): same field names, same token format and signing,
  * same Flamingo spam log for Contact Form 7, so a site can swap the plugin for
- * the module. Beyond CF7 it covers WooCommerce's sign-in, lost-password,
- * comment / product review and registration forms, each behind its own toggle.
+ * the module. Beyond CF7 it covers Avada Forms and WooCommerce's sign-in,
+ * lost-password, comment / product review and registration forms, each behind
+ * its own toggle.
  * wp-login.php's sign-in is left to Security → Login timing guard when that is
  * on (it renders its token into the uncached login page).
  *
@@ -47,15 +48,16 @@ final class FormGuardModule implements Module
     private const MAX_AGE = DAY_IN_SECONDS;
     private const SKEW    = 60;             // tolerated clock skew for future timestamps
 
-    /** One spam.blocked row per IP and integration per window, except CF7 whose every rejection matters. */
+    /** One spam.blocked row per IP and integration per window, except the contact forms (CF7, Avada), whose every rejection matters. */
     private const LOG_THROTTLE_SECONDS = 300;
 
     /** Integration toggles, in settings-page order. */
-    private const INTEGRATIONS = ['cf7', 'login', 'lostpassword', 'comments', 'registration'];
+    private const INTEGRATIONS = ['cf7', 'avada', 'login', 'lostpassword', 'comments', 'registration'];
 
     /** Form selectors the script fills, per integration. */
     private const SELECTORS = [
         'cf7'          => ['form.wpcf7-form'],
+        'avada'        => ['form.fusion-form'],
         'login'        => ['form.woocommerce-form-login'],
         'lostpassword' => ['#lostpasswordform', 'form.woocommerce-ResetPassword'],
         'comments'     => ['#commentform', 'form.comment-form'],
@@ -63,6 +65,16 @@ final class FormGuardModule implements Module
     ];
 
     private const CF7_STANDALONE_CLASS = 'Valolink_CF7_Guard';
+
+    private const AVADA_AJAX_ACTION = 'fusion_form_submit_ajax';
+
+    /**
+     * Fields of the Avada form being checked. Avada posts a form's fields
+     * serialized in one value (formData), so they are not in $_POST.
+     *
+     * @var array<mixed>|null
+     */
+    private ?array $avada_fields = null;
 
     /** Reason of the CF7 rejection in this request, for the message shown. */
     private ?string $cf7_rejected = null;
@@ -73,8 +85,9 @@ final class FormGuardModule implements Module
 
     public function should_load(Context $context): bool
     {
-        // Forms post through REST (CF7), wp-login.php, wp-comments-post.php and
-        // front-end requests (WooCommerce), and the token comes over REST.
+        // Forms post through REST (CF7), admin-ajax.php (Avada), wp-login.php,
+        // wp-comments-post.php and front-end requests (WooCommerce), and the
+        // token comes over REST.
         return true;
     }
 
@@ -95,6 +108,12 @@ final class FormGuardModule implements Module
             add_filter('wpcf7_spam', [$this, 'check_cf7'], 9, 2);
             add_action('wpcf7_mail_sent', [$this, 'consume_posted']);
             add_filter('wpcf7_display_message', [$this, 'cf7_message'], 10, 2);
+        }
+        if ($this->is_on('avada')) {
+            // Priority 1: before Avada's own handler at 10, which ends the request.
+            add_action('wp_ajax_' . self::AVADA_AJAX_ACTION, [$this, 'check_avada'], 1);
+            add_action('wp_ajax_nopriv_' . self::AVADA_AJAX_ACTION, [$this, 'check_avada'], 1);
+            add_filter('fusion_builder_form_submission_data', [$this, 'strip_avada_fields']);
         }
         if ($this->is_on('login')) {
             add_filter('woocommerce_process_login_errors', [$this, 'check_woo_login'], 10, 1);
@@ -156,11 +175,10 @@ final class FormGuardModule implements Module
     /** Null when the posted form passes, otherwise a short reason code. */
     private function posted_reason(): ?string
     {
-        $decoy = isset($_POST[self::DECOY]) ? trim((string) wp_unslash($_POST[self::DECOY])) : '';
-        if ($decoy !== '') {
+        if ($this->posted(self::DECOY) !== '') {
             return 'decoy-filled';
         }
-        $token = self::posted_token();
+        $token = $this->posted(self::FIELD);
         if ($token === '') {
             return 'missing';
         }
@@ -188,9 +206,12 @@ final class FormGuardModule implements Module
         return null;
     }
 
-    private static function posted_token(): string
+    private function posted(string $field): string
     {
-        return isset($_POST[self::FIELD]) ? trim((string) wp_unslash($_POST[self::FIELD])) : '';
+        $value = $this->avada_fields !== null
+            ? ($this->avada_fields[$field] ?? '')
+            : (isset($_POST[$field]) ? wp_unslash($_POST[$field]) : '');
+        return is_string($value) ? trim($value) : '';
     }
 
     private static function used_key(string $nonce): string
@@ -205,7 +226,7 @@ final class FormGuardModule implements Module
      */
     public function consume_posted(mixed $unused = null): void
     {
-        if (preg_match('/^\d+\.([0-9a-f]{16})\./', self::posted_token(), $m)) {
+        if (preg_match('/^\d+\.([0-9a-f]{16})\./', $this->posted(self::FIELD), $m)) {
             set_transient(self::used_key($m[1]), 1, self::MAX_AGE + HOUR_IN_SECONDS);
         }
     }
@@ -258,6 +279,45 @@ final class FormGuardModule implements Module
             : '';
         $this->record('cf7', $reason, $form_id !== '' ? 'cf7:' . $form_id : 'cf7');
         return true;
+    }
+
+    /**
+     * Avada Forms sent by AJAX, which is every form type but "post" (that one
+     * goes straight to its own address and never reaches WordPress). Answers a
+     * rejected form the way Avada's own checks do; its script shows the form's
+     * error notice with the message under it.
+     */
+    public function check_avada(): void
+    {
+        try {
+            $fields = [];
+            if (isset($_POST['formData']) && is_string($_POST['formData'])) {
+                parse_str(wp_unslash($_POST['formData']), $fields);
+            }
+            $this->avada_fields = $fields;
+            $form_id = isset($_POST['form_id']) ? absint($_POST['form_id']) : 0;
+            $reason  = $this->check('avada', 'avada:' . $form_id);
+        } catch (\Throwable $e) {
+            error_log('[valolink-plugin] form guard: Avada check failed (open): ' . $e->getMessage());
+            $reason = null;
+        } finally {
+            $this->avada_fields = null;
+        }
+        if ($reason !== null) {
+            wp_send_json([
+                'status' => 'error',
+                'info'   => ['valolink_form_guard' => esc_html($this->message())],
+            ]);
+        }
+    }
+
+    /** Keeps the guard's two fields out of Avada's notification mail ([all_fields]) and stored entry. */
+    public function strip_avada_fields(mixed $data): mixed
+    {
+        if (is_array($data) && isset($data['data']) && is_array($data['data'])) {
+            unset($data['data'][self::FIELD], $data['data'][self::DECOY]);
+        }
+        return $data;
     }
 
     /** Tell a rejected sender how to get through instead of CF7's generic error. */
@@ -369,7 +429,7 @@ final class FormGuardModule implements Module
     {
         try {
             $ip = EventLogger::client_ip();
-            if ($integration !== 'cf7' && $ip !== null) {
+            if (!in_array($integration, ['cf7', 'avada'], true) && $ip !== null) {
                 $key = 'vl_fg_' . md5($integration . '|' . $ip);
                 if (get_transient($key)) {
                     return;
@@ -403,7 +463,7 @@ final class FormGuardModule implements Module
 
     public function enqueue(): void
     {
-        $this->enqueue_for(['cf7', 'login', 'lostpassword', 'comments', 'registration']);
+        $this->enqueue_for(['cf7', 'avada', 'login', 'lostpassword', 'comments', 'registration']);
     }
 
     public function enqueue_login(): void
@@ -497,6 +557,7 @@ final class FormGuardModule implements Module
         }
         $rows = [
             'cf7'          => [__('Contact Form 7', 'valolink-plugin'), __('Every Contact Form 7 form. A rejected sender is told to reload the page; Flamingo, where installed, shows the reason in its spam folder.', 'valolink-plugin')],
+            'avada'        => [__('Avada Forms', 'valolink-plugin'), __('Every Avada form that is sent without a page load (to the database, e-mail or a URL), in place of reCAPTCHA or Turnstile. A rejected sender sees the form\'s own error notice and is told to reload the page.', 'valolink-plugin')],
             'login'        => [__('Sign-in', 'valolink-plugin'), __('WooCommerce\'s sign-in form (My Account, checkout). wp-login.php too, unless Security → Login timing guard is on, which then covers it.', 'valolink-plugin')],
             'lostpassword' => [__('Lost password', 'valolink-plugin'), __('The lost-password forms of wp-login.php and WooCommerce\'s My Account.', 'valolink-plugin')],
             'comments'     => [__('Comments and reviews', 'valolink-plugin'), __('Comments and WooCommerce product reviews sent from the page. Replies from wp-admin are not checked.', 'valolink-plugin')],

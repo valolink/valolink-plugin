@@ -149,6 +149,39 @@
         });
     }, true);
 
+    // Avada Forms never fire a native submit: the button's click handler stops
+    // the click and has jQuery call the form's submit handlers directly. So the
+    // click itself is held, and repeated once the token is ready.
+    document.addEventListener('click', function (e) {
+        var button = e.target && e.target.closest ? e.target.closest('.form-form-submit') : null;
+        var form = button ? button.closest('form.fusion-form') : null;
+        if (!form || passthrough || tokenReady() || !guarded(form)) {
+            return;
+        }
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (form.getAttribute('data-vlg-waiting')) {
+            return;
+        }
+        form.setAttribute('data-vlg-waiting', '1');
+        button.classList.add('fusion-form-working'); // Avada's own "sending" state
+        (token ? Promise.resolve(token) : fetchToken()).then(function (t) {
+            var wait = t ? Math.max(0, (cfg.minAge + 1) * 1000 - (Date.now() - fetchedAt)) : 0;
+            setTimeout(function () {
+                form.removeAttribute('data-vlg-waiting');
+                button.classList.remove('fusion-form-working');
+                // Without a token this still goes out, so the visitor gets
+                // the form's error notice instead of a silently dead button.
+                passthrough = true;
+                try {
+                    button.click();
+                } finally {
+                    passthrough = false;
+                }
+            }, wait);
+        });
+    }, true);
+
     // After a successful send the token is spent; after a rejection it may be
     // stale. Drop it at once so a quick next submit is held until the new
     // one arrives.
@@ -175,6 +208,11 @@
     function start() {
         if (!forms().length) {
             return;
+        }
+        // Avada announces a finished send (accepted or not) through jQuery
+        // only, which native listeners do not hear.
+        if (window.jQuery && document.querySelector('form.fusion-form')) {
+            window.jQuery(window).on('fusion-form-ajax-submitted', renew);
         }
         ensureInputs();
         fetchToken();

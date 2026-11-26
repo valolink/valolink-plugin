@@ -213,7 +213,7 @@ final class Plugin
         $registry->register(new ModuleManifest(
             id: FormGuardModule::MODULE_ID,
             label: static fn (): string => __('Form guard', 'valolink-plugin'),
-            description: static fn (): string => __('Spam check for Contact Form 7, WooCommerce sign-in, lost password, comments and reviews, and registration: a signed single-use token fetched by JavaScript plus an invisible decoy field. Replaces WP Armour and the standalone Valolink CF7 Guard; rejections go to the Event Log. Configure under Valolink → Form guard.', 'valolink-plugin'),
+            description: static fn (): string => __('Spam check for Contact Form 7, Avada Forms, WooCommerce sign-in, lost password, comments and reviews, and registration: a signed single-use token fetched by JavaScript plus an invisible decoy field. Replaces WP Armour and the standalone Valolink CF7 Guard; rejections go to the Event Log. Configure under Valolink → Form guard.', 'valolink-plugin'),
             class: FormGuardModule::class,
             default_enabled: false,
             constructor_args: [$settings],
